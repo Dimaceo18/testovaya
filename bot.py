@@ -39,6 +39,9 @@ MN_MARGIN_TOP_PCT = 0.06
 MN_MARGIN_BOTTOM_PCT = 0.07
 MN_LINE_SPACING = 8
 MN_FOOTER_SIZE_PCT = 0.034
+MN_FONT_SIZE_MIN = 0.6
+MN_FONT_SIZE_MAX = 1.4
+MN_FONT_SIZE_STEP = 0.1
 
 # Константы для ЧП ВМ
 CHP_GRADIENT_PCT = 0.48
@@ -55,7 +58,6 @@ AM_BLUR_BLEND = 0.50
 AM_FONT_START_PCT = 0.060
 AM_MARGIN_X_PCT = 0.055
 AM_TEXT_ZONE_MARGIN_PCT = 0.12
-AM_MAX_LINES = 3
 AM_LINE_SPACING = 6
 
 # Константы для Сторис ФДР
@@ -280,10 +282,25 @@ def apply_top_blur_band(img: Image.Image, band_pct: float = AM_TOP_BLUR_PCT,
     return out
 
 # =========================
-# Шаблон "МН" (текст по левому краю)
+# Keyboard для регулировки шрифта
+# =========================
+def font_size_kb(current_multiplier: float = 1.0):
+    kb = InlineKeyboardMarkup(row_width=3)
+    kb.add(
+        InlineKeyboardButton("🔽", callback_data=f"font_size:minus:{current_multiplier}"),
+        InlineKeyboardButton(f"{int(current_multiplier*100)}%", callback_data="font_size:current"),
+        InlineKeyboardButton("🔼", callback_data=f"font_size:plus:{current_multiplier}")
+    )
+    kb.add(InlineKeyboardButton("✅ Готово", callback_data="font_size:done"))
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="font_size:cancel"))
+    return kb
+
+# =========================
+# Шаблон "МН" (с регулировкой размера шрифта, текст по левому краю)
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str,
-                 text_position: str = TEXT_POSITION_TOP) -> BytesIO:
+                 text_position: str = TEXT_POSITION_TOP,
+                 font_size_multiplier: float = 1.0) -> BytesIO:
     ensure_fonts()
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -312,11 +329,15 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     
     title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
     
-    start_size = int(STANDARD_H * MN_FONT_START_PCT)
+    # Учитываем множитель размера шрифта
+    base_start_size = int(STANDARD_H * MN_FONT_START_PCT)
+    adjusted_start_size = int(base_start_size * font_size_multiplier)
+    min_size = max(12, int(16 * font_size_multiplier))
+    
     font, lines, line_height = fit_text_block_uniform(
         draw=draw, text=title_text, font_path=FONT_MN,
         safe_w=safe_w, max_block_h=title_max_h, max_lines=6,
-        start_size=start_size, min_size=16,
+        start_size=adjusted_start_size, min_size=min_size,
         line_spacing=MN_LINE_SPACING
     )
     
@@ -329,7 +350,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
         title_y = STANDARD_H - margin_bottom - total_text_height
         footer_y = margin_top
     
-    # ТЕКСТ ПО ЛЕВОМУ КРАЮ
+    # Текст по левому краю
     y = title_y
     x = margin_x
     
@@ -540,7 +561,8 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
 # Основная функция make_card
 # =========================
 def make_card(photo_bytes: bytes, title_text: str, template: str,
-              body_text: str = "", text_position: str = TEXT_POSITION_TOP) -> BytesIO:
+              body_text: str = "", text_position: str = TEXT_POSITION_TOP,
+              font_size_multiplier: float = 1.0) -> BytesIO:
     if template == "CHP":
         return make_card_chp(photo_bytes, title_text, text_position)
     elif template == "AM":
@@ -548,7 +570,7 @@ def make_card(photo_bytes: bytes, title_text: str, template: str,
     elif template == "FDR_STORY":
         return make_card_fdr_story(photo_bytes, title_text, body_text)
     else:
-        return make_card_mn(photo_bytes, title_text, text_position)
+        return make_card_mn(photo_bytes, title_text, text_position, font_size_multiplier)
 
 # =========================
 # Keyboards
@@ -596,6 +618,53 @@ def build_caption_html(title: str, body: str) -> str:
 # =========================
 # Callback handlers
 # =========================
+@bot.callback_query_handler(func=lambda c: c.data.startswith("font_size:"))
+def on_font_size(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "cancel":
+        st.pop("step", None)
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Отменено ❌")
+        bot.edit_message_text("❌ Настройка отменена", c.message.chat.id, c.message.message_id)
+        bot.send_message(c.message.chat.id, "📝 Выбери другой шаблон", reply_markup=template_kb())
+        return
+    
+    current = st.get("font_size_multiplier", 1.0)
+    
+    if action == "plus":
+        new_mult = min(MN_FONT_SIZE_MAX, current + MN_FONT_SIZE_STEP)
+    elif action == "minus":
+        new_mult = max(MN_FONT_SIZE_MIN, current - MN_FONT_SIZE_STEP)
+    elif action == "done":
+        st["step"] = "waiting_text_position"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, f"Размер шрифта: {int(current*100)}% ✅")
+        bot.edit_message_text(
+            f"✅ Размер шрифта установлен: {int(current*100)}%\n\n📐 Теперь выбери расположение текста:",
+            c.message.chat.id, c.message.message_id,
+            reply_markup=text_position_kb()
+        )
+        return
+    else:
+        bot.answer_callback_query(c.id)
+        return
+    
+    st["font_size_multiplier"] = new_mult
+    user_state[uid] = st
+    
+    bot.answer_callback_query(c.id, f"Размер: {int(new_mult*100)}%")
+    bot.edit_message_text(
+        f"📰 Выбран шаблон <b>МН</b>\n\n"
+        f"🔤 Настрой размер шрифта (текущий: {int(new_mult*100)}%)\n"
+        f"Используй кнопки 🔽 и 🔼 для регулировки\n\n"
+        f"Диапазон: {int(MN_FONT_SIZE_MIN*100)}% - {int(MN_FONT_SIZE_MAX*100)}%",
+        c.message.chat.id, c.message.message_id,
+        parse_mode="HTML", reply_markup=font_size_kb(new_mult)
+    )
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
 def on_template_select(c):
     uid = c.from_user.id
@@ -607,7 +676,20 @@ def on_template_select(c):
     names = {"MN": "МН", "CHP": "ЧП ВМ", "AM": "АМ", "FDR_STORY": "Сторис ФДР"}
     name = names.get(template, template)
     
-    if template in ["MN", "CHP"]:
+    if template == "MN":
+        st["step"] = "waiting_font_size"
+        st["font_size_multiplier"] = 1.0
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, f"Шаблон {name} выбран ✅")
+        bot.edit_message_text(
+            f"📰 Выбран шаблон <b>{name}</b>\n\n"
+            f"🔤 Настрой размер шрифта (текущий: 100%)\n"
+            f"Используй кнопки 🔽 и 🔼 для регулировки\n\n"
+            f"Диапазон: {int(MN_FONT_SIZE_MIN*100)}% - {int(MN_FONT_SIZE_MAX*100)}%",
+            c.message.chat.id, c.message.message_id,
+            parse_mode="HTML", reply_markup=font_size_kb(1.0)
+        )
+    elif template in ["CHP"]:
         st["step"] = "waiting_text_position"
         user_state[uid] = st
         bot.answer_callback_query(c.id, f"Шаблон {name} выбран ✅")
@@ -624,7 +706,7 @@ def on_template_select(c):
             f"📱 Выбран шаблон <b>{name}</b>\n\n📸 Пришли фото для сторис.\n\n<i>Дальше:</i>\n1️⃣ Заголовок\n2️⃣ Текст",
             c.message.chat.id, c.message.message_id, parse_mode="HTML"
         )
-    else:
+    else:  # AM
         st["step"] = "waiting_photo"
         user_state[uid] = st
         bot.answer_callback_query(c.id, f"Шаблон {name} выбран ✅")
@@ -714,7 +796,7 @@ def cmd_start(message):
         message.chat.id,
         "👋 <b>Привет! Я бот для оформления постов</b>\n\n"
         "<b>📝 Доступные шаблоны:</b>\n"
-        "• 📰 МН — классический, текст по левому краю\n"
+        "• 📰 МН — классический, текст по левому краю, регулировка шрифта\n"
         "• 🚨 ЧП ВМ — яркий, контрастный\n"
         "• ✨ АМ — с размытой верхней полосой\n"
         "• 📱 Сторис ФДР — формат историй\n\n"
@@ -768,9 +850,13 @@ def on_text(message):
             return
         
         try:
+            template = st.get("template", "MN")
+            font_mult = st.get("font_size_multiplier", 1.0)
+            
             card = make_card(
-                st["photo_bytes"], text, st.get("template", "MN"),
-                text_position=st.get("text_position", TEXT_POSITION_TOP)
+                st["photo_bytes"], text, template,
+                text_position=st.get("text_position", TEXT_POSITION_TOP),
+                font_size_multiplier=font_mult
             )
             st["card_bytes"] = card.getvalue()
             st["title"] = text

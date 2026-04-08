@@ -242,33 +242,33 @@ def apply_top_blur_band(img: Image.Image, band_pct: float = AM_TOP_BLUR_PCT,
 def font_size_kb(current_multiplier: float = 1.0):
     kb = InlineKeyboardMarkup(row_width=3)
     kb.add(
-        InlineKeyboardButton("🔽 60%", callback_data=f"font_size:0.6"),
-        InlineKeyboardButton("🔽 70%", callback_data=f"font_size:0.7"),
-        InlineKeyboardButton("🔽 80%", callback_data=f"font_size:0.8"),
+        InlineKeyboardButton("🔽 60%", callback_data="font_size:0.6"),
+        InlineKeyboardButton("70%", callback_data="font_size:0.7"),
+        InlineKeyboardButton("80%", callback_data="font_size:0.8"),
     )
     kb.add(
-        InlineKeyboardButton("90%", callback_data=f"font_size:0.9"),
-        InlineKeyboardButton("100%", callback_data=f"font_size:1.0"),
-        InlineKeyboardButton("110%", callback_data=f"font_size:1.1"),
+        InlineKeyboardButton("90%", callback_data="font_size:0.9"),
+        InlineKeyboardButton("100%", callback_data="font_size:1.0"),
+        InlineKeyboardButton("110%", callback_data="font_size:1.1"),
     )
     kb.add(
-        InlineKeyboardButton("120%", callback_data=f"font_size:1.2"),
-        InlineKeyboardButton("130%", callback_data=f"font_size:1.3"),
-        InlineKeyboardButton("🔼 140%", callback_data=f"font_size:1.4"),
+        InlineKeyboardButton("120%", callback_data="font_size:1.2"),
+        InlineKeyboardButton("130%", callback_data="font_size:1.3"),
+        InlineKeyboardButton("🔼 140%", callback_data="font_size:1.4"),
     )
     kb.add(InlineKeyboardButton("✅ Готово", callback_data="font_size:done"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="font_size:cancel"))
     return kb
 
 # =========================
-# Шаблон "МН" (с ПРЯМОЙ регулировкой размера)
+# Шаблон "МН" (ПРИНУДИТЕЛЬНЫЙ РАЗМЕР ШРИФТА)
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str,
                  text_position: str = TEXT_POSITION_TOP,
                  font_size_multiplier: float = 1.0) -> BytesIO:
     ensure_fonts()
     
-    logger.info(f"=== make_card_mn called with multiplier: {font_size_multiplier} ===")
+    logger.info(f"=== make_card_mn: multiplier = {font_size_multiplier} ===")
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -298,17 +298,15 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     if not text:
         text = " "
     
-    # === ПРЯМОЕ ПРИМЕНЕНИЕ МНОЖИТЕЛЯ ===
-    # Базовый размер 103px (11% от 938)
-    base_size = MN_BASE_FONT_SIZE
-    # Применяем множитель
-    target_size = int(base_size * font_size_multiplier)
-    # Ограничиваем
-    target_size = max(40, min(target_size, 160))
+    # === ПРИНУДИТЕЛЬНЫЙ РАЗМЕР ШРИФТА ===
+    # Расчёт размера: базовый 103px * множитель
+    target_size = int(MN_BASE_FONT_SIZE * font_size_multiplier)
+    # Ограничиваем только минимальным значением, максимальное НЕ ограничиваем
+    target_size = max(40, target_size)
     
-    logger.info(f"Base size: {base_size}, Multiplier: {font_size_multiplier}, Target size: {target_size}")
+    logger.info(f"Target font size: {target_size}px (multiplier: {font_size_multiplier})")
     
-    # СОЗДАЁМ ШРИФТ С ЦЕЛЕВЫМ РАЗМЕРОМ
+    # СОЗДАЁМ ШРИФТ С ТОЧНЫМ РАЗМЕРОМ
     font = ImageFont.truetype(FONT_MN, target_size)
     
     # Разбиваем текст на строки
@@ -319,24 +317,9 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     line_height = bbox[3] - bbox[1]
     total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
     
-    logger.info(f"Lines: {len(lines)}, Line height: {line_height}, Total height: {total_text_height}")
+    logger.info(f"Lines: {len(lines)}, Line height: {line_height}, Total: {total_text_height}")
     
-    # Зона для текста
-    title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
-    
-    # Если текст вылезает - уменьшаем, но сохраняем пропорцию
-    temp_multiplier = font_size_multiplier
-    while total_text_height > title_max_h and target_size > 40:
-        temp_multiplier -= 0.05
-        target_size = int(base_size * temp_multiplier)
-        target_size = max(40, target_size)
-        font = ImageFont.truetype(FONT_MN, target_size)
-        lines = wrap_text(draw, text, font, safe_w, max_lines=5)
-        bbox = draw.textbbox((0, 0), "A", font=font)
-        line_height = bbox[3] - bbox[1]
-        total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
-        logger.info(f"Reduced to: {target_size}, Total height: {total_text_height}")
-    
+    # НЕ ПРОВЕРЯЕМ, ВЛЕЗАЕТ ЛИ ТЕКСТ - ПРИНУДИТЕЛЬНО РИСУЕМ
     if text_position == TEXT_POSITION_TOP:
         title_y = margin_top
         footer_y = STANDARD_H - margin_bottom + (margin_bottom - footer_h) // 2

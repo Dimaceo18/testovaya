@@ -28,8 +28,8 @@ if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
 
 # Размеры
-STANDARD_W, STANDARD_H = 750, 938      # 4:5
-STORY_W, STORY_H = 720, 1280           # Сторис
+STANDARD_W, STANDARD_H = 750, 938
+STORY_W, STORY_H = 720, 1280
 
 # Константы для МН
 MN_TITLE_ZONE_PCT = 0.23
@@ -37,7 +37,7 @@ MN_FONT_START_PCT = 0.11
 MN_MARGIN_X_PCT = 0.06
 MN_MARGIN_TOP_PCT = 0.06
 MN_MARGIN_BOTTOM_PCT = 0.07
-MN_LINE_SPACING = 8  # Фиксированный межстрочный интервал в пикселях
+MN_LINE_SPACING = 8
 MN_FOOTER_SIZE_PCT = 0.034
 
 # Константы для ЧП ВМ
@@ -50,7 +50,7 @@ CHP_LINE_SPACING = 8
 
 # Константы для АМ
 AM_TOP_BLUR_PCT = 0.20
-AM_BLUR_RADIUS = 25  # Увеличен радиус для заметного размытия
+AM_BLUR_RADIUS = 25
 AM_BLUR_BLEND = 0.50
 AM_FONT_START_PCT = 0.060
 AM_MARGIN_X_PCT = 0.055
@@ -112,7 +112,6 @@ def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) 
 
 def wrap_text_uniform(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
                       max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
-    """Перенос текста с равномерным распределением по строкам"""
     if not text:
         return [""], True
     
@@ -149,8 +148,7 @@ def wrap_text_uniform(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.Free
 def fit_text_block_uniform(draw: ImageDraw.ImageDraw, text: str, font_path: str,
                            safe_w: int, max_block_h: int, max_lines: int = 6,
                            start_size: int = 90, min_size: int = 16,
-                           line_spacing: int = 8) -> Tuple[ImageFont.FreeTypeFont, List[str], int, int]:
-    """Подбор размера шрифта с фиксированным межстрочным интервалом"""
+                           line_spacing: int = 8) -> Tuple[ImageFont.FreeTypeFont, List[str], int]:
     text = (text or "").strip().upper()
     if not text:
         text = " "
@@ -191,7 +189,6 @@ def fit_text_block_uniform(draw: ImageDraw.ImageDraw, text: str, font_path: str,
     return best_font, best_lines, best_line_height
 
 def crop_to_4x5(img: Image.Image) -> Image.Image:
-    """Обрезка в пропорцию 4:5"""
     w, h = img.size
     target_ratio = 4 / 5
     cur_ratio = w / h
@@ -205,7 +202,6 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         return img.crop((0, top, w, top + new_h))
 
 def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
-    """Градиент сверху вниз"""
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -226,7 +222,6 @@ def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 165
     return out.convert("RGB")
 
 def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
-    """Градиент снизу вверх"""
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -247,7 +242,6 @@ def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 
     return out.convert("RGB")
 
 def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
-    """Мягкий градиент снизу"""
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -269,33 +263,24 @@ def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: i
 
 def apply_top_blur_band(img: Image.Image, band_pct: float = AM_TOP_BLUR_PCT,
                         radius: int = AM_BLUR_RADIUS, blend: float = AM_BLUR_BLEND) -> Image.Image:
-    """Усиленное размытие верхней полосы для шаблона АМ"""
     w, h = img.size
     band_h = max(1, int(h * band_pct))
     base = img.convert("RGB")
     
-    # Вырезаем верхнюю полосу
     top = base.crop((0, 0, w, band_h))
-    
-    # Применяем сильное размытие
     blurred = top.filter(ImageFilter.GaussianBlur(radius=radius))
-    
-    # Смешиваем оригинал и размытие
     mixed = Image.blend(top, blurred, blend)
     
-    # Добавляем затемнение
     overlay = Image.new("RGBA", (w, band_h), (0, 0, 0, 95))
     mixed_rgba = mixed.convert("RGBA")
     final_band = Image.alpha_composite(mixed_rgba, overlay).convert("RGB")
     
-    # Вставляем обратно
     out = base.copy()
     out.paste(final_band, (0, 0))
-    
     return out
 
 # =========================
-# Шаблон "МН"
+# Шаблон "МН" (текст по левому краю)
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str,
                  text_position: str = TEXT_POSITION_TOP) -> BytesIO:
@@ -305,10 +290,8 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     img = crop_to_4x5(img)
     img = img.resize((STANDARD_W, STANDARD_H), Image.Resampling.LANCZOS)
     
-    # Яркость 0.55
     img = ImageEnhance.Brightness(img).enhance(0.55)
     
-    # Градиент
     if text_position == TEXT_POSITION_TOP:
         img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
     else:
@@ -316,23 +299,19 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     
     draw = ImageDraw.Draw(img)
     
-    # Отступы
     margin_x = int(STANDARD_W * MN_MARGIN_X_PCT)
     margin_top = int(STANDARD_H * MN_MARGIN_TOP_PCT)
     margin_bottom = int(STANDARD_H * MN_MARGIN_BOTTOM_PCT)
     safe_w = STANDARD_W - 2 * margin_x
     
-    # Футер
     footer_size = max(24, int(STANDARD_H * MN_FOOTER_SIZE_PCT))
     footer_font = ImageFont.truetype(FONT_MN, footer_size)
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
     footer_w = fb[2] - fb[0]
     footer_h = fb[3] - fb[1]
     
-    # Зона заголовка (23% высоты)
     title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
     
-    # Подбор шрифта с фиксированным межстрочным интервалом
     start_size = int(STANDARD_H * MN_FONT_START_PCT)
     font, lines, line_height = fit_text_block_uniform(
         draw=draw, text=title_text, font_path=FONT_MN,
@@ -343,7 +322,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     
     total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
     
-    # Позиционирование
     if text_position == TEXT_POSITION_TOP:
         title_y = margin_top
         footer_y = STANDARD_H - margin_bottom + (margin_bottom - footer_h) // 2
@@ -351,15 +329,14 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
         title_y = STANDARD_H - margin_bottom - total_text_height
         footer_y = margin_top
     
-    # Рисуем заголовок (центрируем каждую строку)
+    # ТЕКСТ ПО ЛЕВОМУ КРАЮ
     y = title_y
+    x = margin_x
+    
     for line in lines:
-        line_w = text_width(draw, line, font)
-        x = (STANDARD_W - line_w) // 2
         draw.text((x, y), line, font=font, fill="white")
         y += line_height + MN_LINE_SPACING
     
-    # Рисуем футер
     footer_x = (STANDARD_W - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
     
@@ -379,10 +356,8 @@ def make_card_chp(photo_bytes: bytes, title_text: str,
     img = crop_to_4x5(img)
     img = img.resize((STANDARD_W, STANDARD_H), Image.Resampling.LANCZOS)
     
-    # Яркость 0.85
     img = ImageEnhance.Brightness(img).enhance(0.85)
     
-    # Градиент 48%
     if text_position == TEXT_POSITION_TOP:
         img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
     else:
@@ -390,16 +365,13 @@ def make_card_chp(photo_bytes: bytes, title_text: str,
     
     draw = ImageDraw.Draw(img)
     
-    # Отступы
     margin_x = int(STANDARD_W * CHP_MARGIN_X_PCT)
     margin_top = int(STANDARD_H * CHP_MARGIN_TOP_PCT)
     margin_bottom = int(STANDARD_H * CHP_MARGIN_BOTTOM_PCT)
     safe_w = STANDARD_W - 2 * margin_x
     
-    # Зона заголовка (23% высоты)
     title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
     
-    # Подбор шрифта
     start_size = int(STANDARD_H * CHP_FONT_START_PCT)
     font, lines, line_height = fit_text_block_uniform(
         draw=draw, text=title_text, font_path=FONT_CHP,
@@ -410,7 +382,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str,
     
     total_h = len(lines) * line_height + (len(lines) - 1) * CHP_LINE_SPACING
     
-    # Позиционирование (текст слева)
     if text_position == TEXT_POSITION_TOP:
         y = margin_top
     else:
@@ -426,7 +397,7 @@ def make_card_chp(photo_bytes: bytes, title_text: str,
     return out
 
 # =========================
-# Шаблон "АМ" (с усиленным размытием)
+# Шаблон "АМ"
 # =========================
 def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     ensure_fonts()
@@ -435,24 +406,20 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     img = crop_to_4x5(img)
     img = img.resize((STANDARD_W, STANDARD_H), Image.Resampling.LANCZOS)
     
-    # Применяем усиленное размытие верхней полосы
     img = apply_top_blur_band(img)
     
     draw = ImageDraw.Draw(img)
     
-    # Отступы по краям
     margin_x = int(STANDARD_W * AM_MARGIN_X_PCT)
     band_h = int(STANDARD_H * AM_TOP_BLUR_PCT)
     safe_w = STANDARD_W - 2 * margin_x
     
     text = (title_text or "").strip().upper()
     
-    # Зона текста внутри размытой полосы (минус 12% отступы)
     text_zone_top = int(band_h * AM_TEXT_ZONE_MARGIN_PCT)
     text_zone_bottom = int(band_h * AM_TEXT_ZONE_MARGIN_PCT)
     text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
     
-    # Подбор шрифта
     start_size = int(STANDARD_H * AM_FONT_START_PCT)
     font, lines, line_height = fit_text_block_uniform(
         draw=draw, text=text, font_path=FONT_AM,
@@ -462,11 +429,8 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     )
     
     total_h = len(lines) * line_height + (len(lines) - 1) * AM_LINE_SPACING
-    
-    # Центрирование по вертикали внутри размытой полосы
     y = text_zone_top + max(0, (text_zone_h - total_h) // 2)
     
-    # Центрирование каждой строки по горизонтали
     for line in lines:
         line_w = text_width(draw, line, font)
         x = (STANDARD_W - line_w) // 2
@@ -501,18 +465,15 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     story_photo = fit_cover(photo, STORY_W, STORY_PHOTO_H)
     canvas.paste(story_photo, (0, 0))
     
-    # Фиолетовая шапка
     canvas.paste(Image.new("RGB", (STORY_W, STORY_HEADER_H), STORY_PURPLE_COLOR), (0, STORY_PHOTO_H))
     draw.rectangle([0, STORY_PHOTO_H + STORY_HEADER_H, STORY_W, STORY_H], fill=(0, 0, 0))
     
-    # Заголовок
     title_font_size = STORY_TITLE_FONT_MAX
     title_font = ImageFont.truetype(FONT_MONTSERRAT, title_font_size)
     title_bbox = draw.textbbox((0, 0), title, font=title_font)
     title_w = title_bbox[2] - title_bbox[0]
     title_h = title_bbox[3] - title_bbox[1]
     
-    # Если не помещается, уменьшаем шрифт
     while (title_w > STORY_W - 2 * STORY_PADDING or title_h > STORY_HEADER_H - 2 * STORY_PADDING) and title_font_size > STORY_TITLE_FONT_MIN:
         title_font_size -= 2
         title_font = ImageFont.truetype(FONT_MONTSERRAT, title_font_size)
@@ -524,11 +485,9 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     title_y = STORY_PHOTO_H + (STORY_HEADER_H - title_h) // 2
     draw.text((title_x, title_y), title, font=title_font, fill="white")
     
-    # Основной текст с переносом
     body_font_size = STORY_BODY_FONT_MAX
     body_font = ImageFont.truetype(FONT_MONTSERRAT, body_font_size)
     
-    # Перенос текста
     words = body_text.split()
     lines = []
     current_line = ""
@@ -548,13 +507,11 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     line_spacing = 8
     max_body_h = STORY_H - STORY_PHOTO_H - STORY_HEADER_H - 2 * STORY_PADDING
     
-    # Если текст не помещается, уменьшаем шрифт
     while len(lines) * (line_height + line_spacing) > max_body_h and body_font_size > STORY_BODY_FONT_MIN:
         body_font_size -= 2
         body_font = ImageFont.truetype(FONT_MONTSERRAT, body_font_size)
         line_height = body_font.getbbox("Ag")[3] - body_font.getbbox("Ag")[1]
         
-        # Пересобираем строки
         lines = []
         current_line = ""
         for word in words:
@@ -667,7 +624,7 @@ def on_template_select(c):
             f"📱 Выбран шаблон <b>{name}</b>\n\n📸 Пришли фото для сторис.\n\n<i>Дальше:</i>\n1️⃣ Заголовок\n2️⃣ Текст",
             c.message.chat.id, c.message.message_id, parse_mode="HTML"
         )
-    else:  # AM
+    else:
         st["step"] = "waiting_photo"
         user_state[uid] = st
         bot.answer_callback_query(c.id, f"Шаблон {name} выбран ✅")
@@ -757,7 +714,7 @@ def cmd_start(message):
         message.chat.id,
         "👋 <b>Привет! Я бот для оформления постов</b>\n\n"
         "<b>📝 Доступные шаблоны:</b>\n"
-        "• 📰 МН — классический с логотипом\n"
+        "• 📰 МН — классический, текст по левому краю\n"
         "• 🚨 ЧП ВМ — яркий, контрастный\n"
         "• ✨ АМ — с размытой верхней полосой\n"
         "• 📱 Сторис ФДР — формат историй\n\n"
@@ -805,7 +762,6 @@ def on_text(message):
     text = message.text.strip()
     st = user_state.get(uid) or {"step": "idle"}
     
-    # Обычный шаблон: ожидание заголовка
     if st.get("step") == "waiting_title":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
@@ -830,7 +786,6 @@ def on_text(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Обычный шаблон: ожидание текста
     if st.get("step") == "waiting_body":
         if not text:
             bot.reply_to(message, "❌ Текст не может быть пустым")
@@ -846,7 +801,6 @@ def on_text(message):
         bot.reply_to(message, "🎉 <b>Превью готово!</b>\n\nНажми кнопку под фото.", parse_mode="HTML")
         return
     
-    # FDR_STORY: ожидание заголовка
     if st.get("step") == "waiting_title_fdr":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
@@ -857,7 +811,6 @@ def on_text(message):
         bot.reply_to(message, "✅ Заголовок сохранён!\n\n✏️ Теперь отправь <b>ОСНОВНОЙ ТЕКСТ</b>:", parse_mode="HTML")
         return
     
-    # FDR_STORY: ожидание текста
     if st.get("step") == "waiting_body_fdr":
         if not text:
             bot.reply_to(message, "❌ Текст не может быть пустым")
@@ -878,12 +831,10 @@ def on_text(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Если бот в состоянии ожидания шаблона
     if st.get("step") == "waiting_template":
         bot.send_message(message.chat.id, "📝 Выбери шаблон кнопками выше ☝️")
         return
     
-    # Если бот ожидает позицию текста
     if st.get("step") == "waiting_text_position":
         bot.send_message(message.chat.id, "📐 Выбери расположение текста кнопками выше ☝️")
         return

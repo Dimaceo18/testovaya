@@ -254,7 +254,7 @@ def font_size_kb(current_multiplier: float = 1.0):
     return kb
 
 # =========================
-# Шаблон "МН" (с РАБОТАЮЩЕЙ регулировкой размера шрифта)
+# Шаблон "МН" (С ПРИНУДИТЕЛЬНОЙ РЕГУЛИРОВКОЙ РАЗМЕРА)
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str,
                  text_position: str = TEXT_POSITION_TOP,
@@ -285,45 +285,34 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     footer_w = fb[2] - fb[0]
     footer_h = fb[3] - fb[1]
     
-    title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
-    
-    # === ОСНОВНАЯ ЛОГИКА РАЗМЕРА ШРИФТА С УЧЁТОМ МНОЖИТЕЛЯ ===
+    # === ПРИНУДИТЕЛЬНЫЙ РАЗМЕР ШРИФТА ===
     text = (title_text or "").strip().upper()
     if not text:
         text = " "
     
-    # Базовый размер от высоты фото с учётом множителя
+    # Базовый размер (11% от высоты фото = ~103px)
     base_font_size = int(STANDARD_H * MN_FONT_START_PCT)
+    # Применяем множитель (0.6 = 62px, 1.4 = 144px)
     target_font_size = int(base_font_size * font_size_multiplier)
-    target_font_size = max(20, min(target_font_size, 140))
+    # Ограничиваем
+    target_font_size = max(28, min(target_font_size, 150))
     
-    # Пробуем подобрать шрифт
-    font = None
-    lines = []
-    line_height = 0
-    total_text_height = 0
+    # ПРИНУДИТЕЛЬНО используем целевой размер шрифта
+    font = ImageFont.truetype(FONT_MN, target_font_size)
     
-    for size in range(target_font_size, 15, -2):
-        test_font = ImageFont.truetype(FONT_MN, size)
-        test_lines, _ = wrap_text_uniform(draw, text, test_font, safe_w, max_lines=6)
-        
-        if not test_lines:
-            continue
-        
-        bbox = draw.textbbox((0, 0), "A", font=test_font)
-        test_line_height = bbox[3] - bbox[1]
-        test_total_h = len(test_lines) * test_line_height + (len(test_lines) - 1) * MN_LINE_SPACING
-        
-        if test_total_h <= title_max_h:
-            font = test_font
-            lines = test_lines
-            line_height = test_line_height
-            total_text_height = test_total_h
-            break
+    # Разбиваем текст на строки с этим шрифтом
+    lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines=6)
     
-    # Если ничего не подошло, берём минимальный
-    if font is None:
-        font = ImageFont.truetype(FONT_MN, 20)
+    # Вычисляем высоту текста
+    bbox = draw.textbbox((0, 0), "A", font=font)
+    line_height = bbox[3] - bbox[1]
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
+    
+    # Если текст вылезает за зону - уменьшаем шрифт
+    title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
+    while total_text_height > title_max_h and target_font_size > 28:
+        target_font_size -= 4
+        font = ImageFont.truetype(FONT_MN, target_font_size)
         lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines=6)
         bbox = draw.textbbox((0, 0), "A", font=font)
         line_height = bbox[3] - bbox[1]

@@ -33,19 +33,16 @@ STORY_W, STORY_H = 720, 1280
 
 # Константы для МН
 MN_TITLE_ZONE_PCT = 0.23
-MN_FONT_START_PCT = 0.11
+MN_BASE_FONT_SIZE = 103  # 11% от 938px
 MN_MARGIN_X_PCT = 0.06
 MN_MARGIN_TOP_PCT = 0.06
 MN_MARGIN_BOTTOM_PCT = 0.07
 MN_LINE_SPACING = 8
 MN_FOOTER_SIZE_PCT = 0.034
-MN_FONT_SIZE_MIN = 0.6
-MN_FONT_SIZE_MAX = 1.4
-MN_FONT_SIZE_STEP = 0.1
 
 # Константы для ЧП ВМ
 CHP_GRADIENT_PCT = 0.48
-CHP_FONT_START_PCT = 0.11
+CHP_BASE_FONT_SIZE = 103
 CHP_MARGIN_X_PCT = 0.06
 CHP_MARGIN_TOP_PCT = 0.08
 CHP_MARGIN_BOTTOM_PCT = 0.08
@@ -55,7 +52,7 @@ CHP_LINE_SPACING = 8
 AM_TOP_BLUR_PCT = 0.20
 AM_BLUR_RADIUS = 25
 AM_BLUR_BLEND = 0.50
-AM_FONT_START_PCT = 0.060
+AM_BASE_FONT_SIZE = 56
 AM_MARGIN_X_PCT = 0.055
 AM_TEXT_ZONE_MARGIN_PCT = 0.12
 AM_LINE_SPACING = 6
@@ -112,15 +109,15 @@ def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) 
     bbox = draw.textbbox((0, 0), s, font=font)
     return bbox[2] - bbox[0]
 
-def wrap_text_uniform(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
-                      max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
-    """Перенос текста с равномерным распределением по строкам"""
+def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
+              max_width: int, max_lines: int = 6) -> List[str]:
+    """Перенос текста"""
     if not text:
-        return [""], True
+        return [""]
     
     words = text.split()
     if not words:
-        return [""], True
+        return [""]
     
     lines = []
     current_line = words[0]
@@ -136,7 +133,7 @@ def wrap_text_uniform(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.Free
                 dots = "..."
                 if text_width(draw, lines[-1] + dots, font) <= max_width:
                     lines[-1] = lines[-1] + dots
-                return lines, False
+                return lines
     
     if current_line:
         if len(lines) < max_lines:
@@ -146,7 +143,7 @@ def wrap_text_uniform(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.Free
             if text_width(draw, lines[-1] + dots, font) <= max_width:
                 lines[-1] = lines[-1] + dots
     
-    return lines, len(lines) <= max_lines
+    return lines
 
 def crop_to_4x5(img: Image.Image) -> Image.Image:
     w, h = img.size
@@ -245,21 +242,33 @@ def apply_top_blur_band(img: Image.Image, band_pct: float = AM_TOP_BLUR_PCT,
 def font_size_kb(current_multiplier: float = 1.0):
     kb = InlineKeyboardMarkup(row_width=3)
     kb.add(
-        InlineKeyboardButton("🔽", callback_data=f"font_size:minus:{current_multiplier}"),
-        InlineKeyboardButton(f"{int(current_multiplier*100)}%", callback_data="font_size:current"),
-        InlineKeyboardButton("🔼", callback_data=f"font_size:plus:{current_multiplier}")
+        InlineKeyboardButton("🔽 60%", callback_data=f"font_size:0.6"),
+        InlineKeyboardButton("🔽 70%", callback_data=f"font_size:0.7"),
+        InlineKeyboardButton("🔽 80%", callback_data=f"font_size:0.8"),
+    )
+    kb.add(
+        InlineKeyboardButton("90%", callback_data=f"font_size:0.9"),
+        InlineKeyboardButton("100%", callback_data=f"font_size:1.0"),
+        InlineKeyboardButton("110%", callback_data=f"font_size:1.1"),
+    )
+    kb.add(
+        InlineKeyboardButton("120%", callback_data=f"font_size:1.2"),
+        InlineKeyboardButton("130%", callback_data=f"font_size:1.3"),
+        InlineKeyboardButton("🔼 140%", callback_data=f"font_size:1.4"),
     )
     kb.add(InlineKeyboardButton("✅ Готово", callback_data="font_size:done"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="font_size:cancel"))
     return kb
 
 # =========================
-# Шаблон "МН" (С ПРИНУДИТЕЛЬНОЙ РЕГУЛИРОВКОЙ РАЗМЕРА)
+# Шаблон "МН" (с ПРЯМОЙ регулировкой размера)
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str,
                  text_position: str = TEXT_POSITION_TOP,
                  font_size_multiplier: float = 1.0) -> BytesIO:
     ensure_fonts()
+    
+    logger.info(f"=== make_card_mn called with multiplier: {font_size_multiplier} ===")
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -285,38 +294,48 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     footer_w = fb[2] - fb[0]
     footer_h = fb[3] - fb[1]
     
-    # === ПРИНУДИТЕЛЬНЫЙ РАЗМЕР ШРИФТА ===
     text = (title_text or "").strip().upper()
     if not text:
         text = " "
     
-    # Базовый размер (11% от высоты фото = ~103px)
-    base_font_size = int(STANDARD_H * MN_FONT_START_PCT)
-    # Применяем множитель (0.6 = 62px, 1.4 = 144px)
-    target_font_size = int(base_font_size * font_size_multiplier)
+    # === ПРЯМОЕ ПРИМЕНЕНИЕ МНОЖИТЕЛЯ ===
+    # Базовый размер 103px (11% от 938)
+    base_size = MN_BASE_FONT_SIZE
+    # Применяем множитель
+    target_size = int(base_size * font_size_multiplier)
     # Ограничиваем
-    target_font_size = max(28, min(target_font_size, 150))
+    target_size = max(40, min(target_size, 160))
     
-    # ПРИНУДИТЕЛЬНО используем целевой размер шрифта
-    font = ImageFont.truetype(FONT_MN, target_font_size)
+    logger.info(f"Base size: {base_size}, Multiplier: {font_size_multiplier}, Target size: {target_size}")
     
-    # Разбиваем текст на строки с этим шрифтом
-    lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines=6)
+    # СОЗДАЁМ ШРИФТ С ЦЕЛЕВЫМ РАЗМЕРОМ
+    font = ImageFont.truetype(FONT_MN, target_size)
     
-    # Вычисляем высоту текста
+    # Разбиваем текст на строки
+    lines = wrap_text(draw, text, font, safe_w, max_lines=5)
+    
+    # Вычисляем высоту
     bbox = draw.textbbox((0, 0), "A", font=font)
     line_height = bbox[3] - bbox[1]
     total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
     
-    # Если текст вылезает за зону - уменьшаем шрифт
+    logger.info(f"Lines: {len(lines)}, Line height: {line_height}, Total height: {total_text_height}")
+    
+    # Зона для текста
     title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
-    while total_text_height > title_max_h and target_font_size > 28:
-        target_font_size -= 4
-        font = ImageFont.truetype(FONT_MN, target_font_size)
-        lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines=6)
+    
+    # Если текст вылезает - уменьшаем, но сохраняем пропорцию
+    temp_multiplier = font_size_multiplier
+    while total_text_height > title_max_h and target_size > 40:
+        temp_multiplier -= 0.05
+        target_size = int(base_size * temp_multiplier)
+        target_size = max(40, target_size)
+        font = ImageFont.truetype(FONT_MN, target_size)
+        lines = wrap_text(draw, text, font, safe_w, max_lines=5)
         bbox = draw.textbbox((0, 0), "A", font=font)
         line_height = bbox[3] - bbox[1]
         total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
+        logger.info(f"Reduced to: {target_size}, Total height: {total_text_height}")
     
     if text_position == TEXT_POSITION_TOP:
         title_y = margin_top
@@ -366,19 +385,18 @@ def make_card_chp(photo_bytes: bytes, title_text: str,
     margin_bottom = int(STANDARD_H * CHP_MARGIN_BOTTOM_PCT)
     safe_w = STANDARD_W - 2 * margin_x
     
-    title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper()
+    title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
     
     # Подбор шрифта для ЧП ВМ
-    base_font_size = int(STANDARD_H * CHP_FONT_START_PCT)
     font = None
     lines = []
     line_height = 0
     total_h = 0
     
-    for size in range(base_font_size, 15, -2):
+    for size in range(CHP_BASE_FONT_SIZE, 30, -2):
         test_font = ImageFont.truetype(FONT_CHP, size)
-        test_lines, _ = wrap_text_uniform(draw, text, test_font, safe_w, max_lines=6)
+        test_lines = wrap_text(draw, text, test_font, safe_w, max_lines=6)
         
         if not test_lines:
             continue
@@ -395,8 +413,8 @@ def make_card_chp(photo_bytes: bytes, title_text: str,
             break
     
     if font is None:
-        font = ImageFont.truetype(FONT_CHP, 20)
-        lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines=6)
+        font = ImageFont.truetype(FONT_CHP, 40)
+        lines = wrap_text(draw, text, font, safe_w, max_lines=6)
         bbox = draw.textbbox((0, 0), "A", font=font)
         line_height = bbox[3] - bbox[1]
         total_h = len(lines) * line_height + (len(lines) - 1) * CHP_LINE_SPACING
@@ -439,15 +457,14 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     text_zone_bottom = int(band_h * AM_TEXT_ZONE_MARGIN_PCT)
     text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
     
-    base_font_size = int(STANDARD_H * AM_FONT_START_PCT)
     font = None
     lines = []
     line_height = 0
     total_h = 0
     
-    for size in range(base_font_size, 15, -2):
+    for size in range(AM_BASE_FONT_SIZE, 20, -2):
         test_font = ImageFont.truetype(FONT_AM, size)
-        test_lines, _ = wrap_text_uniform(draw, text, test_font, safe_w, max_lines=3)
+        test_lines = wrap_text(draw, text, test_font, safe_w, max_lines=3)
         
         if not test_lines:
             continue
@@ -464,8 +481,8 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
             break
     
     if font is None:
-        font = ImageFont.truetype(FONT_AM, 20)
-        lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines=3)
+        font = ImageFont.truetype(FONT_AM, 30)
+        lines = wrap_text(draw, text, font, safe_w, max_lines=3)
         bbox = draw.textbbox((0, 0), "A", font=font)
         line_height = bbox[3] - bbox[1]
         total_h = len(lines) * line_height + (len(lines) - 1) * AM_LINE_SPACING
@@ -646,6 +663,8 @@ def on_font_size(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
+    logger.info(f"Font size callback: action={action}")
+    
     if action == "cancel":
         st.pop("step", None)
         user_state[uid] = st
@@ -654,23 +673,23 @@ def on_font_size(c):
         bot.send_message(c.message.chat.id, "📝 Выбери другой шаблон", reply_markup=template_kb())
         return
     
-    current = st.get("font_size_multiplier", 1.0)
-    
-    if action == "plus":
-        new_mult = min(MN_FONT_SIZE_MAX, current + MN_FONT_SIZE_STEP)
-    elif action == "minus":
-        new_mult = max(MN_FONT_SIZE_MIN, current - MN_FONT_SIZE_STEP)
-    elif action == "done":
+    if action == "done":
+        multiplier = st.get("font_size_multiplier", 1.0)
         st["step"] = "waiting_text_position"
         user_state[uid] = st
-        bot.answer_callback_query(c.id, f"Размер шрифта: {int(current*100)}% ✅")
+        bot.answer_callback_query(c.id, f"Размер шрифта: {int(multiplier*100)}% ✅")
         bot.edit_message_text(
-            f"✅ Размер шрифта установлен: {int(current*100)}%\n\n📐 Теперь выбери расположение текста:",
+            f"✅ Размер шрифта установлен: {int(multiplier*100)}%\n\n📐 Теперь выбери расположение текста:",
             c.message.chat.id, c.message.message_id,
             reply_markup=text_position_kb()
         )
         return
-    else:
+    
+    # Обработка числового значения (0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4)
+    try:
+        new_mult = float(action)
+        new_mult = max(0.6, min(1.4, new_mult))
+    except:
         bot.answer_callback_query(c.id)
         return
     
@@ -680,9 +699,8 @@ def on_font_size(c):
     bot.answer_callback_query(c.id, f"Размер: {int(new_mult*100)}%")
     bot.edit_message_text(
         f"📰 Выбран шаблон <b>МН</b>\n\n"
-        f"🔤 Настрой размер шрифта (текущий: {int(new_mult*100)}%)\n"
-        f"Используй кнопки 🔽 и 🔼 для регулировки\n\n"
-        f"Диапазон: {int(MN_FONT_SIZE_MIN*100)}% - {int(MN_FONT_SIZE_MAX*100)}%",
+        f"🔤 Выбран размер шрифта: <b>{int(new_mult*100)}%</b>\n\n"
+        f"Нажми «Готово» для продолжения или выбери другой размер:",
         c.message.chat.id, c.message.message_id,
         parse_mode="HTML", reply_markup=font_size_kb(new_mult)
     )
@@ -705,9 +723,10 @@ def on_template_select(c):
         bot.answer_callback_query(c.id, f"Шаблон {name} выбран ✅")
         bot.edit_message_text(
             f"📰 Выбран шаблон <b>{name}</b>\n\n"
-            f"🔤 Настрой размер шрифта (текущий: 100%)\n"
-            f"Используй кнопки 🔽 и 🔼 для регулировки\n\n"
-            f"Диапазон: {int(MN_FONT_SIZE_MIN*100)}% - {int(MN_FONT_SIZE_MAX*100)}%",
+            f"🔤 Выбери размер шрифта:\n\n"
+            f"60% - мелкий\n"
+            f"100% - стандартный\n"
+            f"140% - крупный",
             c.message.chat.id, c.message.message_id,
             parse_mode="HTML", reply_markup=font_size_kb(1.0)
         )
@@ -875,6 +894,8 @@ def on_text(message):
             template = st.get("template", "MN")
             font_mult = st.get("font_size_multiplier", 1.0)
             
+            logger.info(f"Creating card with multiplier: {font_mult}")
+            
             card = make_card(
                 st["photo_bytes"], text, template,
                 text_position=st.get("text_position", TEXT_POSITION_TOP),
@@ -887,10 +908,11 @@ def on_text(message):
             bot.send_document(
                 message.chat.id, document=BytesIO(st["card_bytes"]),
                 visible_file_name="post.jpg",
-                caption="✅ Пост готов!\n\n✏️ Теперь отправь <b>ОСНОВНОЙ ТЕКСТ</b>:",
+                caption=f"✅ Пост готов! (размер шрифта: {int(font_mult*100)}%)\n\n✏️ Теперь отправь <b>ОСНОВНОЙ ТЕКСТ</b>:",
                 parse_mode="HTML"
             )
         except Exception as e:
+            logger.error(f"Error: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     

@@ -114,6 +114,7 @@ def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) 
 
 def wrap_text_uniform(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
                       max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
+    """Перенос текста с равномерным распределением по строкам"""
     if not text:
         return [""], True
     
@@ -146,49 +147,6 @@ def wrap_text_uniform(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.Free
                 lines[-1] = lines[-1] + dots
     
     return lines, len(lines) <= max_lines
-
-def fit_text_block_uniform(draw: ImageDraw.ImageDraw, text: str, font_path: str,
-                           safe_w: int, max_block_h: int, max_lines: int = 6,
-                           start_size: int = 90, min_size: int = 16,
-                           line_spacing: int = 8) -> Tuple[ImageFont.FreeTypeFont, List[str], int]:
-    text = (text or "").strip().upper()
-    if not text:
-        text = " "
-    
-    size = start_size
-    best_font = None
-    best_lines = []
-    best_line_height = 0
-    
-    while size >= min_size:
-        try:
-            font = ImageFont.truetype(font_path, size)
-            lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines)
-            
-            if not lines:
-                size -= 2
-                continue
-            
-            bbox = draw.textbbox((0, 0), "A", font=font)
-            line_height = bbox[3] - bbox[1]
-            total_h = len(lines) * line_height + (len(lines) - 1) * line_spacing
-            
-            if total_h <= max_block_h:
-                best_font = font
-                best_lines = lines
-                best_line_height = line_height
-                break
-            size -= 2
-        except:
-            size -= 2
-    
-    if best_font is None:
-        best_font = ImageFont.truetype(font_path, min_size)
-        best_lines, _ = wrap_text_uniform(draw, text, best_font, safe_w, max_lines)
-        bbox = draw.textbbox((0, 0), "A", font=best_font)
-        best_line_height = bbox[3] - bbox[1]
-    
-    return best_font, best_lines, best_line_height
 
 def crop_to_4x5(img: Image.Image) -> Image.Image:
     w, h = img.size
@@ -296,7 +254,7 @@ def font_size_kb(current_multiplier: float = 1.0):
     return kb
 
 # =========================
-# Шаблон "МН" (с регулировкой размера шрифта, текст по левому краю)
+# Шаблон "МН" (с РАБОТАЮЩЕЙ регулировкой размера шрифта)
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str,
                  text_position: str = TEXT_POSITION_TOP,
@@ -329,19 +287,47 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     
     title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
     
-    # Учитываем множитель размера шрифта
-    base_start_size = int(STANDARD_H * MN_FONT_START_PCT)
-    adjusted_start_size = int(base_start_size * font_size_multiplier)
-    min_size = max(12, int(16 * font_size_multiplier))
+    # === ОСНОВНАЯ ЛОГИКА РАЗМЕРА ШРИФТА С УЧЁТОМ МНОЖИТЕЛЯ ===
+    text = (title_text or "").strip().upper()
+    if not text:
+        text = " "
     
-    font, lines, line_height = fit_text_block_uniform(
-        draw=draw, text=title_text, font_path=FONT_MN,
-        safe_w=safe_w, max_block_h=title_max_h, max_lines=6,
-        start_size=adjusted_start_size, min_size=min_size,
-        line_spacing=MN_LINE_SPACING
-    )
+    # Базовый размер от высоты фото с учётом множителя
+    base_font_size = int(STANDARD_H * MN_FONT_START_PCT)
+    target_font_size = int(base_font_size * font_size_multiplier)
+    target_font_size = max(20, min(target_font_size, 140))
     
-    total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
+    # Пробуем подобрать шрифт
+    font = None
+    lines = []
+    line_height = 0
+    total_text_height = 0
+    
+    for size in range(target_font_size, 15, -2):
+        test_font = ImageFont.truetype(FONT_MN, size)
+        test_lines, _ = wrap_text_uniform(draw, text, test_font, safe_w, max_lines=6)
+        
+        if not test_lines:
+            continue
+        
+        bbox = draw.textbbox((0, 0), "A", font=test_font)
+        test_line_height = bbox[3] - bbox[1]
+        test_total_h = len(test_lines) * test_line_height + (len(test_lines) - 1) * MN_LINE_SPACING
+        
+        if test_total_h <= title_max_h:
+            font = test_font
+            lines = test_lines
+            line_height = test_line_height
+            total_text_height = test_total_h
+            break
+    
+    # Если ничего не подошло, берём минимальный
+    if font is None:
+        font = ImageFont.truetype(FONT_MN, 20)
+        lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines=6)
+        bbox = draw.textbbox((0, 0), "A", font=font)
+        line_height = bbox[3] - bbox[1]
+        total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
     
     if text_position == TEXT_POSITION_TOP:
         title_y = margin_top
@@ -392,16 +378,39 @@ def make_card_chp(photo_bytes: bytes, title_text: str,
     safe_w = STANDARD_W - 2 * margin_x
     
     title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
+    text = (title_text or "").strip().upper()
     
-    start_size = int(STANDARD_H * CHP_FONT_START_PCT)
-    font, lines, line_height = fit_text_block_uniform(
-        draw=draw, text=title_text, font_path=FONT_CHP,
-        safe_w=safe_w, max_block_h=title_max_h, max_lines=6,
-        start_size=start_size, min_size=16,
-        line_spacing=CHP_LINE_SPACING
-    )
+    # Подбор шрифта для ЧП ВМ
+    base_font_size = int(STANDARD_H * CHP_FONT_START_PCT)
+    font = None
+    lines = []
+    line_height = 0
+    total_h = 0
     
-    total_h = len(lines) * line_height + (len(lines) - 1) * CHP_LINE_SPACING
+    for size in range(base_font_size, 15, -2):
+        test_font = ImageFont.truetype(FONT_CHP, size)
+        test_lines, _ = wrap_text_uniform(draw, text, test_font, safe_w, max_lines=6)
+        
+        if not test_lines:
+            continue
+        
+        bbox = draw.textbbox((0, 0), "A", font=test_font)
+        test_line_height = bbox[3] - bbox[1]
+        test_total_h = len(test_lines) * test_line_height + (len(test_lines) - 1) * CHP_LINE_SPACING
+        
+        if test_total_h <= title_max_h:
+            font = test_font
+            lines = test_lines
+            line_height = test_line_height
+            total_h = test_total_h
+            break
+    
+    if font is None:
+        font = ImageFont.truetype(FONT_CHP, 20)
+        lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines=6)
+        bbox = draw.textbbox((0, 0), "A", font=font)
+        line_height = bbox[3] - bbox[1]
+        total_h = len(lines) * line_height + (len(lines) - 1) * CHP_LINE_SPACING
     
     if text_position == TEXT_POSITION_TOP:
         y = margin_top
@@ -441,15 +450,37 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     text_zone_bottom = int(band_h * AM_TEXT_ZONE_MARGIN_PCT)
     text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
     
-    start_size = int(STANDARD_H * AM_FONT_START_PCT)
-    font, lines, line_height = fit_text_block_uniform(
-        draw=draw, text=text, font_path=FONT_AM,
-        safe_w=safe_w, max_block_h=text_zone_h, max_lines=3,
-        start_size=start_size, min_size=20,
-        line_spacing=AM_LINE_SPACING
-    )
+    base_font_size = int(STANDARD_H * AM_FONT_START_PCT)
+    font = None
+    lines = []
+    line_height = 0
+    total_h = 0
     
-    total_h = len(lines) * line_height + (len(lines) - 1) * AM_LINE_SPACING
+    for size in range(base_font_size, 15, -2):
+        test_font = ImageFont.truetype(FONT_AM, size)
+        test_lines, _ = wrap_text_uniform(draw, text, test_font, safe_w, max_lines=3)
+        
+        if not test_lines:
+            continue
+        
+        bbox = draw.textbbox((0, 0), "A", font=test_font)
+        test_line_height = bbox[3] - bbox[1]
+        test_total_h = len(test_lines) * test_line_height + (len(test_lines) - 1) * AM_LINE_SPACING
+        
+        if test_total_h <= text_zone_h:
+            font = test_font
+            lines = test_lines
+            line_height = test_line_height
+            total_h = test_total_h
+            break
+    
+    if font is None:
+        font = ImageFont.truetype(FONT_AM, 20)
+        lines, _ = wrap_text_uniform(draw, text, font, safe_w, max_lines=3)
+        bbox = draw.textbbox((0, 0), "A", font=font)
+        line_height = bbox[3] - bbox[1]
+        total_h = len(lines) * line_height + (len(lines) - 1) * AM_LINE_SPACING
+    
     y = text_zone_top + max(0, (text_zone_h - total_h) // 2)
     
     for line in lines:
@@ -489,6 +520,7 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     canvas.paste(Image.new("RGB", (STORY_W, STORY_HEADER_H), STORY_PURPLE_COLOR), (0, STORY_PHOTO_H))
     draw.rectangle([0, STORY_PHOTO_H + STORY_HEADER_H, STORY_W, STORY_H], fill=(0, 0, 0))
     
+    # Заголовок
     title_font_size = STORY_TITLE_FONT_MAX
     title_font = ImageFont.truetype(FONT_MONTSERRAT, title_font_size)
     title_bbox = draw.textbbox((0, 0), title, font=title_font)
@@ -506,6 +538,7 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     title_y = STORY_PHOTO_H + (STORY_HEADER_H - title_h) // 2
     draw.text((title_x, title_y), title, font=title_font, fill="white")
     
+    # Основной текст
     body_font_size = STORY_BODY_FONT_MAX
     body_font = ImageFont.truetype(FONT_MONTSERRAT, body_font_size)
     
@@ -796,7 +829,7 @@ def cmd_start(message):
         message.chat.id,
         "👋 <b>Привет! Я бот для оформления постов</b>\n\n"
         "<b>📝 Доступные шаблоны:</b>\n"
-        "• 📰 МН — классический, текст по левому краю, регулировка шрифта\n"
+        "• 📰 МН — классический, текст по левому краю, РЕГУЛИРОВКА ШРИФТА (60-140%)\n"
         "• 🚨 ЧП ВМ — яркий, контрастный\n"
         "• ✨ АМ — с размытой верхней полосой\n"
         "• 📱 Сторис ФДР — формат историй\n\n"

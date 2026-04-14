@@ -40,6 +40,12 @@ MN_MARGIN_BOTTOM_PCT = 0.07
 MN_LINE_SPACING = 8
 MN_FOOTER_SIZE_PCT = 0.034
 
+# Константы для МН без текста
+MN_NO_TEXT_MARGIN_X_PCT = 0.06
+MN_NO_TEXT_MARGIN_TOP_PCT = 0.06
+MN_NO_TEXT_MARGIN_BOTTOM_PCT = 0.07
+MN_NO_TEXT_FOOTER_SIZE_PCT = 0.034
+
 # Константы для ЧП ВМ
 CHP_GRADIENT_PCT = 0.48
 CHP_BASE_FONT_SIZE = 103
@@ -178,7 +184,7 @@ def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 165
     out = Image.alpha_composite(base, overlay)
     return out.convert("RGB")
 
-def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
+def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -198,7 +204,7 @@ def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 
     out = Image.alpha_composite(base, overlay)
     return out.convert("RGB")
 
-def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
+def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -263,19 +269,102 @@ def font_size_kb(current_multiplier: float = 1.0):
 # =========================
 # Шаблон "МН" (ПРИНУДИТЕЛЬНЫЙ РАЗМЕР ШРИФТА)
 # =========================
-def make_card_mn(photo_bytes: bytes, title_text: str,
-                 text_position: str = TEXT_POSITION_TOP,
-                 font_size_multiplier: float = 1.0) -> BytesIO:
+def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, is_square: bool = False) -> BytesIO:
+    """Шаблон МН - классический с затемнением и логотипом MINSK NEWS"""
+    ensure_fonts()
+
+    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+    
+    if is_square:
+        img = crop_to_square(img)
+        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), resample=Image.Resampling.LANCZOS)
+    else:
+        img = crop_to_4x5(img)
+        img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
+    
+    # Затемнение 0.55 как в оригинале
+    img = ImageEnhance.Brightness(img).enhance(0.55)
+    
+    # Добавляем градиент
+    if text_position == TEXT_POSITION_TOP:
+        img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
+    else:
+        img = apply_bottom_gradient_soft(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
+    
+    draw = ImageDraw.Draw(img)
+
+    margin_x = int(img.width * 0.06)
+    margin_top = int(img.height * 0.06)
+    margin_bottom = int(img.height * 0.07)
+    safe_w = img.width - 2 * margin_x
+
+    # Футер MINSK NEWS
+    footer_size = max(24, int(img.height * 0.034))
+    footer_font = ImageFont.truetype(FONT_MN, footer_size)
+    fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
+    footer_w = fb[2] - fb[0]
+    footer_h = fb[3] - fb[1]
+    
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    text = (title_text or "").strip().upper()
+
+    # Подбор шрифта с помощью fit_text_block
+    font, lines, heights, spacing, total_text_height = fit_text_block(
+        draw=draw,
+        text=text,
+        font_path=FONT_MN,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+
+    # Вычисляем ширину блока и центрируем
+    block_w = 0
+    for ln in lines:
+        block_w = max(block_w, text_width(draw, ln, font))
+    block_x = (img.width - block_w) // 2
+    block_x = max(margin_x, block_x)
+
+    # Позиционируем текст и футер
+    if text_position == TEXT_POSITION_TOP:
+        title_y = margin_top
+        footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
+    else:
+        title_y = img.height - margin_bottom - total_text_height - 10
+        footer_y = 10
+
+    y = title_y
+    for i, ln in enumerate(lines):
+        draw.text((block_x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+
+    footer_x = (img.width - footer_w) // 2
+    draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
+
+    out = BytesIO()
+    img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
+    out.seek(0)
+    return out
+# =========================
+# Шаблон "МН без текста"
+# =========================
+def make_card_mn_no_text(photo_bytes: bytes, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
+    """Шаблон МН без заголовка - только затемнение и логотип MINSK NEWS"""
     ensure_fonts()
     
-    logger.info(f"=== make_card_mn: multiplier = {font_size_multiplier} ===")
+    logger.info(f"=== make_card_mn_no_text: position = {text_position} ===")
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((STANDARD_W, STANDARD_H), Image.Resampling.LANCZOS)
     
+    # Затемнение как в МН
     img = ImageEnhance.Brightness(img).enhance(0.55)
     
+    # Градиент как в МН
     if text_position == TEXT_POSITION_TOP:
         img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
     else:
@@ -283,117 +372,24 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     
     draw = ImageDraw.Draw(img)
     
-    margin_x = int(STANDARD_W * MN_MARGIN_X_PCT)
-    margin_top = int(STANDARD_H * MN_MARGIN_TOP_PCT)
-    margin_bottom = int(STANDARD_H * MN_MARGIN_BOTTOM_PCT)
-    safe_w = STANDARD_W - 2 * margin_x
+    margin_bottom = int(STANDARD_H * MN_NO_TEXT_MARGIN_BOTTOM_PCT)
+    margin_top = int(STANDARD_H * MN_NO_TEXT_MARGIN_TOP_PCT)
     
-    # Футер
-    footer_size = max(24, int(STANDARD_H * MN_FOOTER_SIZE_PCT))
+    # Футер MINSK NEWS
+    footer_size = max(24, int(STANDARD_H * MN_NO_TEXT_FOOTER_SIZE_PCT))
     footer_font = ImageFont.truetype(FONT_MN, footer_size)
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
     footer_w = fb[2] - fb[0]
     footer_h = fb[3] - fb[1]
     
-    text = (title_text or "").strip().upper()
-    if not text:
-        text = " "
-    
-    # Определяем доступное пространство для текста
+    # Позиционируем футер
     if text_position == TEXT_POSITION_TOP:
-        max_text_height = STANDARD_H - margin_top - margin_bottom - footer_h - 30
-        max_lines_allowed = 5
-    else:
-        max_text_height = STANDARD_H - margin_top - margin_bottom - footer_h - 30
-        max_lines_allowed = 5
-    
-    # Сначала определяем оптимальное количество строк (3-5 в зависимости от длины)
-    word_count = len(text.split())
-    if word_count <= 4:
-        target_lines = 1
-    elif word_count <= 8:
-        target_lines = 2
-    elif word_count <= 15:
-        target_lines = 3
-    elif word_count <= 25:
-        target_lines = 4
-    else:
-        target_lines = 5
-    
-    logger.info(f"Words: {word_count}, target lines: {target_lines}")
-    
-    # Подбираем размер шрифта, чтобы текст поместился в нужное количество строк
-    font = None
-    lines = []
-    line_height = 0
-    total_text_height = 0
-    optimal_size = 40
-    
-    # Пробуем разные размеры шрифта от большого к маленькому
-    for size in range(120, 39, -2):
-        test_font = ImageFont.truetype(FONT_MN, size)
-        # Пытаемся уместить в target_lines строк
-        test_lines = wrap_text(draw, text, test_font, safe_w, max_lines=target_lines)
-        
-        if len(test_lines) <= target_lines:
-            bbox = draw.textbbox((0, 0), "A", font=test_font)
-            test_line_height = bbox[3] - bbox[1]
-            test_total_h = len(test_lines) * test_line_height + (len(test_lines) - 1) * MN_LINE_SPACING
-            
-            # Проверяем, помещается ли по высоте
-            if test_total_h <= max_text_height:
-                font = test_font
-                lines = test_lines
-                line_height = test_line_height
-                total_text_height = test_total_h
-                optimal_size = size
-                logger.info(f"Found optimal: size={size}px, lines={len(lines)}, height={test_total_h}/{max_text_height}")
-                break
-    
-    # Если ничего не подошло, берем минимальный размер
-    if font is None:
-        font = ImageFont.truetype(FONT_MN, 40)
-        lines = wrap_text(draw, text, font, safe_w, max_lines=target_lines)
-        bbox = draw.textbbox((0, 0), "A", font=font)
-        line_height = bbox[3] - bbox[1]
-        total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
-        logger.warning(f"Using fallback: size=40px, lines={len(lines)}")
-    
-    # Применяем множитель пользователя (но не больше 1.2 и не меньше 0.8 для безопасности)
-    safe_multiplier = max(0.8, min(1.2, font_size_multiplier))
-    if safe_multiplier != font_size_multiplier:
-        logger.info(f"Adjusted multiplier from {font_size_multiplier} to {safe_multiplier}")
-    
-    final_size = int(optimal_size * safe_multiplier)
-    final_size = max(35, min(130, final_size))  # Ограничиваем диапазон
-    
-    if final_size != optimal_size:
-        font = ImageFont.truetype(FONT_MN, final_size)
-        # Пересчитываем строки с новым размером
-        lines = wrap_text(draw, text, font, safe_w, max_lines=target_lines)
-        bbox = draw.textbbox((0, 0), "A", font=font)
-        line_height = bbox[3] - bbox[1]
-        total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
-        logger.info(f"Applied multiplier: final_size={final_size}px")
-    
-    # Позиционируем текст
-    if text_position == TEXT_POSITION_TOP:
-        title_y = margin_top
+        # Если градиент сверху - футер снизу
         footer_y = STANDARD_H - margin_bottom - footer_h
     else:
-        title_y = STANDARD_H - margin_bottom - total_text_height
+        # Если градиент снизу - футер сверху
         footer_y = margin_top
     
-    # Центрируем текст по горизонтали
-    y = title_y
-    
-    for line in lines:
-        line_w = text_width(draw, line, font)
-        x = (STANDARD_W - line_w) // 2  # Центрирование
-        draw.text((x, y), line, font=font, fill="white")
-        y += line_height + MN_LINE_SPACING
-    
-    # Футер по центру
     footer_x = (STANDARD_W - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
     
@@ -401,7 +397,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
     return out
-                     
+
 # =========================
 # Шаблон "ЧП ВМ"
 # =========================
@@ -430,7 +426,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str,
     text = (title_text or "").strip().upper()
     title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
     
-    # Подбор шрифта для ЧП ВМ
     font = None
     lines = []
     line_height = 0
@@ -650,7 +645,9 @@ def make_card(photo_bytes: bytes, title_text: str, template: str,
         return make_card_am(photo_bytes, title_text)
     elif template == "FDR_STORY":
         return make_card_fdr_story(photo_bytes, title_text, body_text)
-    else:
+    elif template == "MN_NO_TEXT":
+        return make_card_mn_no_text(photo_bytes, text_position)
+    else:  # MN
         return make_card_mn(photo_bytes, title_text, text_position, font_size_multiplier)
 
 # =========================
@@ -665,6 +662,7 @@ def template_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📰 МН", callback_data="tpl:MN"),
+        InlineKeyboardButton("🚫 МН без текста", callback_data="tpl:MN_NO_TEXT"),
         InlineKeyboardButton("🚨 ЧП ВМ", callback_data="tpl:CHP"),
         InlineKeyboardButton("✨ АМ", callback_data="tpl:AM"),
         InlineKeyboardButton("📱 Сторис ФДР", callback_data="tpl:FDR_STORY")
@@ -685,6 +683,15 @@ def preview_kb():
         InlineKeyboardButton("✅ Опубликовать", callback_data="publish"),
         InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body"),
         InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel")
+    )
+    return kb
+
+def preview_kb_no_text():
+    """Клавиатура для шаблона без текста (только публикация и отмена)"""
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("✅ Опубликовать", callback_data="publish_no_text"),
         InlineKeyboardButton("❌ Отмена", callback_data="cancel")
     )
     return kb
@@ -727,7 +734,6 @@ def on_font_size(c):
         )
         return
     
-    # Обработка числового значения (0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4)
     try:
         new_mult = float(action)
         new_mult = max(0.6, min(1.4, new_mult))
@@ -755,7 +761,13 @@ def on_template_select(c):
     st["template"] = template
     user_state[uid] = st
     
-    names = {"MN": "МН", "CHP": "ЧП ВМ", "AM": "АМ", "FDR_STORY": "Сторис ФДР"}
+    names = {
+        "MN": "МН", 
+        "MN_NO_TEXT": "МН без текста",
+        "CHP": "ЧП ВМ", 
+        "AM": "АМ", 
+        "FDR_STORY": "Сторис ФДР"
+    }
     name = names.get(template, template)
     
     if template == "MN":
@@ -771,6 +783,17 @@ def on_template_select(c):
             f"140% - крупный",
             c.message.chat.id, c.message.message_id,
             parse_mode="HTML", reply_markup=font_size_kb(1.0)
+        )
+    elif template == "MN_NO_TEXT":
+        st["step"] = "waiting_text_position_no_text"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, f"Шаблон {name} выбран ✅")
+        bot.edit_message_text(
+            f"🚫 Выбран шаблон <b>{name}</b>\n\n"
+            f"На фото будет только затемнение и логотип MINSK NEWS.\n\n"
+            f"📐 Выбери расположение градиента:",
+            c.message.chat.id, c.message.message_id,
+            parse_mode="HTML", reply_markup=text_position_kb()
         )
     elif template in ["CHP"]:
         st["step"] = "waiting_text_position"
@@ -804,17 +827,27 @@ def on_text_position(c):
     position = c.data.split(":", 1)[1]
     st = user_state.get(uid) or {}
     st["text_position"] = position
-    st["step"] = "waiting_photo"
-    user_state[uid] = st
+    template = st.get("template", "MN")
     
     pos_text = "сверху" if position == "top" else "снизу"
-    bot.answer_callback_query(c.id, f"Текст будет {pos_text} ✅")
-    bot.edit_message_text(
-        f"✅ Текст будет расположен <b>{pos_text}</b> фотографии.\n\nТеперь пришли фото 📷",
-        c.message.chat.id, c.message.message_id, parse_mode="HTML"
-    )
+    bot.answer_callback_query(c.id, f"Градиент будет {pos_text} ✅")
+    
+    if template == "MN_NO_TEXT":
+        st["step"] = "waiting_photo_no_text"
+        user_state[uid] = st
+        bot.edit_message_text(
+            f"✅ Градиент будет расположен <b>{pos_text}</b> фотографии.\n\nТеперь пришли фото 📷",
+            c.message.chat.id, c.message.message_id, parse_mode="HTML"
+        )
+    else:
+        st["step"] = "waiting_photo"
+        user_state[uid] = st
+        bot.edit_message_text(
+            f"✅ Текст будет расположен <b>{pos_text}</b> фотографии.\n\nТеперь пришли фото 📷",
+            c.message.chat.id, c.message.message_id, parse_mode="HTML"
+        )
 
-@bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_body", "edit_title", "cancel"])
+@bot.callback_query_handler(func=lambda c: c.data in ["publish", "publish_no_text", "edit_body", "edit_title", "cancel"])
 def on_action(call):
     uid = call.from_user.id
     st = user_state.get(uid)
@@ -832,6 +865,18 @@ def on_action(call):
             
             if CHANNEL:
                 bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
+                bot.answer_callback_query(call.id, "Опубликовано ✅")
+                bot.send_message(call.message.chat.id, "✅ Готово!", reply_markup=main_menu_kb())
+            else:
+                bot.answer_callback_query(call.id, "❌ CHANNEL_USERNAME не задан")
+            clear_state(uid)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"❌ Ошибка: {e}")
+    
+    elif call.data == "publish_no_text":
+        try:
+            if CHANNEL:
+                bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), reply_markup=channel_kb())
                 bot.answer_callback_query(call.id, "Опубликовано ✅")
                 bot.send_message(call.message.chat.id, "✅ Готово!", reply_markup=main_menu_kb())
             else:
@@ -880,6 +925,7 @@ def cmd_start(message):
         "👋 <b>Привет! Я бот для оформления постов</b>\n\n"
         "<b>📝 Доступные шаблоны:</b>\n"
         "• 📰 МН — классический, текст по левому краю, РЕГУЛИРОВКА ШРИФТА (60-140%)\n"
+        "• 🚫 МН без текста — только затемнение и логотип\n"
         "• 🚨 ЧП ВМ — яркий, контрастный\n"
         "• ✨ АМ — с размытой верхней полосой\n"
         "• 📱 Сторис ФДР — формат историй\n\n"
@@ -900,7 +946,7 @@ def on_photo(message):
     st = user_state.get(uid) or {}
     step = st.get("step")
     
-    if step in ["waiting_photo", "waiting_photo_fdr_story"]:
+    if step in ["waiting_photo", "waiting_photo_fdr_story", "waiting_photo_no_text"]:
         try:
             file_id = message.photo[-1].file_id
             file_info = bot.get_file(file_id)
@@ -912,6 +958,26 @@ def on_photo(message):
                 st["step"] = "waiting_title_fdr"
                 user_state[uid] = st
                 bot.reply_to(message, "📸 Фото сохранено!\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b> для сторис:", parse_mode="HTML")
+            elif step == "waiting_photo_no_text":
+                # Для шаблона МН без текста - сразу создаем картинку
+                try:
+                    template = st.get("template", "MN_NO_TEXT")
+                    card = make_card(
+                        st["photo_bytes"], "", template,
+                        text_position=st.get("text_position", TEXT_POSITION_TOP)
+                    )
+                    st["card_bytes"] = card.getvalue()
+                    st["step"] = "waiting_action"
+                    user_state[uid] = st
+                    bot.send_photo(
+                        message.chat.id, photo=BytesIO(st["card_bytes"]),
+                        caption="✅ Пост готов!\n\nНажми кнопку под фото для публикации.",
+                        reply_markup=preview_kb_no_text()
+                    )
+                    bot.reply_to(message, "🎉 <b>Превью готово!</b>\n\nНажми кнопку под фото.", parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"Error: {e}")
+                    bot.reply_to(message, f"❌ Ошибка: {e}")
             else:
                 st["step"] = "waiting_title"
                 user_state[uid] = st
@@ -1007,8 +1073,8 @@ def on_text(message):
         bot.send_message(message.chat.id, "📝 Выбери шаблон кнопками выше ☝️")
         return
     
-    if st.get("step") == "waiting_text_position":
-        bot.send_message(message.chat.id, "📐 Выбери расположение текста кнопками выше ☝️")
+    if st.get("step") in ["waiting_text_position", "waiting_text_position_no_text"]:
+        bot.send_message(message.chat.id, "📐 Выбери расположение градиента кнопками выше ☝️")
         return
     
     bot.send_message(message.chat.id, "📝 Нажми «Оформить пост»", reply_markup=main_menu_kb())

@@ -28,7 +28,7 @@ if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
 
 # Размеры
-STANDARD_W, STANDARD_H = 750, 936  # Исправлено с 938 на 936
+STANDARD_W, STANDARD_H = 750, 936
 STORY_W, STORY_H = 720, 1280
 
 # Константы для МН
@@ -315,7 +315,7 @@ def font_size_kb(current_multiplier: float = 1.0):
     return kb
 
 # =========================
-# Шаблон "МН" - исправленный с настройками из полного бота
+# Шаблон "МН"
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str,
                  text_position: str = TEXT_POSITION_TOP,
@@ -354,7 +354,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     
     title_max_h = int(STANDARD_H * MN_TITLE_ZONE_PCT)
     
-    # Используем fit_text_block для подбора шрифта
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
         text=text,
@@ -367,33 +366,28 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
         line_spacing_ratio=0.22
     )
     
-    # Применяем множитель пользователя
     safe_multiplier = max(0.8, min(1.2, font_size_multiplier))
     final_size = int(font.size * safe_multiplier)
     final_size = max(35, min(130, final_size))
     
     if final_size != font.size:
         font = ImageFont.truetype(FONT_MN, final_size)
-        lines, heights, spacing, total_text_height = fit_text_block(
-            draw=draw,
-            text=text,
-            font_path=FONT_MN,
-            safe_w=safe_w,
-            max_block_h=title_max_h,
-            max_lines=6,
-            start_size=final_size,
-            min_size=16,
-            line_spacing_ratio=0.22
-        )[1:]
+        lines = wrap_no_truncate(draw, text, font, safe_w, max_lines=6)[0]
+        heights = []
+        total_text_height = 0
+        for ln in lines:
+            bb = draw.textbbox((0, 0), ln, font=font)
+            lh = bb[3] - bb[1]
+            heights.append(lh)
+            total_text_height += lh
+        total_text_height += spacing * (len(lines) - 1)
     
-    # Центрируем текст
     block_w = 0
     for ln in lines:
         block_w = max(block_w, text_width(draw, ln, font))
     block_x = (STANDARD_W - block_w) // 2
     block_x = max(margin_x, block_x)
     
-    # Позиционируем текст
     if text_position == TEXT_POSITION_TOP:
         title_y = margin_top
         footer_y = STANDARD_H - margin_bottom + (margin_bottom - footer_h) // 2
@@ -418,7 +412,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
 # Шаблон "МН без текста"
 # =========================
 def make_card_mn_no_text(photo_bytes: bytes, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
-    """Шаблон МН без заголовка - только затемнение и логотип MINSK NEWS"""
     ensure_fonts()
     
     logger.info(f"=== make_card_mn_no_text: position = {text_position} ===")
@@ -427,10 +420,8 @@ def make_card_mn_no_text(photo_bytes: bytes, text_position: str = TEXT_POSITION_
     img = crop_to_4x5(img)
     img = img.resize((STANDARD_W, STANDARD_H), Image.Resampling.LANCZOS)
     
-    # Затемнение как в МН
     img = ImageEnhance.Brightness(img).enhance(0.55)
     
-    # Градиент как в МН
     if text_position == TEXT_POSITION_TOP:
         img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
     else:
@@ -441,14 +432,12 @@ def make_card_mn_no_text(photo_bytes: bytes, text_position: str = TEXT_POSITION_
     margin_bottom = int(STANDARD_H * MN_NO_TEXT_MARGIN_BOTTOM_PCT)
     margin_top = int(STANDARD_H * MN_NO_TEXT_MARGIN_TOP_PCT)
     
-    # Футер MINSK NEWS
     footer_size = max(24, int(STANDARD_H * MN_NO_TEXT_FOOTER_SIZE_PCT))
     footer_font = ImageFont.truetype(FONT_MN, footer_size)
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
     footer_w = fb[2] - fb[0]
     footer_h = fb[3] - fb[1]
     
-    # Позиционируем футер как в МН
     if text_position == TEXT_POSITION_TOP:
         footer_y = STANDARD_H - margin_bottom + (margin_bottom - footer_h) // 2
     else:
@@ -540,10 +529,15 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     text_zone_bottom = int(band_h * AM_TEXT_ZONE_MARGIN_PCT)
     text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
     
+    font_path = FONT_AM
+    if not os.path.exists(font_path):
+        logger.warning(f"Font {font_path} not found, using {FONT_MN} instead")
+        font_path = FONT_MN
+    
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
         text=text,
-        font_path=FONT_AM,
+        font_path=font_path,
         safe_w=safe_w,
         max_block_h=text_zone_h,
         max_lines=3,
@@ -552,48 +546,62 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
         line_spacing_ratio=0.16
     )
     
-    # Загружаем дополнительный шрифт для символов (Montserrat-Black из ЧП ВМ)
-    special_font = ImageFont.truetype(FONT_CHP, font.size)
+    special_font_path = FONT_CHP
+    if not os.path.exists(special_font_path):
+        special_font = font
+    else:
+        special_font = ImageFont.truetype(special_font_path, font.size)
     
     y = text_zone_top + max(0, (text_zone_h - total_h) // 2)
     
     for i, ln in enumerate(lines):
-        # Разбиваем строку на части для обработки специальных символов
         parts = []
         current_text = ""
         
         for char in ln:
-            if char == '%' or char == '"':
+            if char == '%':
                 if current_text:
                     parts.append(('normal', current_text))
                     current_text = ""
-                parts.append(('special', char))
+                parts.append(('percent', char))
+            elif char == '"':
+                if current_text:
+                    parts.append(('normal', current_text))
+                    current_text = ""
+                parts.append(('quote', char))
             else:
                 current_text += char
         
         if current_text:
             parts.append(('normal', current_text))
         
-        # Вычисляем ширину всей строки
         line_w = 0
         for part_type, part_text in parts:
             if part_type == 'normal':
                 line_w += text_width(draw, part_text, font)
-            else:
+            elif part_type == 'percent':
                 line_w += text_width(draw, part_text, special_font)
+            else:
+                line_w += text_width(draw, part_text, font)
         
-        # Центрируем строку
         x = (STANDARD_W - line_w) // 2
         
-        # Рисуем части строки
         current_x = x
         for part_type, part_text in parts:
             if part_type == 'normal':
                 draw.text((current_x, y), part_text, font=font, fill="white")
                 current_x += text_width(draw, part_text, font)
-            else:
-                draw.text((current_x, y), part_text, font=special_font, fill="white")
+            elif part_type == 'percent':
+                bbox = draw.textbbox((0, 0), part_text, font=special_font)
+                char_height = bbox[3] - bbox[1]
+                normal_bbox = draw.textbbox((0, 0), "A", font=font)
+                normal_height = normal_bbox[3] - normal_bbox[1]
+                y_offset = (normal_height - char_height) // 2
+                draw.text((current_x, y + y_offset), part_text, font=special_font, fill="white")
                 current_x += text_width(draw, part_text, special_font)
+            else:
+                draw.text((current_x, y), part_text, font=font, fill="white")
+                current_x += text_width(draw, part_text, font)
         
         y += heights[i] + spacing
     
@@ -712,7 +720,7 @@ def make_card(photo_bytes: bytes, title_text: str, template: str,
         return make_card_fdr_story(photo_bytes, title_text, body_text)
     elif template == "MN_NO_TEXT":
         return make_card_mn_no_text(photo_bytes, text_position)
-    else:  # MN
+    else:
         return make_card_mn(photo_bytes, title_text, text_position, font_size_multiplier)
 
 # =========================
@@ -753,7 +761,6 @@ def preview_kb():
     return kb
 
 def preview_kb_no_text():
-    """Клавиатура для шаблона без текста (только публикация и отмена)"""
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("✅ Опубликовать", callback_data="publish_no_text"),
@@ -877,7 +884,7 @@ def on_template_select(c):
             f"📱 Выбран шаблон <b>{name}</b>\n\n📸 Пришли фото для сторис.\n\n<i>Дальше:</i>\n1️⃣ Заголовок\n2️⃣ Текст",
             c.message.chat.id, c.message.message_id, parse_mode="HTML"
         )
-    else:  # AM
+    else:
         st["step"] = "waiting_photo"
         user_state[uid] = st
         bot.answer_callback_query(c.id, f"Шаблон {name} выбран ✅")

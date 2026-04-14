@@ -288,6 +288,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     margin_bottom = int(STANDARD_H * MN_MARGIN_BOTTOM_PCT)
     safe_w = STANDARD_W - 2 * margin_x
     
+    # Футер
     footer_size = max(24, int(STANDARD_H * MN_FOOTER_SIZE_PCT))
     footer_font = ImageFont.truetype(FONT_MN, footer_size)
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
@@ -298,54 +299,82 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     if not text:
         text = " "
     
-    # Определяем максимально доступное пространство для текста
+    # Определяем доступное пространство для текста
     if text_position == TEXT_POSITION_TOP:
-        max_text_height = STANDARD_H - margin_top - margin_bottom - footer_h - 20
+        max_text_height = STANDARD_H - margin_top - margin_bottom - footer_h - 30
+        max_lines_allowed = 5
     else:
-        max_text_height = STANDARD_H - margin_top - margin_bottom - footer_h - 20
+        max_text_height = STANDARD_H - margin_top - margin_bottom - footer_h - 30
+        max_lines_allowed = 5
     
-    # Начинаем с целевого размера шрифта
-    target_size = int(MN_BASE_FONT_SIZE * font_size_multiplier)
-    target_size = max(40, target_size)
+    # Сначала определяем оптимальное количество строк (3-5 в зависимости от длины)
+    word_count = len(text.split())
+    if word_count <= 4:
+        target_lines = 1
+    elif word_count <= 8:
+        target_lines = 2
+    elif word_count <= 15:
+        target_lines = 3
+    elif word_count <= 25:
+        target_lines = 4
+    else:
+        target_lines = 5
     
-    logger.info(f"Starting font search from size: {target_size}px")
+    logger.info(f"Words: {word_count}, target lines: {target_lines}")
     
-    # Подбираем оптимальный размер шрифта, чтобы текст влезал
+    # Подбираем размер шрифта, чтобы текст поместился в нужное количество строк
     font = None
     lines = []
     line_height = 0
     total_text_height = 0
-    optimal_size = target_size
+    optimal_size = 40
     
-    # Пробуем уменьшать шрифт, пока текст не влезет (но не меньше 40px)
-    for size in range(target_size, 39, -2):
+    # Пробуем разные размеры шрифта от большого к маленькому
+    for size in range(120, 39, -2):
         test_font = ImageFont.truetype(FONT_MN, size)
-        test_lines = wrap_text(draw, text, test_font, safe_w, max_lines=5)
+        # Пытаемся уместить в target_lines строк
+        test_lines = wrap_text(draw, text, test_font, safe_w, max_lines=target_lines)
         
-        if not test_lines:
-            continue
-        
-        bbox = draw.textbbox((0, 0), "A", font=test_font)
-        test_line_height = bbox[3] - bbox[1]
-        test_total_h = len(test_lines) * test_line_height + (len(test_lines) - 1) * MN_LINE_SPACING
-        
-        if test_total_h <= max_text_height:
-            font = test_font
-            lines = test_lines
-            line_height = test_line_height
-            total_text_height = test_total_h
-            optimal_size = size
-            logger.info(f"Found optimal font size: {size}px, text height: {test_total_h}/{max_text_height}")
-            break
+        if len(test_lines) <= target_lines:
+            bbox = draw.textbbox((0, 0), "A", font=test_font)
+            test_line_height = bbox[3] - bbox[1]
+            test_total_h = len(test_lines) * test_line_height + (len(test_lines) - 1) * MN_LINE_SPACING
+            
+            # Проверяем, помещается ли по высоте
+            if test_total_h <= max_text_height:
+                font = test_font
+                lines = test_lines
+                line_height = test_line_height
+                total_text_height = test_total_h
+                optimal_size = size
+                logger.info(f"Found optimal: size={size}px, lines={len(lines)}, height={test_total_h}/{max_text_height}")
+                break
     
-    # Если даже минимальный шрифт не влезает, используем минимальный и обрезаем строки
+    # Если ничего не подошло, берем минимальный размер
     if font is None:
         font = ImageFont.truetype(FONT_MN, 40)
-        lines = wrap_text(draw, text, font, safe_w, max_lines=4)  # Уменьшаем макс. строк
+        lines = wrap_text(draw, text, font, safe_w, max_lines=target_lines)
         bbox = draw.textbbox((0, 0), "A", font=font)
         line_height = bbox[3] - bbox[1]
         total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
-        logger.warning(f"Using min font 40px, lines truncated to {len(lines)}")
+        logger.warning(f"Using fallback: size=40px, lines={len(lines)}")
+    
+    # Применяем множитель пользователя (но не больше 1.2 и не меньше 0.8 для безопасности)
+    safe_multiplier = max(0.8, min(1.2, font_size_multiplier))
+    if safe_multiplier != font_size_multiplier:
+        logger.info(f"Adjusted multiplier from {font_size_multiplier} to {safe_multiplier}")
+    
+    final_size = int(optimal_size * safe_multiplier)
+    final_size = max(35, min(130, final_size))  # Ограничиваем диапазон
+    
+    if final_size != optimal_size:
+        font = ImageFont.truetype(FONT_MN, final_size)
+        # Пересчитываем строки с новым размером
+        lines = wrap_text(draw, text, font, safe_w, max_lines=target_lines)
+        bbox = draw.textbbox((0, 0), "A", font=font)
+        line_height = bbox[3] - bbox[1]
+        total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
+        logger.info(f"Applied multiplier: final_size={final_size}px")
     
     # Позиционируем текст
     if text_position == TEXT_POSITION_TOP:
@@ -355,15 +384,16 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
         title_y = STANDARD_H - margin_bottom - total_text_height
         footer_y = margin_top
     
-    # Рисуем текст
+    # Центрируем текст по горизонтали
     y = title_y
-    x = margin_x
     
     for line in lines:
+        line_w = text_width(draw, line, font)
+        x = (STANDARD_W - line_w) // 2  # Центрирование
         draw.text((x, y), line, font=font, fill="white")
         y += line_height + MN_LINE_SPACING
     
-    # Рисуем футер
+    # Футер по центру
     footer_x = (STANDARD_W - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
     
@@ -371,7 +401,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
     return out
-
+                     
 # =========================
 # Шаблон "ЧП ВМ"
 # =========================

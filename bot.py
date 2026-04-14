@@ -473,65 +473,97 @@ def make_card_chp(photo_bytes: bytes, title_text: str,
 # =========================
 # Шаблон "АМ"
 # =========================
-def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
+def make_card_am(photo_bytes: bytes, title_text: str, is_square: bool = False) -> BytesIO:
+    """Шаблон АМ с выделением % и кавычек шрифтом Montserrat-Black"""
     ensure_fonts()
-    
+
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    img = crop_to_4x5(img)
-    img = img.resize((STANDARD_W, STANDARD_H), Image.Resampling.LANCZOS)
+    
+    if is_square:
+        img = crop_to_square(img)
+        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), resample=Image.Resampling.LANCZOS)
+    else:
+        img = crop_to_4x5(img)
+        img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
     
     img = apply_top_blur_band(img)
-    
+
     draw = ImageDraw.Draw(img)
-    
-    margin_x = int(STANDARD_W * AM_MARGIN_X_PCT)
-    band_h = int(STANDARD_H * AM_TOP_BLUR_PCT)
-    safe_w = STANDARD_W - 2 * margin_x
-    
+
+    margin_x = int(img.width * 0.055)
+    band_h = int(img.height * AM_TOP_BLUR_PCT)
+    safe_w = img.width - 2 * margin_x
     text = (title_text or "").strip().upper()
-    
-    text_zone_top = int(band_h * AM_TEXT_ZONE_MARGIN_PCT)
-    text_zone_bottom = int(band_h * AM_TEXT_ZONE_MARGIN_PCT)
+
+    text_zone_top = int(band_h * 0.12)
+    text_zone_bottom = int(band_h * 0.12)
     text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
+
+    # Подбираем основной шрифт (IntroInline)
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text,
+        font_path=FONT_AM,
+        safe_w=safe_w,
+        max_block_h=text_zone_h,
+        max_lines=3,
+        start_size=int(img.height * 0.060),
+        min_size=20,
+        line_spacing_ratio=0.16
+    )
     
-    font = None
-    lines = []
-    line_height = 0
-    total_h = 0
-    
-    for size in range(AM_BASE_FONT_SIZE, 20, -2):
-        test_font = ImageFont.truetype(FONT_AM, size)
-        test_lines = wrap_text(draw, text, test_font, safe_w, max_lines=3)
-        
-        if not test_lines:
-            continue
-        
-        bbox = draw.textbbox((0, 0), "A", font=test_font)
-        test_line_height = bbox[3] - bbox[1]
-        test_total_h = len(test_lines) * test_line_height + (len(test_lines) - 1) * AM_LINE_SPACING
-        
-        if test_total_h <= text_zone_h:
-            font = test_font
-            lines = test_lines
-            line_height = test_line_height
-            total_h = test_total_h
-            break
-    
-    if font is None:
-        font = ImageFont.truetype(FONT_AM, 30)
-        lines = wrap_text(draw, text, font, safe_w, max_lines=3)
-        bbox = draw.textbbox((0, 0), "A", font=font)
-        line_height = bbox[3] - bbox[1]
-        total_h = len(lines) * line_height + (len(lines) - 1) * AM_LINE_SPACING
-    
+    # Загружаем дополнительный шрифт для символов (Montserrat-Black)
+    special_font = ImageFont.truetype(FONT_CHP, font.size)
+
     y = text_zone_top + max(0, (text_zone_h - total_h) // 2)
     
-    for line in lines:
-        line_w = text_width(draw, line, font)
-        x = (STANDARD_W - line_w) // 2
-        draw.text((x, y), line, font=font, fill="white")
-        y += line_height + AM_LINE_SPACING
-    
+    for i, ln in enumerate(lines):
+        # Разбиваем строку на части для обработки специальных символов
+        parts = []
+        current_text = ""
+        
+        j = 0
+        while j < len(ln):
+            char = ln[j]
+            # Проверяем на % или кавычки
+            if char == '%' or char == '"':
+                # Сохраняем накопленный текст
+                if current_text:
+                    parts.append(('normal', current_text))
+                    current_text = ""
+                # Добавляем специальный символ отдельно
+                parts.append(('special', char))
+            else:
+                current_text += char
+            j += 1
+        
+        # Добавляем остаток текста
+        if current_text:
+            parts.append(('normal', current_text))
+        
+        # Вычисляем ширину всей строки
+        line_w = 0
+        for part_type, part_text in parts:
+            if part_type == 'normal':
+                line_w += text_width(draw, part_text, font)
+            else:
+                line_w += text_width(draw, part_text, special_font)
+        
+        # Центрируем строку
+        x = (img.width - line_w) // 2
+        
+        # Рисуем части строки
+        current_x = x
+        for part_type, part_text in parts:
+            if part_type == 'normal':
+                draw.text((current_x, y), part_text, font=font, fill="white")
+                current_x += text_width(draw, part_text, font)
+            else:
+                draw.text((current_x, y), part_text, font=special_font, fill="white")
+                current_x += text_width(draw, part_text, special_font)
+        
+        y += heights[i] + spacing
+
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)

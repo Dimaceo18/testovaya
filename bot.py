@@ -298,36 +298,64 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
     if not text:
         text = " "
     
-    # === ПРИНУДИТЕЛЬНЫЙ РАЗМЕР ШРИФТА ===
-    # Расчёт размера: базовый 103px * множитель
+    # Определяем максимально доступное пространство для текста
+    if text_position == TEXT_POSITION_TOP:
+        max_text_height = STANDARD_H - margin_top - margin_bottom - footer_h - 20
+    else:
+        max_text_height = STANDARD_H - margin_top - margin_bottom - footer_h - 20
+    
+    # Начинаем с целевого размера шрифта
     target_size = int(MN_BASE_FONT_SIZE * font_size_multiplier)
-    # Ограничиваем только минимальным значением, максимальное НЕ ограничиваем
     target_size = max(40, target_size)
     
-    logger.info(f"Target font size: {target_size}px (multiplier: {font_size_multiplier})")
+    logger.info(f"Starting font search from size: {target_size}px")
     
-    # СОЗДАЁМ ШРИФТ С ТОЧНЫМ РАЗМЕРОМ
-    font = ImageFont.truetype(FONT_MN, target_size)
+    # Подбираем оптимальный размер шрифта, чтобы текст влезал
+    font = None
+    lines = []
+    line_height = 0
+    total_text_height = 0
+    optimal_size = target_size
     
-    # Разбиваем текст на строки
-    lines = wrap_text(draw, text, font, safe_w, max_lines=5)
+    # Пробуем уменьшать шрифт, пока текст не влезет (но не меньше 40px)
+    for size in range(target_size, 39, -2):
+        test_font = ImageFont.truetype(FONT_MN, size)
+        test_lines = wrap_text(draw, text, test_font, safe_w, max_lines=5)
+        
+        if not test_lines:
+            continue
+        
+        bbox = draw.textbbox((0, 0), "A", font=test_font)
+        test_line_height = bbox[3] - bbox[1]
+        test_total_h = len(test_lines) * test_line_height + (len(test_lines) - 1) * MN_LINE_SPACING
+        
+        if test_total_h <= max_text_height:
+            font = test_font
+            lines = test_lines
+            line_height = test_line_height
+            total_text_height = test_total_h
+            optimal_size = size
+            logger.info(f"Found optimal font size: {size}px, text height: {test_total_h}/{max_text_height}")
+            break
     
-    # Вычисляем высоту
-    bbox = draw.textbbox((0, 0), "A", font=font)
-    line_height = bbox[3] - bbox[1]
-    total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
+    # Если даже минимальный шрифт не влезает, используем минимальный и обрезаем строки
+    if font is None:
+        font = ImageFont.truetype(FONT_MN, 40)
+        lines = wrap_text(draw, text, font, safe_w, max_lines=4)  # Уменьшаем макс. строк
+        bbox = draw.textbbox((0, 0), "A", font=font)
+        line_height = bbox[3] - bbox[1]
+        total_text_height = len(lines) * line_height + (len(lines) - 1) * MN_LINE_SPACING
+        logger.warning(f"Using min font 40px, lines truncated to {len(lines)}")
     
-    logger.info(f"Lines: {len(lines)}, Line height: {line_height}, Total: {total_text_height}")
-    
-    # НЕ ПРОВЕРЯЕМ, ВЛЕЗАЕТ ЛИ ТЕКСТ - ПРИНУДИТЕЛЬНО РИСУЕМ
+    # Позиционируем текст
     if text_position == TEXT_POSITION_TOP:
         title_y = margin_top
-        footer_y = STANDARD_H - margin_bottom + (margin_bottom - footer_h) // 2
+        footer_y = STANDARD_H - margin_bottom - footer_h
     else:
         title_y = STANDARD_H - margin_bottom - total_text_height
         footer_y = margin_top
     
-    # Текст по левому краю
+    # Рисуем текст
     y = title_y
     x = margin_x
     
@@ -335,6 +363,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str,
         draw.text((x, y), line, font=font, fill="white")
         y += line_height + MN_LINE_SPACING
     
+    # Рисуем футер
     footer_x = (STANDARD_W - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
     

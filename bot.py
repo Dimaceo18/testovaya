@@ -4,14 +4,14 @@ import html
 import time
 import logging
 from io import BytesIO
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import telebot
 from telebot.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton
 )
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,37 +27,42 @@ if not TOKEN:
 if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
 
-# Размеры (4:5)
+# Размеры (4:5 для Instagram)
 TARGET_W = 1080
 TARGET_H = 1350
 
-# Плашка под заголовок
-OVERLAY_HEIGHT = 260
-OVERLAY_ALPHA = 150
-BLUR_RADIUS = 8
-SIDE_PADDING = 70
-TOP_PADDING = 28
-BOTTOM_PADDING = 24
+# Настройки оверлея (верхняя плашка)
+OVERLAY_HEIGHT = 320           # высота плашки
+OVERLAY_ALPHA = 179            # 70% от 255
+OVERLAY_BLUR_RADIUS = 8        # размытие фона под плашкой
 
-# Шрифты
-FONT_MAIN = "Montserrat-ExtraBold.ttf"
-FONT_FALLBACK = "CaviarDreams.ttf"
+# Отступы
+PADDING_X = 70                 # отступы по бокам
+PADDING_TOP = 120              # отступ сверху внутри плашки
+PADDING_BOTTOM = 40            # отступ снизу внутри плашки
 
-TITLE_FONT_SIZE = 92
-MIN_FONT_SIZE = 46
-LINE_SPACING = 10
+# Шрифт
+FONT_PATH = "Montserrat-ExtraBold.ttf"
+FONT_FALLBACK = "CaviarDreams_Bold.ttf"
+
+# Размеры шрифта
+TITLE_FONT_MAX = 110           # максимальный размер
+TITLE_FONT_MIN = 40            # минимальный размер
+TITLE_FONT_START = 90          # стартовый размер
+
+# Межстрочный интервал (как коэффициент)
+LINE_SPACING_RATIO = 0.95      # 0.95 от высоты шрифта
 
 # Цвета для выделения
 COLORS = {
-    "red": (255, 80, 80),
-    "blue": (80, 150, 255),
-    "yellow": (255, 220, 80)
+    "red": (255, 60, 60),      # красный
+    "blue": (80, 150, 255),    # голубой
+    "yellow": (255, 220, 60)   # желтый
 }
 
-# Качество фото
-SHARPEN_FACTOR = 1.15
-CONTRAST_FACTOR = 1.05
-BRIGHTNESS_FACTOR = 0.98
+# Настройки фото
+BRIGHTNESS_FACTOR = 0.65       # затемнение фото
+GRADIENT_HEIGHT_PCT = 0.48     # высота градиента
 
 # =========================
 # Logging
@@ -77,50 +82,74 @@ user_state: Dict[int, Dict] = {}
 # =========================
 # Helper functions
 # =========================
-def ensure_fonts():
-    if not os.path.exists(FONT_MAIN):
-        logger.warning(f"Font not found: {FONT_MAIN}, using {FONT_FALLBACK}")
+def ensure_font():
+    if os.path.exists(FONT_PATH):
+        return FONT_PATH
+    elif os.path.exists(FONT_FALLBACK):
+        logger.warning(f"Font {FONT_PATH} not found, using {FONT_FALLBACK}")
         return FONT_FALLBACK
-    return FONT_MAIN
+    else:
+        logger.error("No font found!")
+        return None
 
 def load_font(size: int) -> ImageFont.FreeTypeFont:
-    font_path = ensure_fonts()
-    try:
-        return ImageFont.truetype(font_path, size=size)
-    except Exception:
-        return ImageFont.load_default()
+    font_path = ensure_font()
+    if font_path:
+        try:
+            return ImageFont.truetype(font_path, size=size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
 
 def clear_state(user_id: int):
     if user_id in user_state:
         user_state[user_id] = {"step": "idle"}
 
-def fit_cover(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
-    """Обрезка фото под формат cover 4:5"""
-    src_w, src_h = img.size
-    src_ratio = src_w / src_h
-    target_ratio = target_w / target_h
-
-    if src_ratio > target_ratio:
-        new_h = target_h
-        new_w = int(new_h * src_ratio)
+def crop_to_4x5(img: Image.Image) -> Image.Image:
+    """Обрезка фото под формат 4:5"""
+    w, h = img.size
+    target_ratio = 4 / 5
+    cur_ratio = w / h
+    
+    if cur_ratio > target_ratio:
+        new_w = int(h * target_ratio)
+        left = (w - new_w) // 2
+        return img.crop((left, 0, left + new_w, h))
     else:
-        new_w = target_w
-        new_h = int(new_w / src_ratio)
+        new_h = int(w / target_ratio)
+        top = (h - new_h) // 2
+        return img.crop((0, top, w, top + new_h))
 
-    img = img.resize((new_w, new_h), Image.LANCZOS)
-
-    left = (new_w - target_w) // 2
-    top = (new_h - target_h) // 2
-    return img.crop((left, top, left + target_w, top + target_h))
+def apply_top_gradient(img: Image.Image, height_pct: float = GRADIENT_HEIGHT_PCT, max_alpha: int = 200) -> Image.Image:
+    """Наложение градиента сверху"""
+    w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
+    
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh):
+        a = int(max_alpha * (1 - y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, 0))
+    
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
 
 def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
+    """Перенос текста по словам"""
     words = text.split()
     if not words:
         return []
-
+    
     lines = []
     current = words[0]
-
+    
     for word in words[1:]:
         candidate = current + " " + word
         bbox = draw.textbbox((0, 0), candidate, font=font)
@@ -130,11 +159,12 @@ def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont
         else:
             lines.append(current)
             current = word
-
+    
     lines.append(current)
     return lines
 
-def text_block_height(draw: ImageDraw.ImageDraw, lines: List[str], font: ImageFont.FreeTypeFont, line_spacing: int) -> int:
+def get_text_height(draw: ImageDraw.ImageDraw, lines: List[str], font: ImageFont.FreeTypeFont, line_spacing: int) -> int:
+    """Вычисление общей высоты текстового блока"""
     total = 0
     for i, line in enumerate(lines):
         bbox = draw.textbbox((0, 0), line, font=font)
@@ -144,145 +174,123 @@ def text_block_height(draw: ImageDraw.ImageDraw, lines: List[str], font: ImageFo
             total += line_spacing
     return total
 
-def choose_font_and_lines(text: str, max_width: int, max_height: int) -> Tuple[ImageFont.FreeTypeFont, List[str]]:
+def fit_font_and_lines(text: str, max_width: int, max_height: int) -> Tuple[ImageFont.FreeTypeFont, List[str], int]:
+    """Подбор оптимального размера шрифта"""
     temp_img = Image.new("RGB", (TARGET_W, TARGET_H), "black")
     draw = ImageDraw.Draw(temp_img)
-
-    for size in range(TITLE_FONT_SIZE, MIN_FONT_SIZE - 1, -2):
+    
+    for size in range(TITLE_FONT_START, TITLE_FONT_MIN - 1, -2):
         font = load_font(size)
         lines = wrap_text(draw, text, font, max_width)
-        height = text_block_height(draw, lines, font, LINE_SPACING)
+        line_spacing = int(font.size * LINE_SPACING_RATIO)
+        height = get_text_height(draw, lines, font, line_spacing)
         if height <= max_height:
-            return font, lines
-
-    font = load_font(MIN_FONT_SIZE)
+            return font, lines, line_spacing
+    
+    font = load_font(TITLE_FONT_MIN)
     lines = wrap_text(draw, text, font, max_width)
-    return font, lines
-
-def make_top_overlay(base: Image.Image) -> Image.Image:
-    """Создает затемненную верхнюю плашку с легким blur"""
-    top_part = base.crop((0, 0, TARGET_W, OVERLAY_HEIGHT)).filter(ImageFilter.GaussianBlur(BLUR_RADIUS))
-
-    shade = Image.new("RGBA", (TARGET_W, OVERLAY_HEIGHT), (0, 0, 0, OVERLAY_ALPHA))
-    top_rgba = top_part.convert("RGBA")
-    top_rgba.alpha_composite(shade)
-
-    # Мягкий градиент вниз
-    gradient = Image.new("L", (1, OVERLAY_HEIGHT))
-    for y in range(OVERLAY_HEIGHT):
-        if y < OVERLAY_HEIGHT * 0.65:
-            alpha = 255
-        else:
-            remain = OVERLAY_HEIGHT - y
-            total = OVERLAY_HEIGHT * 0.35
-            alpha = int(max(0, min(255, 255 * (remain / total))))
-        gradient.putpixel((0, y), alpha)
-
-    alpha_mask = gradient.resize((TARGET_W, OVERLAY_HEIGHT))
-    top_rgba.putalpha(alpha_mask)
-    return top_rgba
+    line_spacing = int(font.size * LINE_SPACING_RATIO)
+    return font, lines, line_spacing
 
 def draw_text_with_highlight(
     draw: ImageDraw.ImageDraw,
-    text: str,
+    line: str,
     highlight_phrase: str,
     highlight_color: Tuple[int, int, int],
     font: ImageFont.FreeTypeFont,
     x: int,
     y: int,
-    line_h: int
+    line_spacing: int
 ) -> int:
-    """Рисует текст с выделением определенной фразы цветом"""
+    """Рисует строку текста с выделением фразы цветом"""
     
-    if not highlight_phrase or highlight_phrase not in text:
-        # Если нет фразы для выделения, рисуем обычный текст
-        draw.text((x, y), text, font=font, fill=(255, 255, 255))
-        return y + line_h + LINE_SPACING
+    if not highlight_phrase or highlight_phrase not in line:
+        draw.text((x, y), line, font=font, fill=(255, 255, 255))
+        bbox = draw.textbbox((0, 0), line, font=font)
+        return y + (bbox[3] - bbox[1]) + line_spacing
     
-    # Разбиваем текст на части
-    parts = text.split(highlight_phrase)
+    # Разбиваем строку на части
+    parts = line.split(highlight_phrase)
     
     current_x = x
     for i, part in enumerate(parts):
-        # Рисуем обычную часть
+        # Обычная часть
         if part:
             draw.text((current_x, y), part, font=font, fill=(255, 255, 255))
             bbox = draw.textbbox((0, 0), part, font=font)
             current_x += bbox[2] - bbox[0]
         
-        # Рисуем выделенную фразу (если не последняя)
+        # Выделенная фраза
         if i < len(parts) - 1:
+            # Тень для выделенной фразы
+            draw.text((current_x + 2, y + 2), highlight_phrase, font=font, fill=(0, 0, 0, 100))
             draw.text((current_x, y), highlight_phrase, font=font, fill=highlight_color)
             bbox = draw.textbbox((0, 0), highlight_phrase, font=font)
             current_x += bbox[2] - bbox[0]
     
-    return y + line_h + LINE_SPACING
+    bbox = draw.textbbox((0, 0), line, font=font)
+    return y + (bbox[3] - bbox[1]) + line_spacing
 
 def create_poster(image_bytes: bytes, title: str, highlight_phrase: str = "", highlight_color: Tuple[int, int, int] = (255, 255, 255)) -> BytesIO:
-    """Создает постер с заголовком и выделенной фразой"""
+    """Создание постера в стиле АМ"""
     
+    # Открываем и обрабатываем фото
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
-    img = fit_cover(img, TARGET_W, TARGET_H)
-
-    # Улучшаем фото
-    img = ImageEnhance.Sharpness(img).enhance(SHARPEN_FACTOR)
-    img = ImageEnhance.Contrast(img).enhance(CONTRAST_FACTOR)
-    img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-
-    result = img.convert("RGBA")
-    top_overlay = make_top_overlay(img)
-    result.alpha_composite(top_overlay, (0, 0))
-
-    draw = ImageDraw.Draw(result)
-
-    max_text_width = TARGET_W - SIDE_PADDING * 2
-    max_text_height = OVERLAY_HEIGHT - TOP_PADDING - BOTTOM_PADDING
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
     
-    # Заголовок в верхнем регистре
+    # Затемнение
+    img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+    
+    # Наложение градиента сверху
+    img = apply_top_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=200)
+    
+    draw = ImageDraw.Draw(img)
+    
+    # Подготовка текста (верхний регистр)
     title_upper = title.upper()
-    font, lines = choose_font_and_lines(title_upper, max_text_width, max_text_height)
-
-    block_h = text_block_height(draw, lines, font, LINE_SPACING)
-    y = TOP_PADDING + (max_text_height - block_h) // 2
-
-    # Если есть фраза для выделения, обрабатываем каждую строку
-    if highlight_phrase:
-        highlight_upper = highlight_phrase.upper()
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            line_w = bbox[2] - bbox[0]
-            line_h = bbox[3] - bbox[1]
-            x = (TARGET_W - line_w) // 2
-            
-            # Тень
-            shadow_offset = 2
-            # Рисуем тень (упрощенно - просто темный текст)
-            draw.text((x + shadow_offset, y + shadow_offset), line, font=font, fill=(0, 0, 0, 120))
-            
-            # Рисуем текст с выделением
-            y = draw_text_with_highlight(draw, line, highlight_upper, highlight_color, font, x, y, line_h)
-            y -= LINE_SPACING  # корректировка, так как draw_text_with_highlight уже добавил отступ
-    else:
-        # Обычный текст без выделения
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            line_w = bbox[2] - bbox[0]
-            line_h = bbox[3] - bbox[1]
-            x = (TARGET_W - line_w) // 2
-            
-            shadow_offset = 2
-            draw.text((x + shadow_offset, y + shadow_offset), line, font=font, fill=(0, 0, 0, 120))
-            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
-            y += line_h + LINE_SPACING
-
-    output = BytesIO()
-    result.convert("RGB").save(output, format="JPEG", quality=95, subsampling=0)
-    output.seek(0)
-    return output
+    highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
+    
+    # Доступная ширина для текста
+    max_text_width = TARGET_W - (PADDING_X * 2)
+    max_text_height = OVERLAY_HEIGHT - PADDING_TOP - PADDING_BOTTOM
+    
+    # Подбор шрифта и перенос строк
+    font, lines, line_spacing = fit_font_and_lines(title_upper, max_text_width, max_text_height)
+    
+    # Вычисляем общую высоту текста
+    total_text_height = get_text_height(draw, lines, font, line_spacing)
+    
+    # Вертикальное центрирование текста в плашке
+    y = PADDING_TOP + (max_text_height - total_text_height) // 2
+    
+    # Рисуем каждую строку
+    for line in lines:
+        # Вычисляем ширину строки для центрирования
+        bbox = draw.textbbox((0, 0), line, font=font)
+        line_w = bbox[2] - bbox[0]
+        x = (TARGET_W - line_w) // 2
+        
+        # Рисуем текст с выделением
+        y = draw_text_with_highlight(
+            draw, line, highlight_upper, highlight_color,
+            font, x, y, line_spacing
+        )
+    
+    # Сохраняем результат
+    out = BytesIO()
+    img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
+    out.seek(0)
+    return out
 
 # =========================
-# Keyboard для выбора цвета
+# Keyboard
 # =========================
+def main_menu_kb():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(KeyboardButton("✨ Шаблон АМ"))
+    return kb
+
 def color_kb():
     kb = InlineKeyboardMarkup(row_width=3)
     kb.add(
@@ -290,27 +298,19 @@ def color_kb():
         InlineKeyboardButton("🔵 Голубой", callback_data="color:blue"),
         InlineKeyboardButton("🟡 Желтый", callback_data="color:yellow")
     )
-    kb.add(InlineKeyboardButton("❌ Пропустить (без выделения)", callback_data="color:skip"))
-    return kb
-
-def main_menu_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("✨ Шаблон АМ"))
+    kb.add(InlineKeyboardButton("➖ Без выделения", callback_data="color:none"))
     return kb
 
 def preview_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("✅ Опубликовать", callback_data="publish"),
-        InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title"),
-        InlineKeyboardButton("✏️ Редактировать фразу", callback_data="edit_phrase"),
+        InlineKeyboardButton("✏️ Изменить заголовок", callback_data="edit_title"),
+        InlineKeyboardButton("✏️ Изменить фразу", callback_data="edit_phrase"),
         InlineKeyboardButton("🎨 Сменить цвет", callback_data="change_color"),
         InlineKeyboardButton("❌ Отмена", callback_data="cancel")
     )
     return kb
-
-def channel_kb():
-    return InlineKeyboardMarkup()
 
 def build_caption_html(title: str, phrase: str = "") -> str:
     if phrase:
@@ -326,7 +326,7 @@ def on_color_select(c):
     color_key = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    if color_key == "skip":
+    if color_key == "none":
         st["highlight_color"] = None
         st["highlight_phrase"] = ""
         bot.answer_callback_query(c.id, "Без выделения ✅")
@@ -336,12 +336,13 @@ def on_color_select(c):
         color_names = {"red": "красный", "blue": "голубой", "yellow": "желтый"}
         bot.answer_callback_query(c.id, f"Выбран {color_names.get(color_key, color_key)} цвет ✅")
     
-    st["step"] = "waiting_highlight_phrase"
+    st["step"] = "waiting_phrase"
     user_state[uid] = st
     
     bot.edit_message_text(
         f"🎨 Цвет выбран!\n\n"
-        f"✏️ Теперь отправь <b>ФРАЗУ ДЛЯ ВЫДЕЛЕНИЯ</b> (или отправь «-» чтобы пропустить):",
+        f"✏️ Теперь отправь <b>ФРАЗУ ДЛЯ ВЫДЕЛЕНИЯ</b>\n"
+        f"(или отправь «-» чтобы пропустить):",
         c.message.chat.id, c.message.message_id,
         parse_mode="HTML"
     )
@@ -360,7 +361,7 @@ def on_action(call):
             caption = build_caption_html(st.get("title", ""), st.get("highlight_phrase", ""))
             
             if CHANNEL:
-                bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
+                bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML")
                 bot.answer_callback_query(call.id, "Опубликовано ✅")
                 bot.send_message(call.message.chat.id, "✅ Готово!", reply_markup=main_menu_kb())
             else:
@@ -376,7 +377,7 @@ def on_action(call):
         bot.send_message(call.message.chat.id, "📝 Пришли новый ЗАГОЛОВОК:", reply_markup=main_menu_kb())
     
     elif call.data == "edit_phrase":
-        st["step"] = "waiting_highlight_phrase"
+        st["step"] = "waiting_phrase"
         user_state[uid] = st
         bot.answer_callback_query(call.id, "✏️ Введи новую фразу")
         bot.send_message(call.message.chat.id, "📝 Пришли новую ФРАЗУ ДЛЯ ВЫДЕЛЕНИЯ:", reply_markup=main_menu_kb())
@@ -400,12 +401,17 @@ def cmd_start(message):
     clear_state(message.from_user.id)
     bot.send_message(
         message.chat.id,
-        "👋 <b>Привет! Я бот для оформления постов в стиле Афиша Минска</b>\n\n"
-        "<b>✨ Как работает шаблон АМ:</b>\n"
+        "👋 <b>Привет! Я бот для оформления постов в стиле АМ</b>\n\n"
+        "<b>✨ Как работает шаблон:</b>\n"
         "1️⃣ Отправь фото\n"
         "2️⃣ Отправь заголовок\n"
-        "3️⃣ Выбери цвет для выделения (красный/голубой/желтый)\n"
-        "4️⃣ Отправь фразу, которую нужно выделить цветом\n\n"
+        "3️⃣ Выбери цвет для выделения\n"
+        "4️⃣ Отправь фразу для выделения\n\n"
+        "<b>📐 Настройки:</b>\n"
+        "• Размер: 1080×1350 (4:5)\n"
+        "• Шрифт: Montserrat ExtraBold\n"
+        "• Размер шрифта: 80–110 px\n"
+        "• Межстрочный интервал: 0.95\n\n"
         "Нажми «Шаблон АМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -440,7 +446,7 @@ def on_photo(message):
             
             bot.reply_to(
                 message,
-                "📸 Фото сохранено!\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b> для поста:",
+                "📸 Фото сохранено!\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:",
                 parse_mode="HTML"
             )
         except Exception as e:
@@ -467,14 +473,14 @@ def on_text(message):
         bot.reply_to(
             message,
             f"✅ Заголовок сохранён: <b>{html.escape(text)}</b>\n\n"
-            f"🎨 Теперь выбери цвет для выделения фразы:",
+            f"🎨 Выбери цвет для выделения фразы:",
             parse_mode="HTML",
             reply_markup=color_kb()
         )
         return
     
     # Обработка фразы для выделения
-    if st.get("step") == "waiting_highlight_phrase":
+    if st.get("step") == "waiting_phrase":
         highlight_phrase = "" if text == "-" else text
         
         st["highlight_phrase"] = highlight_phrase
@@ -514,7 +520,7 @@ def on_text(message):
             )
         except Exception as e:
             logger.error(f"Error: {e}")
-            bot.reply_to(message, f"❌ Ошибка при создании постера: {e}")
+            bot.reply_to(message, f"❌ Ошибка: {e}")
             clear_state(uid)
         return
     
@@ -537,7 +543,7 @@ def on_text(message):
 # =========================
 if __name__ == "__main__":
     logger.info("🚀 Starting bot...")
-    ensure_fonts()
+    ensure_font()
     
     time.sleep(2)
     

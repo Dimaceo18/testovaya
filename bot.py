@@ -32,30 +32,30 @@ TARGET_W = 1080
 TARGET_H = 1350
 
 # Шрифт
-FONT_PATH = "Montserrat-Bold.ttf"
+FONT_PATH = "Montserrat-Black.ttf"
+FONT_FALLBACK = "CaviarDreams.ttf"
 
 # Размеры шрифта
-FONT_SIZE_TITLE = 110      # крупный заголовок
-FONT_SIZE_SUBTITLE = 70    # подзаголовок
+FONT_SIZE_TITLE = 90
+FONT_SIZE_MIN = 30
 
 # Затемнение фото
-BRIGHTNESS_FACTOR = 0.50
+BRIGHTNESS_FACTOR = 0.85
 
-# Отступы (левый верхний угол)
-PADDING_LEFT = 60
-PADDING_TOP = 200
+# Градиент
+GRADIENT_HEIGHT_PCT = 0.48
+GRADIENT_MAX_ALPHA = 220
 
-# Межстрочный интервал
-LINE_SPACING = 15
-
-# Цвета
-TEXT_COLOR = (255, 255, 255)
+# Отступы
+MARGIN_X_PCT = 0.06
+MARGIN_TOP_PCT = 0.08
+MARGIN_BOTTOM_PCT = 0.08
+LINE_SPACING_RATIO = 0.22
 
 # Цвета для выделения
 HIGHLIGHT_COLORS = {
     "red": (255, 80, 80),     # красный
-    "blue": (80, 150, 255),   # голубой
-    "green": (80, 255, 120)   # зеленый
+    "yellow": (255, 220, 80)  # желтый
 }
 
 # =========================
@@ -77,10 +77,11 @@ user_state: Dict[int, Dict] = {}
 # Helper functions
 # =========================
 def download_font():
+    """Скачивает шрифт если нет"""
     if os.path.exists(FONT_PATH):
         return True
     
-    url = "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Bold.ttf"
+    url = "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Black.ttf"
     try:
         import requests
         logger.info(f"Downloading font...")
@@ -97,7 +98,10 @@ def load_font(size: int):
     try:
         return ImageFont.truetype(FONT_PATH, size=size)
     except Exception:
-        return ImageFont.load_default()
+        try:
+            return ImageFont.truetype(FONT_FALLBACK, size=size)
+        except:
+            return ImageFont.load_default()
 
 def clear_state(user_id: int):
     if user_id in user_state:
@@ -106,8 +110,8 @@ def clear_state(user_id: int):
 def crop_to_4x5(img: Image.Image) -> Image.Image:
     w, h = img.size
     target_ratio = 4 / 5
-    
-    if w / h > target_ratio:
+    cur_ratio = w / h
+    if cur_ratio > target_ratio:
         new_w = int(h * target_ratio)
         left = (w - new_w) // 2
         return img.crop((left, 0, left + new_w, h))
@@ -116,85 +120,206 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         top = (h - new_h) // 2
         return img.crop((0, top, w, top + new_h))
 
-def wrap_text(draw, text: str, font, max_width: int) -> List[str]:
-    """Перенос текста по словам"""
-    if not text:
-        return []
+def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
+    w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
     
-    words = text.split()
-    lines = []
-    current = words[0]
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh):
+        a = int(max_alpha * (1 - y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, 0))
     
-    for word in words[1:]:
-        candidate = current + " " + word
-        bbox = draw.textbbox((0, 0), candidate, font=font)
-        if (bbox[2] - bbox[0]) <= max_width:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
-    return lines
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
 
-def draw_text_with_highlight(draw, text: str, highlight_phrase: str, highlight_color, font, x, y, max_width):
-    """Рисует текст с выделением фразы цветом (выравнивание по левому краю)"""
-    text_upper = text.upper()
+def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
+    w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
+    
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh):
+        a = int(max_alpha * (y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, h - gh))
+    
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
+
+def text_width(draw, s: str, font) -> int:
+    bbox = draw.textbbox((0, 0), s, font=font)
+    return bbox[2] - bbox[0]
+
+def wrap_no_truncate(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
+    words = [w for w in (text or "").split() if w.strip()]
+    if not words:
+        return [""], True
+
+    lines: List[str] = []
+    cur = ""
+    i = 0
+
+    while i < len(words):
+        w = words[i]
+        test = (cur + " " + w).strip()
+        if text_width(draw, test, font) <= max_width:
+            cur = test
+            i += 1
+        else:
+            if not cur:
+                return [words[i]], False
+            lines.append(cur)
+            cur = ""
+            if len(lines) >= max_lines:
+                return lines, False
+
+    if cur:
+        lines.append(cur)
+
+    if len(lines) > max_lines:
+        return lines[:max_lines], False
+
+    return lines, True
+
+def fit_text_block(draw, text: str, font_path: str, safe_w: int, max_block_h: int,
+                   max_lines: int = 6, start_size: int = 90, min_size: int = 16,
+                   line_spacing_ratio: float = 0.22):
+    text = (text or "").strip()
+    if not text:
+        text = " "
+
+    size = start_size
+    while size >= min_size:
+        font = ImageFont.truetype(font_path, size)
+        lines, ok = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
+        spacing = int(size * line_spacing_ratio)
+
+        heights = []
+        total_h = 0
+        max_w = 0
+        for ln in lines:
+            bb = draw.textbbox((0, 0), ln, font=font)
+            lw = bb[2] - bb[0]
+            lh = bb[3] - bb[1]
+            heights.append(lh)
+            total_h += lh
+            max_w = max(max_w, lw)
+        total_h += spacing * (len(lines) - 1)
+
+        if ok and max_w <= safe_w and total_h <= max_block_h:
+            return font, lines, heights, spacing, total_h
+
+        size -= 2
+
+    font = ImageFont.truetype(font_path, min_size)
+    lines, _ = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
+    spacing = int(min_size * line_spacing_ratio)
+    heights = []
+    total_h = 0
+    for ln in lines:
+        bb = draw.textbbox((0, 0), ln, font=font)
+        lh = bb[3] - bb[1]
+        heights.append(lh)
+        total_h += lh
+    total_h += spacing * (len(lines) - 1)
+    return font, lines, heights, spacing, total_h
+
+def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+    """Рисует строку текста с выделением фразы цветом"""
+    line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
-    if not highlight_upper or highlight_upper not in text_upper:
-        draw.text((x, y), text_upper, font=font, fill=TEXT_COLOR)
-        bbox = draw.textbbox((0, 0), text_upper, font=font)
-        return y + (bbox[3] - bbox[1]) + LINE_SPACING
+    if not highlight_upper or highlight_upper not in line_upper:
+        draw.text((x, y), line_upper, font=font, fill="white")
+        return y
     
-    # Разбиваем текст на части
-    parts = text_upper.split(highlight_upper)
+    # Разбиваем строку на части
+    parts = line_upper.split(highlight_upper)
     current_x = x
     
     for i, part in enumerate(parts):
         if part:
-            draw.text((current_x, y), part, font=font, fill=TEXT_COLOR)
-            bbox = draw.textbbox((0, 0), part, font=font)
-            current_x += bbox[2] - bbox[0]
+            draw.text((current_x, y), part, font=font, fill="white")
+            current_x += text_width(draw, part, font)
         
         if i < len(parts) - 1:
             draw.text((current_x, y), highlight_upper, font=font, fill=highlight_color)
-            bbox = draw.textbbox((0, 0), highlight_upper, font=font)
-            current_x += bbox[2] - bbox[0]
+            current_x += text_width(draw, highlight_upper, font)
     
-    full_bbox = draw.textbbox((0, 0), text_upper, font=font)
-    return y + (full_bbox[3] - full_bbox[1]) + LINE_SPACING
+    return y
 
-def create_poster(image_bytes: bytes, title: str, subtitle: str, highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
-    """Создает постер с текстом в левом верхнем углу"""
+def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
+                      highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
+    """Шаблон ЧП ВМ с выделением фразы"""
     
-    # Открываем и обрабатываем фото
+    # Открываем фото
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    
+    # Яркость
     img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+    
+    # Градиент
+    if text_position == "top":
+        img = apply_top_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
+    else:
+        img = apply_bottom_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
     
     draw = ImageDraw.Draw(img)
     
-    # Шрифты
-    font_title = load_font(FONT_SIZE_TITLE)
-    font_subtitle = load_font(FONT_SIZE_SUBTITLE)
+    # Отступы
+    margin_x = int(TARGET_W * MARGIN_X_PCT)
+    margin_top = int(TARGET_H * MARGIN_TOP_PCT)
+    margin_bottom = int(TARGET_H * MARGIN_BOTTOM_PCT)
+    safe_w = TARGET_W - 2 * margin_x
     
-    max_width = TARGET_W - PADDING_LEFT - 60  # отступ справа
-    y = PADDING_TOP
+    # Текст в верхний регистр
+    text = (title_text or "").strip().upper()
+    title_max_h = int(TARGET_H * 0.23)
     
-    # Заголовок (слева)
-    title_lines = wrap_text(draw, title, font_title, max_width)
-    for line in title_lines:
-        y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_title, PADDING_LEFT, y, max_width)
+    # Подбор шрифта
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text,
+        font_path=FONT_PATH,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(TARGET_H * 0.11),
+        min_size=FONT_SIZE_MIN,
+        line_spacing_ratio=LINE_SPACING_RATIO
+    )
     
-    # Отступ между заголовком и подзаголовком
-    if subtitle:
-        y += 20
+    # Позиция текста
+    if text_position == "top":
+        y = margin_top
+    else:
+        y = TARGET_H - margin_bottom - total_h
     
-    # Подзаголовок (слева)
-    sub_lines = wrap_text(draw, subtitle, font_subtitle, max_width)
-    for line in sub_lines:
-        y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_subtitle, PADDING_LEFT, y, max_width)
+    # Рисуем строки с выделением
+    for i, ln in enumerate(lines):
+        # Центрируем строку
+        line_w = text_width(draw, ln, font)
+        x = (TARGET_W - line_w) // 2
+        
+        # Рисуем с выделением
+        draw_text_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
+        y += heights[i] + spacing
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0)
@@ -206,15 +331,22 @@ def create_poster(image_bytes: bytes, title: str, subtitle: str, highlight_phras
 # =========================
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("✨ Создать карточку"))
+    kb.row(KeyboardButton("🚨 Шаблон ЧП ВМ"))
+    return kb
+
+def text_position_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("⬆️ Текст сверху", callback_data="text_pos:top"),
+        InlineKeyboardButton("⬇️ Текст снизу", callback_data="text_pos:bottom")
+    )
     return kb
 
 def color_kb():
-    kb = InlineKeyboardMarkup(row_width=3)
+    kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("🔴 Красный", callback_data="color:red"),
-        InlineKeyboardButton("🔵 Голубой", callback_data="color:blue"),
-        InlineKeyboardButton("🟢 Зеленый", callback_data="color:green")
+        InlineKeyboardButton("🟡 Желтый", callback_data="color:yellow")
     )
     kb.add(InlineKeyboardButton("➖ Без выделения", callback_data="color:none"))
     return kb
@@ -230,6 +362,24 @@ def preview_kb():
 # =========================
 # Callback handlers
 # =========================
+@bot.callback_query_handler(func=lambda c: c.data.startswith("text_pos:"))
+def on_text_position(c):
+    uid = c.from_user.id
+    position = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    st["text_position"] = position
+    st["step"] = "waiting_title"
+    user_state[uid] = st
+    
+    pos_text = "сверху" if position == "top" else "снизу"
+    bot.answer_callback_query(c.id, f"Текст будет {pos_text} ✅")
+    bot.edit_message_text(
+        f"✅ Текст будет расположен <b>{pos_text}</b> фотографии.\n\n"
+        f"✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:",
+        c.message.chat.id, c.message.message_id,
+        parse_mode="HTML"
+    )
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("color:"))
 def on_color_select(c):
     uid = c.from_user.id
@@ -237,43 +387,39 @@ def on_color_select(c):
     st = user_state.get(uid) or {}
     
     if color_key == "none":
-        highlight_phrase = ""
-        highlight_color = None
+        st["highlight_phrase"] = ""
+        st["highlight_color"] = None
         bot.answer_callback_query(c.id, "Без выделения ✅")
     else:
-        highlight_phrase = st.get("temp_highlight_phrase", "")
-        highlight_color = HIGHLIGHT_COLORS.get(color_key)
-        color_names = {"red": "красный", "blue": "голубой", "green": "зеленый"}
+        st["highlight_phrase"] = st.get("temp_highlight_phrase", "")
+        st["highlight_color"] = HIGHLIGHT_COLORS.get(color_key)
+        color_names = {"red": "красный", "yellow": "желтый"}
         bot.answer_callback_query(c.id, f"Выбран {color_names.get(color_key)} цвет ✅")
     
-    st["highlight_phrase"] = highlight_phrase
-    st["highlight_color"] = highlight_color
     st["step"] = "creating"
     user_state[uid] = st
     
     try:
-        card = create_poster(
+        card = create_poster_chp(
             st["photo_bytes"],
             st.get("title", ""),
-            st.get("subtitle", ""),
-            highlight_phrase,
-            highlight_color
+            st.get("text_position", "top"),
+            st.get("highlight_phrase", ""),
+            st.get("highlight_color")
         )
         
         st["card_bytes"] = card.getvalue()
         st["step"] = "waiting_action"
         user_state[uid] = st
         
-        bot.edit_message_media(
-            telebot.types.InputMediaPhoto(card.getvalue()),
-            c.message.chat.id, c.message.message_id
-        )
-        bot.edit_message_caption(
-            c.message.chat.id, c.message.message_id,
+        bot.send_photo(
+            c.message.chat.id,
+            photo=BytesIO(st["card_bytes"]),
             caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку для публикации:",
             parse_mode="HTML",
             reply_markup=preview_kb()
         )
+        bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception as e:
         logger.error(f"Error: {e}")
         bot.send_message(c.message.chat.id, f"❌ Ошибка: {e}")
@@ -312,26 +458,28 @@ def cmd_start(message):
     clear_state(message.from_user.id)
     bot.send_message(
         message.chat.id,
-        "👋 <b>Привет! Я делаю карточки с текстом в левом верхнем углу</b>\n\n"
+        "👋 <b>Привет! Я бот для оформления постов в стиле ЧП ВМ</b>\n\n"
         "<b>📝 Как работает:</b>\n"
         "1️⃣ Отправь фото\n"
-        "2️⃣ Отправь ЗАГОЛОВОК\n"
-        "3️⃣ Отправь ПОДЗАГОЛОВОК (или отправь «-» чтобы пропустить)\n"
-        "4️⃣ Отправь ФРАЗУ для выделения цветом (или «-» чтобы пропустить)\n"
-        "5️⃣ Выбери цвет: 🔴 красный, 🔵 голубой, 🟢 зеленый\n\n"
-        "📐 Размер: 1080×1350 (4:5)\n"
-        "🔤 Шрифт: Montserrat Bold\n"
-        "📍 Выравнивание: левый верхний угол\n\n"
-        "Нажми «Создать карточку» 👇",
+        "2️⃣ Выбери расположение текста (сверху/снизу)\n"
+        "3️⃣ Отправь ЗАГОЛОВОК\n"
+        "4️⃣ Отправь ФРАЗУ для выделения цветом\n"
+        "5️⃣ Выбери цвет: 🔴 красный или 🟡 желтый\n\n"
+        "Нажми «Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
 
-@bot.message_handler(func=lambda message: message.text == "✨ Создать карточку")
-def handle_create_button(message):
+@bot.message_handler(func=lambda message: message.text == "🚨 Шаблон ЧП ВМ")
+def handle_template_button(message):
     uid = message.from_user.id
     user_state[uid] = {"step": "waiting_photo"}
-    bot.send_message(message.chat.id, "✨ <b>Создание карточки</b>\n\n📸 Пришли фото:", parse_mode="HTML")
+    bot.send_message(
+        message.chat.id,
+        "🚨 <b>Шаблон ЧП ВМ</b>\n\n"
+        "📸 Пришли фото для поста:",
+        parse_mode="HTML"
+    )
 
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
@@ -345,14 +493,20 @@ def on_photo(message):
             photo_bytes = bot.download_file(file_info.file_path)
             
             st["photo_bytes"] = photo_bytes
-            st["step"] = "waiting_title"
+            st["step"] = "waiting_text_position"
             user_state[uid] = st
             
-            bot.reply_to(message, "📸 Фото сохранено!\n\n✏️ <b>Введи ЗАГОЛОВОК</b> (например: DOUBLE TREE BY HILTON):", parse_mode="HTML")
+            bot.reply_to(
+                message,
+                "📸 Фото сохранено!\n\n"
+                "📐 <b>Выбери расположение текста:</b>",
+                parse_mode="HTML",
+                reply_markup=text_position_kb()
+            )
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
     else:
-        bot.reply_to(message, "❌ Сначала нажми «✨ Создать карточку»")
+        bot.reply_to(message, "❌ Сначала нажми «🚨 Шаблон ЧП ВМ»")
 
 @bot.message_handler(content_types=["text"])
 def on_text(message):
@@ -368,37 +522,27 @@ def on_text(message):
             return
         
         st["title"] = text
-        st["step"] = "waiting_subtitle"
-        user_state[uid] = st
-        
-        bot.reply_to(
-            message,
-            f"✅ Заголовок: <b>{html.escape(text)}</b>\n\n"
-            f"✏️ <b>Введи ПОДЗАГОЛОВОК</b>\n(или отправь «-» чтобы пропустить):",
-            parse_mode="HTML"
-        )
-        return
-    
-    # Подзаголовок
-    if step == "waiting_subtitle":
-        subtitle = "" if text == "-" else text
-        st["subtitle"] = subtitle
         st["step"] = "waiting_highlight_phrase"
         user_state[uid] = st
         
         # Показываем превью без выделения
         try:
-            card = create_poster(st["photo_bytes"], st["title"], subtitle, "", None)
-            st["card_bytes"] = card.getvalue()
+            card = create_poster_chp(
+                st["photo_bytes"],
+                text,
+                st.get("text_position", "top"),
+                "",
+                None
+            )
+            st["preview_bytes"] = card.getvalue()
             user_state[uid] = st
             
             bot.send_photo(
                 message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption="🎉 <b>Предварительный просмотр</b>\n\n"
-                       "✏️ <b>Напиши ФРАЗУ, которую нужно выделить цветом</b>\n"
-                       "(или отправь «-» чтобы пропустить):\n\n"
-                       "💡 Фраза будет найдена в тексте (заголовке или подзаголовке) и выделена цветом",
+                photo=BytesIO(st["preview_bytes"]),
+                caption=f"✅ Заголовок: <b>{html.escape(text)}</b>\n\n"
+                       f"✏️ <b>Напиши ФРАЗУ, которую нужно выделить цветом</b>\n"
+                       f"(или отправь «-» чтобы пропустить):",
                 parse_mode="HTML"
             )
         except Exception as e:
@@ -411,7 +555,13 @@ def on_text(message):
         if text == "-":
             # Без выделения - сразу финальный результат
             try:
-                card = create_poster(st["photo_bytes"], st["title"], st.get("subtitle", ""), "", None)
+                card = create_poster_chp(
+                    st["photo_bytes"],
+                    st.get("title", ""),
+                    st.get("text_position", "top"),
+                    "",
+                    None
+                )
                 st["card_bytes"] = card.getvalue()
                 st["step"] = "waiting_action"
                 user_state[uid] = st
@@ -441,7 +591,11 @@ def on_text(message):
         return
     
     # Если не в процессе
-    bot.send_message(message.chat.id, "📝 Нажми «✨ Создать карточку» чтобы начать", reply_markup=main_menu_kb())
+    bot.send_message(
+        message.chat.id,
+        "📝 Нажми «🚨 Шаблон ЧП ВМ» чтобы начать",
+        reply_markup=main_menu_kb()
+    )
 
 # =========================
 # Main

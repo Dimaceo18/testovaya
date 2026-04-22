@@ -47,9 +47,10 @@ GRADIENT_HEIGHT_PCT = 0.48
 GRADIENT_MAX_ALPHA = 220
 
 # Отступы
-MARGIN_X_PCT = 0.06
+MARGIN_LEFT_PCT = 0.08      # отступ слева 8%
 MARGIN_TOP_PCT = 0.08
 MARGIN_BOTTOM_PCT = 0.08
+TEXT_MAX_WIDTH_PCT = 0.70    # текст занимает не более 70% ширины
 LINE_SPACING_RATIO = 0.22
 
 # Цвета для выделения
@@ -164,7 +165,8 @@ def text_width(draw, s: str, font) -> int:
     bbox = draw.textbbox((0, 0), s, font=font)
     return bbox[2] - bbox[0]
 
-def wrap_no_truncate(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
+def wrap_no_truncate_left(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
+    """Перенос текста с выравниванием по левому краю"""
     words = [w for w in (text or "").split() if w.strip()]
     if not words:
         return [""], True
@@ -195,9 +197,9 @@ def wrap_no_truncate(draw, text: str, font, max_width: int, max_lines: int = 6) 
 
     return lines, True
 
-def fit_text_block(draw, text: str, font_path: str, safe_w: int, max_block_h: int,
-                   max_lines: int = 6, start_size: int = 90, min_size: int = 16,
-                   line_spacing_ratio: float = 0.22):
+def fit_text_block_left(draw, text: str, font_path: str, safe_w: int, max_block_h: int,
+                        max_lines: int = 6, start_size: int = 90, min_size: int = 16,
+                        line_spacing_ratio: float = 0.22):
     text = (text or "").strip()
     if not text:
         text = " "
@@ -205,7 +207,7 @@ def fit_text_block(draw, text: str, font_path: str, safe_w: int, max_block_h: in
     size = start_size
     while size >= min_size:
         font = ImageFont.truetype(font_path, size)
-        lines, ok = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
+        lines, ok = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
         spacing = int(size * line_spacing_ratio)
 
         heights = []
@@ -226,7 +228,7 @@ def fit_text_block(draw, text: str, font_path: str, safe_w: int, max_block_h: in
         size -= 2
 
     font = ImageFont.truetype(font_path, min_size)
-    lines, _ = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
+    lines, _ = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
     spacing = int(min_size * line_spacing_ratio)
     heights = []
     total_h = 0
@@ -238,8 +240,8 @@ def fit_text_block(draw, text: str, font_path: str, safe_w: int, max_block_h: in
     total_h += spacing * (len(lines) - 1)
     return font, lines, heights, spacing, total_h
 
-def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
-    """Рисует строку текста с выделением фразы цветом"""
+def draw_text_with_highlight_left(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+    """Рисует строку текста с выделением фразы цветом (выравнивание по левому краю)"""
     line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
@@ -264,7 +266,7 @@ def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_c
 
 def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
                       highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
-    """Шаблон ЧП ВМ с выделением фразы"""
+    """Шаблон ЧП ВМ с выравниванием по левому краю и ограничением ширины 70%"""
     
     # Открываем фото
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
@@ -283,21 +285,23 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     draw = ImageDraw.Draw(img)
     
     # Отступы
-    margin_x = int(TARGET_W * MARGIN_X_PCT)
+    margin_left = int(TARGET_W * MARGIN_LEFT_PCT)      # отступ слева
     margin_top = int(TARGET_H * MARGIN_TOP_PCT)
     margin_bottom = int(TARGET_H * MARGIN_BOTTOM_PCT)
-    safe_w = TARGET_W - 2 * margin_x
+    
+    # Максимальная ширина текста - 70% от ширины фото
+    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
     
     # Текст в верхний регистр
     text = (title_text or "").strip().upper()
     title_max_h = int(TARGET_H * 0.23)
     
     # Подбор шрифта
-    font, lines, heights, spacing, total_h = fit_text_block(
+    font, lines, heights, spacing, total_h = fit_text_block_left(
         draw=draw,
         text=text,
         font_path=FONT_PATH,
-        safe_w=safe_w,
+        safe_w=max_text_width,
         max_block_h=title_max_h,
         max_lines=6,
         start_size=int(TARGET_H * 0.11),
@@ -305,20 +309,15 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         line_spacing_ratio=LINE_SPACING_RATIO
     )
     
-    # Позиция текста
+    # Позиция текста (по левому краю)
     if text_position == "top":
         y = margin_top
     else:
         y = TARGET_H - margin_bottom - total_h
     
-    # Рисуем строки с выделением
+    # Рисуем строки с выделением (все строки начинаются с margin_left)
     for i, ln in enumerate(lines):
-        # Центрируем строку
-        line_w = text_width(draw, ln, font)
-        x = (TARGET_W - line_w) // 2
-        
-        # Рисуем с выделением
-        draw_text_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
+        draw_text_with_highlight_left(draw, ln, highlight_phrase, highlight_color, font, margin_left, y)
         y += heights[i] + spacing
     
     out = BytesIO()
@@ -458,13 +457,17 @@ def cmd_start(message):
     clear_state(message.from_user.id)
     bot.send_message(
         message.chat.id,
-        "👋 <b>Привет! Я бот для оформления постов в стиле ЧП ВМ</b>\n\n"
+        "👋 <b>Привет! Бот для оформления постов в стиле ЧП ВМ</b>\n\n"
         "<b>📝 Как работает:</b>\n"
         "1️⃣ Отправь фото\n"
         "2️⃣ Выбери расположение текста (сверху/снизу)\n"
         "3️⃣ Отправь ЗАГОЛОВОК\n"
         "4️⃣ Отправь ФРАЗУ для выделения цветом\n"
         "5️⃣ Выбери цвет: 🔴 красный или 🟡 желтый\n\n"
+        "<b>📐 Особенности:</b>\n"
+        "• Текст выравнивается по <b>левому краю</b>\n"
+        "• Ширина текста не более <b>70%</b> от фото\n"
+        "• Шрифт Montserrat Black\n\n"
         "Нажми «Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -542,7 +545,8 @@ def on_text(message):
                 photo=BytesIO(st["preview_bytes"]),
                 caption=f"✅ Заголовок: <b>{html.escape(text)}</b>\n\n"
                        f"✏️ <b>Напиши ФРАЗУ, которую нужно выделить цветом</b>\n"
-                       f"(или отправь «-» чтобы пропустить):",
+                       f"(или отправь «-» чтобы пропустить):\n\n"
+                       f"💡 Фраза будет найдена в тексте и выделена выбранным цветом",
                 parse_mode="HTML"
             )
         except Exception as e:

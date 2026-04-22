@@ -457,14 +457,17 @@ def on_photo(message):
 @bot.message_handler(content_types=["text"])
 def on_text(message):
     uid = message.from_user.id
-    text = message.text.strip()
+    raw_text = message.text.strip()
     st = user_state.get(uid) or {"step": "idle"}
     
     # Обработка заголовка
     if st.get("step") == "waiting_title":
-        if not text:
+        if not raw_text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
+        
+        # Заменяем все переносы строк на пробелы
+        text = " ".join(raw_text.split())
         
         st["title"] = text
         st["step"] = "waiting_color"
@@ -481,7 +484,7 @@ def on_text(message):
     
     # Обработка фразы для выделения
     if st.get("step") == "waiting_phrase":
-        highlight_phrase = "" if text == "-" else text
+        highlight_phrase = "" if raw_text == "-" else " ".join(raw_text.split())
         
         st["highlight_phrase"] = highlight_phrase
         st["step"] = "creating"
@@ -537,7 +540,6 @@ def on_text(message):
             "📝 Нажми «✨ Шаблон АМ» чтобы начать",
             reply_markup=main_menu_kb()
         )
-
 # =========================
 # Main
 # =========================

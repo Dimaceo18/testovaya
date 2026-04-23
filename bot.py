@@ -3,6 +3,7 @@ import os
 import html
 import time
 import logging
+import sys
 from io import BytesIO
 from typing import Dict, List, Tuple
 
@@ -32,9 +33,9 @@ TARGET_W = 1080
 TARGET_H = 1350
 
 # Шрифт
-FONT_PATH = "Montserrat-Black.ttf"
-FONT_FALLBACK = "CaviarDreams.ttf"
-FONT_REGULAR = "Montserrat-Regular.ttf"
+FONT_PATH = "Inter-ExtraBold.ttf"
+FONT_FALLBACK = "Montserrat-Black.ttf"
+FONT_REGULAR = "Inter-Regular.ttf"
 
 # Размеры шрифта
 FONT_SIZE_TITLE = 90
@@ -98,8 +99,9 @@ user_state: Dict[int, Dict] = {}
 # =========================
 def download_fonts():
     fonts = {
-        "Montserrat-Black.ttf": "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Black.ttf",
-        "Montserrat-Regular.ttf": "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Regular.ttf"
+        "Inter-ExtraBold.ttf": "https://github.com/rsms/inter/raw/master/docs/fonts/Inter-ExtraBold.otf",
+        "Inter-Regular.ttf": "https://github.com/rsms/inter/raw/master/docs/fonts/Inter-Regular.otf",
+        "Montserrat-Black.ttf": "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Black.ttf"
     }
     
     for font_name, url in fonts.items():
@@ -214,7 +216,7 @@ def fit_text_block_left(draw, text: str, font_path: str, safe_w: int, max_block_
 
     size = start_size
     while size >= min_size:
-        font = ImageFont.truetype(font_path, size)
+        font = load_font(font_path, size)
         lines, ok = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
         spacing = int(size * line_spacing_ratio)
 
@@ -235,7 +237,7 @@ def fit_text_block_left(draw, text: str, font_path: str, safe_w: int, max_block_
 
         size -= 2
 
-    font = ImageFont.truetype(font_path, min_size)
+    font = load_font(font_path, min_size)
     lines, _ = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
     spacing = int(min_size * line_spacing_ratio)
     heights = []
@@ -314,7 +316,7 @@ def draw_rubric(draw, rubric: str):
     if not rubric:
         return
     
-    font_rubric = load_font(FONT_BOLD, FONT_SIZE_RUBRIC)
+    font_rubric = load_font(FONT_PATH, FONT_SIZE_RUBRIC)
     rubric_upper = rubric.upper()
     
     # Вычисляем размер текста
@@ -385,26 +387,23 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
             draw_text_with_highlight_left(draw, ln, highlight_phrase, highlight_color, font, margin_left, y)
             y += heights[i] + spacing
         
-        # Дата и место внизу (левый нижний угол) - ниже чем раньше
+        # Дата и место внизу
         if date or place:
             draw_date_place(draw, date, place, margin_left, TARGET_H - DATE_PLACE_BOTTOM_MARGIN, max_text_width)
     
     else:
-        # Дата и место вверху (левый верхний угол) - ниже чем раньше
+        # Дата и место вверху
         y = DATE_PLACE_TOP_MARGIN
         if date or place:
             draw_date_place(draw, date, place, margin_left, y, max_text_width)
-            # Вычисляем сколько места заняла дата и место
-            temp_font = load_font(FONT_PATH, FONT_SIZE_LABEL)
-            temp_bbox = draw.textbbox((0, 0), "ДАТА:", font=temp_font)
-            y += 250  # отступ после даты и места
+            y += 250
         
         # Рисуем текст
         for i, ln in enumerate(lines):
             draw_text_with_highlight_left(draw, ln, highlight_phrase, highlight_color, font, margin_left, y)
             y += heights[i] + spacing
     
-    # Желтый прямоугольник с рубрикой в правом нижнем углу
+    # Желтый прямоугольник с рубрикой
     draw_rubric(draw, rubric)
     
     out = BytesIO()
@@ -495,7 +494,6 @@ def on_date_place_choice(c):
         st["step"] = "waiting_highlight_phrase"
         user_state[uid] = st
         
-        # Показываем превью
         try:
             card = create_poster_chp(
                 st["photo_bytes"],
@@ -546,6 +544,32 @@ def on_color_select(c):
     )
     bot.delete_message(c.message.chat.id, c.message.message_id)
 
+@bot.callback_query_handler(func=lambda c: c.data in ["publish", "cancel"])
+def on_action(call):
+    uid = call.from_user.id
+    st = user_state.get(uid)
+    
+    if not st or st.get("step") != "waiting_action":
+        bot.answer_callback_query(call.id, "Нет активного превью")
+        return
+    
+    if call.data == "publish":
+        try:
+            if CHANNEL:
+                bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]))
+                bot.answer_callback_query(call.id, "Опубликовано ✅")
+                bot.send_message(call.message.chat.id, "✅ Готово!", reply_markup=main_menu_kb())
+            else:
+                bot.answer_callback_query(call.id, "❌ CHANNEL_USERNAME не задан")
+            clear_state(uid)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"❌ Ошибка: {e}")
+    
+    elif call.data == "cancel":
+        bot.answer_callback_query(call.id, "Отменено ❌")
+        clear_state(uid)
+        bot.send_message(call.message.chat.id, "❌ Отменено", reply_markup=main_menu_kb())
+
 # =========================
 # Message handlers
 # =========================
@@ -563,14 +587,7 @@ def cmd_start(message):
         "5️⃣ Отправь ДАТУ и МЕСТО (если нужно)\n"
         "6️⃣ Отправь ФРАЗУ для выделения цветом\n"
         "7️⃣ Выбери цвет: 🔴 красный или 🟡 желтый\n"
-        "8️⃣ Отправь РУБРИКУ (слово на желтом прямоугольнике)\n\n"
-        "<b>📐 Особенности:</b>\n"
-        "• Текст выравнивается по <b>левому краю</b>\n"
-        "• Ширина текста не более <b>70%</b> от фото\n"
-        "• Шрифт Montserrat Black\n"
-        "• Дата и место в <b>левом углу</b>\n"
-        "• Рубрика на <b>желтом прямоугольнике</b> справа внизу\n"
-        "• Градиент зависит от положения текста\n\n"
+        "8️⃣ Отправь РУБРИКУ\n\n"
         "Нажми «Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -654,7 +671,6 @@ def on_text(message):
         st["step"] = "waiting_highlight_phrase"
         user_state[uid] = st
         
-        # Показываем превью
         try:
             card = create_poster_chp(
                 st["photo_bytes"],
@@ -691,7 +707,7 @@ def on_text(message):
             bot.reply_to(
                 message,
                 f"✏️ <b>Введи РУБРИКУ</b>\n"
-                f"(слово будет на желтом прямоугольнике в правом нижнем углу):",
+                f"(слово будет на желтом прямоугольнике):",
                 parse_mode="HTML"
             )
         else:
@@ -745,25 +761,40 @@ def on_text(message):
     bot.send_message(message.chat.id, "📝 Нажми «🚨 Шаблон ЧП ВМ»", reply_markup=main_menu_kb())
 
 # =========================
-# Main
+# Main with anti-conflict
 # =========================
 if __name__ == "__main__":
     logger.info("🚀 Starting bot...")
     download_fonts()
     
-    time.sleep(2)
+    time.sleep(3)
     
+    # Полностью сбрасываем webhook и очищаем обновления
     try:
         bot.delete_webhook()
+        logger.info("Webhook deleted")
         time.sleep(1)
     except Exception as e:
         logger.warning(f"Webhook error: {e}")
     
-    logger.info("✅ Bot started!")
+    # Очищаем старые обновления
+    try:
+        bot.get_updates(offset=-1, timeout=5)
+        logger.info("Pending updates cleared")
+    except Exception as e:
+        logger.warning(f"Clear updates error: {e}")
     
+    logger.info("✅ Bot started polling!")
+    
+    # Запускаем с обработкой ошибки 409
     while True:
         try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+            bot.infinity_polling(timeout=30, long_polling_timeout=30, skip_pending=True)
         except Exception as e:
             logger.error(f"Polling error: {e}")
-            time.sleep(10)
+            if "409" in str(e):
+                logger.error("Conflict detected! Waiting 15 seconds...")
+                time.sleep(15)
+            else:
+                logger.info("Restarting polling in 5 seconds...")
+                time.sleep(5)

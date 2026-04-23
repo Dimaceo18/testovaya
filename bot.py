@@ -42,7 +42,7 @@ FONT_SIZE_TITLE = 90
 FONT_SIZE_MIN = 30
 FONT_SIZE_LABEL = 42      # размер для слов ДАТА: и МЕСТО:
 FONT_SIZE_VALUE = 38      # размер для значений даты и места
-FONT_SIZE_RUBRIC = 36     # размер для рубрики
+FONT_SIZE_RUBRIC = 48     # увеличенный размер для рубрики
 
 # Затемнение фото
 BRIGHTNESS_FACTOR = 0.85
@@ -52,18 +52,17 @@ GRADIENT_HEIGHT_PCT = 0.48
 GRADIENT_MAX_ALPHA = 220
 
 # Отступы
-MARGIN_LEFT_PCT = 0.08      # отступ слева 8%
 MARGIN_TOP_PCT = 0.10
 MARGIN_BOTTOM_PCT = 0.10
-TEXT_MAX_WIDTH_PCT = 0.70    # текст занимает не более 70% ширины
+TEXT_MAX_WIDTH_PCT = 0.80    # текст занимает 80% ширины (было 70%)
 LINE_SPACING_RATIO = 0.22
 
-# Отступ для даты и места от нижнего края
-DATE_PLACE_BOTTOM_MARGIN = 180
+# Отступ для даты и места от края
+DATE_PLACE_BOTTOM_MARGIN = 160
 DATE_PLACE_TOP_MARGIN = 280
+DATE_PLACE_LINE_SPACING = 15   # уменьшенное расстояние между датой и местом
 
 # Желтый прямоугольник для рубрики
-RUBRIC_RECT_SIZE = (200, 80)  # ширина, высота
 RUBRIC_RECT_MARGIN_RIGHT = 40
 RUBRIC_RECT_MARGIN_BOTTOM = 40
 RUBRIC_RECT_COLOR = (255, 220, 80)  # желтый
@@ -76,7 +75,8 @@ LABEL_COLOR = (255, 200, 80)  # золотистый для ДАТА: и МЕС�
 # Цвета для выделения
 HIGHLIGHT_COLORS = {
     "red": (255, 80, 80),     # красный
-    "yellow": (255, 220, 80)  # желтый
+    "yellow": (255, 220, 80), # желтый
+    "blue": (80, 150, 255)    # голубой
 }
 
 # =========================
@@ -143,7 +143,6 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         return img.crop((0, top, w, top + new_h))
 
 def apply_gradient(img: Image.Image, direction: str, height_pct: float, max_alpha: int = 220) -> Image.Image:
-    """direction: 'top' - сверху вниз, 'bottom' - снизу вверх"""
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -176,7 +175,8 @@ def text_width(draw, s: str, font) -> int:
     bbox = draw.textbbox((0, 0), s, font=font)
     return bbox[2] - bbox[0]
 
-def wrap_no_truncate_left(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
+def wrap_text_center(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
+    """Перенос текста с центрированием"""
     words = [w for w in (text or "").split() if w.strip()]
     if not words:
         return [""], True
@@ -207,9 +207,9 @@ def wrap_no_truncate_left(draw, text: str, font, max_width: int, max_lines: int 
 
     return lines, True
 
-def fit_text_block_left(draw, text: str, font_path: str, safe_w: int, max_block_h: int,
-                        max_lines: int = 6, start_size: int = 90, min_size: int = 16,
-                        line_spacing_ratio: float = 0.22):
+def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_block_h: int,
+                          max_lines: int = 6, start_size: int = 90, min_size: int = 16,
+                          line_spacing_ratio: float = 0.22):
     text = (text or "").strip()
     if not text:
         text = " "
@@ -217,7 +217,7 @@ def fit_text_block_left(draw, text: str, font_path: str, safe_w: int, max_block_
     size = start_size
     while size >= min_size:
         font = load_font(font_path, size)
-        lines, ok = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
+        lines, ok = wrap_text_center(draw, text, font, safe_w, max_lines=max_lines)
         spacing = int(size * line_spacing_ratio)
 
         heights = []
@@ -238,7 +238,7 @@ def fit_text_block_left(draw, text: str, font_path: str, safe_w: int, max_block_
         size -= 2
 
     font = load_font(font_path, min_size)
-    lines, _ = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
+    lines, _ = wrap_text_center(draw, text, font, safe_w, max_lines=max_lines)
     spacing = int(min_size * line_spacing_ratio)
     heights = []
     total_h = 0
@@ -250,30 +250,49 @@ def fit_text_block_left(draw, text: str, font_path: str, safe_w: int, max_block_
     total_h += spacing * (len(lines) - 1)
     return font, lines, heights, spacing, total_h
 
-def draw_text_with_highlight_left(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+def draw_text_with_highlight_center(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+    """Рисует строку текста с выделением фразы цветом (центрирование)"""
     line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
+    # Если нет фразы для выделения или фразы нет в строке
     if not highlight_upper or highlight_upper not in line_upper:
         draw.text((x, y), line_upper, font=font, fill=TEXT_COLOR)
         return y
     
-    parts = line_upper.split(highlight_upper)
-    current_x = x
+    # Рисуем текст с выделением
+    # Находим позицию фразы
+    lower_text = line_upper.lower()
+    lower_highlight = highlight_upper.lower()
+    start_pos = lower_text.find(lower_highlight)
     
-    for i, part in enumerate(parts):
-        if part:
-            draw.text((current_x, y), part, font=font, fill=TEXT_COLOR)
-            current_x += text_width(draw, part, font)
-        
-        if i < len(parts) - 1:
-            draw.text((current_x, y), highlight_upper, font=font, fill=highlight_color)
-            current_x += text_width(draw, highlight_upper, font)
+    if start_pos == -1:
+        draw.text((x, y), line_upper, font=font, fill=TEXT_COLOR)
+        return y
+    
+    # Текст до выделения
+    before = line_upper[:start_pos]
+    # Выделенная фраза
+    highlighted = line_upper[start_pos:start_pos + len(highlight_upper)]
+    # Текст после выделения
+    after = line_upper[start_pos + len(highlight_upper):]
+    
+    # Считаем ширины частей
+    before_w = text_width(draw, before, font)
+    highlight_w = text_width(draw, highlighted, font)
+    
+    # Рисуем с центрированием по x
+    current_x = x
+    draw.text((current_x, y), before, font=font, fill=TEXT_COLOR)
+    current_x += before_w
+    draw.text((current_x, y), highlighted, font=font, fill=highlight_color)
+    current_x += highlight_w
+    draw.text((current_x, y), after, font=font, fill=TEXT_COLOR)
     
     return y
 
 def draw_date_place(draw, date: str, place: str, x: int, y: int, max_width: int):
-    """Рисует дату и место в левом углу"""
+    """Рисует дату и место в левом углу с уменьшенным расстоянием"""
     font_label = load_font(FONT_PATH, FONT_SIZE_LABEL)
     font_value = load_font(FONT_REGULAR, FONT_SIZE_VALUE)
     
@@ -285,16 +304,16 @@ def draw_date_place(draw, date: str, place: str, x: int, y: int, max_width: int)
         label_bbox = draw.textbbox((0, 0), "ДАТА:", font=font_label)
         label_width = label_bbox[2] - label_bbox[0]
         
-        date_lines = wrap_no_truncate_left(draw, date.upper(), font_value, max_width - label_width - 20, 3)[0]
+        date_lines = wrap_text_center(draw, date.upper(), font_value, max_width - label_width - 20, 3)[0]
         for i, line in enumerate(date_lines):
             if i == 0:
                 draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
             else:
                 draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
             line_bbox = draw.textbbox((0, 0), line, font=font_value)
-            current_y += line_bbox[3] - line_bbox[1] + 10
+            current_y += line_bbox[3] - line_bbox[1] + 5  # уменьшенный отступ
         
-        current_y += 35
+        current_y += DATE_PLACE_LINE_SPACING  # маленький отступ после даты
     
     # Место
     if place:
@@ -302,14 +321,14 @@ def draw_date_place(draw, date: str, place: str, x: int, y: int, max_width: int)
         label_bbox = draw.textbbox((0, 0), "МЕСТО:", font=font_label)
         label_width = label_bbox[2] - label_bbox[0]
         
-        place_lines = wrap_no_truncate_left(draw, place.upper(), font_value, max_width - label_width - 20, 3)[0]
+        place_lines = wrap_text_center(draw, place.upper(), font_value, max_width - label_width - 20, 3)[0]
         for i, line in enumerate(place_lines):
             if i == 0:
                 draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
             else:
                 draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
             line_bbox = draw.textbbox((0, 0), line, font=font_value)
-            current_y += line_bbox[3] - line_bbox[1] + 10
+            current_y += line_bbox[3] - line_bbox[1] + 5
 
 def draw_rubric(draw, rubric: str):
     """Рисует желтый прямоугольник с рубрикой в правом нижнем углу"""
@@ -325,10 +344,10 @@ def draw_rubric(draw, rubric: str):
     text_h = text_bbox[3] - text_bbox[1]
     
     # Размер прямоугольника с отступами
-    rect_padding_x = 30
-    rect_padding_y = 20
-    rect_w = max(RUBRIC_RECT_SIZE[0], text_w + rect_padding_x * 2)
-    rect_h = max(RUBRIC_RECT_SIZE[1], text_h + rect_padding_y * 2)
+    rect_padding_x = 40
+    rect_padding_y = 25
+    rect_w = text_w + rect_padding_x * 2
+    rect_h = text_h + rect_padding_y * 2
     
     # Позиция в правом нижнем углу
     rect_x = TARGET_W - rect_w - RUBRIC_RECT_MARGIN_RIGHT
@@ -359,15 +378,13 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     
     draw = ImageDraw.Draw(img)
     
-    margin_left = int(TARGET_W * MARGIN_LEFT_PCT)
     margin_top = int(TARGET_H * MARGIN_TOP_PCT)
-    margin_bottom = int(TARGET_H * MARGIN_BOTTOM_PCT)
-    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
+    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)  # 80% ширины
     
     text = (title_text or "").strip().upper()
     title_max_h = int(TARGET_H * 0.23)
     
-    font, lines, heights, spacing, total_h = fit_text_block_left(
+    font, lines, heights, spacing, total_h = fit_text_block_center(
         draw=draw,
         text=text,
         font_path=FONT_PATH,
@@ -379,28 +396,30 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         line_spacing_ratio=LINE_SPACING_RATIO
     )
     
-    # Основной текст
+    # Основной текст с центрированием
     if text_position == "top":
         y = margin_top
-        # Рисуем текст
         for i, ln in enumerate(lines):
-            draw_text_with_highlight_left(draw, ln, highlight_phrase, highlight_color, font, margin_left, y)
+            line_w = text_width(draw, ln, font)
+            x = (TARGET_W - line_w) // 2
+            draw_text_with_highlight_center(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
         
         # Дата и место внизу
         if date or place:
-            draw_date_place(draw, date, place, margin_left, TARGET_H - DATE_PLACE_BOTTOM_MARGIN, max_text_width)
+            draw_date_place(draw, date, place, 70, TARGET_H - DATE_PLACE_BOTTOM_MARGIN, max_text_width)
     
     else:
         # Дата и место вверху
         y = DATE_PLACE_TOP_MARGIN
         if date or place:
-            draw_date_place(draw, date, place, margin_left, y, max_text_width)
-            y += 250
+            draw_date_place(draw, date, place, 70, y, max_text_width)
+            y += 200
         
-        # Рисуем текст
         for i, ln in enumerate(lines):
-            draw_text_with_highlight_left(draw, ln, highlight_phrase, highlight_color, font, margin_left, y)
+            line_w = text_width(draw, ln, font)
+            x = (TARGET_W - line_w) // 2
+            draw_text_with_highlight_center(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
     
     # Желтый прямоугольник с рубрикой
@@ -436,10 +455,11 @@ def add_date_place_kb():
     return kb
 
 def color_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
+    kb = InlineKeyboardMarkup(row_width=3)
     kb.add(
         InlineKeyboardButton("🔴 Красный", callback_data="color:red"),
-        InlineKeyboardButton("🟡 Желтый", callback_data="color:yellow")
+        InlineKeyboardButton("🟡 Желтый", callback_data="color:yellow"),
+        InlineKeyboardButton("🔵 Голубой", callback_data="color:blue")
     )
     kb.add(InlineKeyboardButton("➖ Без выделения", callback_data="color:none"))
     return kb
@@ -530,7 +550,7 @@ def on_color_select(c):
     else:
         st["highlight_phrase"] = st.get("temp_highlight_phrase", "")
         st["highlight_color"] = HIGHLIGHT_COLORS.get(color_key)
-        color_names = {"red": "красный", "yellow": "желтый"}
+        color_names = {"red": "красный", "yellow": "желтый", "blue": "голубой"}
         bot.answer_callback_query(c.id, f"Выбран {color_names.get(color_key)} цвет ✅")
     
     st["step"] = "waiting_rubric"
@@ -586,8 +606,13 @@ def cmd_start(message):
         "4️⃣ Реши, добавлять дату и место\n"
         "5️⃣ Отправь ДАТУ и МЕСТО (если нужно)\n"
         "6️⃣ Отправь ФРАЗУ для выделения цветом\n"
-        "7️⃣ Выбери цвет: 🔴 красный или 🟡 желтый\n"
+        "7️⃣ Выбери цвет: 🔴 красный, 🟡 желтый или 🔵 голубой\n"
         "8️⃣ Отправь РУБРИКУ\n\n"
+        "<b>📐 Особенности:</b>\n"
+        "• Текст <b>отцентрирован</b>\n"
+        "• Ширина текста <b>80%</b> от фото\n"
+        "• Шрифт Inter ExtraBold\n"
+        "• Выделение фразы работает!\n\n"
         "Нажми «Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -689,7 +714,8 @@ def on_text(message):
                 photo=BytesIO(st["preview_bytes"]),
                 caption=f"✅ <b>Предварительный просмотр</b>\n\n"
                        f"✏️ <b>Напиши ФРАЗУ, которую нужно выделить цветом</b>\n"
-                       f"(или отправь «-» чтобы пропустить):",
+                       f"(или отправь «-» чтобы пропустить):\n\n"
+                       f"💡 Фраза будет выделена выбранным цветом",
                 parse_mode="HTML"
             )
         except Exception as e:
@@ -769,7 +795,6 @@ if __name__ == "__main__":
     
     time.sleep(3)
     
-    # Полностью сбрасываем webhook и очищаем обновления
     try:
         bot.delete_webhook()
         logger.info("Webhook deleted")
@@ -777,7 +802,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Webhook error: {e}")
     
-    # Очищаем старые обновления
     try:
         bot.get_updates(offset=-1, timeout=5)
         logger.info("Pending updates cleared")
@@ -786,7 +810,6 @@ if __name__ == "__main__":
     
     logger.info("✅ Bot started polling!")
     
-    # Запускаем с обработкой ошибки 409
     while True:
         try:
             bot.infinity_polling(timeout=30, long_polling_timeout=30, skip_pending=True)

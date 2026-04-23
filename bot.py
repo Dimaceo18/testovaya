@@ -3,8 +3,6 @@ import os
 import html
 import time
 import logging
-import sys
-import signal
 from io import BytesIO
 from typing import Dict, List, Tuple
 
@@ -15,7 +13,6 @@ from telebot.types import (
 )
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from dotenv import load_dotenv
-import requests
 
 load_dotenv()
 
@@ -34,7 +31,7 @@ if CHANNEL and not CHANNEL.startswith("@"):
 TARGET_W = 1080
 TARGET_H = 1350
 
-# Шрифт
+# Шрифты
 FONT_PATH = "Inter-ExtraBold.ttf"
 FONT_FALLBACK = "Montserrat-Black.ttf"
 FONT_REGULAR = "Inter-Regular.ttf"
@@ -65,13 +62,13 @@ DATE_PLACE_LEFT_MARGIN = 70
 
 # Скругленный прямоугольник для рубрики
 RUBRIC_TOP_MARGIN = 60
-RUBRIC_PADDING = 30
-RUBRIC_RADIUS = 30
-RUBRIC_TEXT_COLOR = (255, 255, 255)
+RUBRIC_PADDING = 35          # отступы со всех сторон
+RUBRIC_RADIUS = 35           # радиус скругления 35px
+RUBRIC_TEXT_COLOR = (255, 255, 255)  # белый текст
 
 # Цвета
 TEXT_COLOR = (255, 255, 255)
-DATE_VALUE_COLOR = (255, 255, 255)
+DATE_VALUE_COLOR = (255, 255, 255)  # белые значения даты и места
 
 # Цвета для выделения
 HIGHLIGHT_COLORS = {
@@ -108,8 +105,9 @@ def download_fonts():
     for font_name, url in fonts.items():
         if not os.path.exists(font_name):
             try:
+                import requests
                 logger.info(f"Downloading {font_name}...")
-                response = requests.get(url, timeout=60)
+                response = requests.get(url, timeout=30)
                 with open(font_name, "wb") as f:
                     f.write(response.content)
                 logger.info(f"Downloaded {font_name}")
@@ -238,6 +236,7 @@ def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_bloc
     return font, lines, heights, spacing, total_h
 
 def draw_highlighted_text(draw, text: str, highlight_word: str, color, font, x, y):
+    """Рисует текст с выделением слова цветом"""
     if not highlight_word:
         draw.text((x, y), text, font=font, fill=TEXT_COLOR)
         return
@@ -268,6 +267,7 @@ def draw_highlighted_text(draw, text: str, highlight_word: str, color, font, x, 
         draw.text((current_x, y), after, font=font, fill=TEXT_COLOR)
 
 def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int, max_width: int):
+    """Рисует дату и место - метки цветные, значения белые"""
     font = load_font(FONT_REGULAR, FONT_SIZE_DATE_PLACE)
     
     current_y = y
@@ -301,32 +301,43 @@ def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int
                 val_y += line_bbox[3] - line_bbox[1] + 5
 
 def draw_rubric_top_center(draw, rubric: str, highlight_color):
+    """
+    Рисует скругленный прямоугольник с рубрикой вверху по центру.
+    Радиус скругления 35px. Текст идеально отцентрирован.
+    """
     if not rubric:
         return 0
     
     font_rubric = load_font(FONT_PATH, FONT_SIZE_RUBRIC)
     rubric_text = rubric.upper()
     
-    text_bbox = draw.textbbox((0, 0), rubric_text, font=font_rubric)
-    text_w = text_bbox[2] - text_bbox[0]
-    text_h = text_bbox[3] - text_bbox[1]
+    # Получаем размеры текста
+    text_w = draw.textlength(rubric_text, font=font_rubric)
+    bbox = draw.textbbox((0, 0), rubric_text, font=font_rubric)
+    text_h = bbox[3] - bbox[1]
     
+    # Одинаковые отступы со всех сторон
     padding = RUBRIC_PADDING
-    rect_w = text_w + padding * 2
-    rect_h = text_h + padding * 2
     
+    # Размер прямоугольника
+    rect_w = int(text_w + padding * 2)
+    rect_h = int(text_h + padding * 2)
+    
+    # Позиция прямоугольника - строго по центру экрана
     rect_x = (TARGET_W - rect_w) // 2
     rect_y = RUBRIC_TOP_MARGIN
     
-    radius = RUBRIC_RADIUS
+    # Рисуем скругленный прямоугольник (радиус 35px)
     draw.rounded_rectangle(
         [rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], 
-        radius=radius, 
+        radius=RUBRIC_RADIUS, 
         fill=highlight_color
     )
     
-    text_x = rect_x + (rect_w - text_w) // 2
-    text_y = rect_y + (rect_h - text_h) // 2
+    # Вычисляем позицию текста для идеального центрирования
+    text_x = rect_x + (rect_w - text_w) / 2
+    text_y = rect_y + (rect_h - text_h) / 2 - bbox[1]
+    
     draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=RUBRIC_TEXT_COLOR)
     
     return rect_y + rect_h
@@ -350,10 +361,12 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     
     draw = ImageDraw.Draw(img)
     
+    # Рисуем рубрику
     rubric_bottom = 0
     if rubric:
         rubric_bottom = draw_rubric_top_center(draw, rubric, highlight_color)
     
+    # Отступ для заголовка
     margin_top = int(TARGET_H * MARGIN_TOP_PCT)
     if rubric_bottom > 0:
         margin_top = rubric_bottom + 60
@@ -564,6 +577,11 @@ def cmd_start(message):
         message.chat.id,
         "👋 <b>Бот для оформления постов</b>\n\n"
         "📝 Отправь фото и следуй инструкциям.\n\n"
+        "<b>📐 Настройки:</b>\n"
+        "• Размер: 1080×1350 (4:5)\n"
+        "• Шрифт: Inter ExtraBold\n"
+        "• Скругление рубрики: 35px\n"
+        "• Выделение слов цветом\n\n"
         "Нажми «🚨 Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -657,10 +675,10 @@ def on_text(message):
                 st["temp_highlight_word"] = text
                 st["step"] = "waiting_color"
                 user_state[uid] = st
-                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b>!\n\n🎨 <b>Выбери цвет:</b>",
+                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b> в заголовке!\n\n🎨 <b>Выбери цвет выделения:</b>",
                     parse_mode="HTML", reply_markup=color_kb())
             else:
-                bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b>!\n\nПопробуй другое слово или «-»",
+                bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b> в заголовке!\n\nЗаголовок: «{st.get('title', '')}»\n\nПопробуй другое слово или нажми «-»",
                     parse_mode="HTML")
         return
     
@@ -681,7 +699,7 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]),
-                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку:",
+                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку для публикации:",
                 parse_mode="HTML", reply_markup=preview_kb())
         except Exception as e:
             logger.error(f"Error: {e}")
@@ -691,48 +709,31 @@ def on_text(message):
     bot.send_message(message.chat.id, "📝 Нажми «🚨 Шаблон ЧП ВМ»", reply_markup=main_menu_kb())
 
 # =========================
-# Main with anti-conflict and timeout fix
+# Main
 # =========================
 if __name__ == "__main__":
     logger.info("🚀 Starting bot...")
     download_fonts()
     
-    # Ждем перед запуском
-    time.sleep(3)
-    
-    # Полностью сбрасываем webhook
-    try:
-        bot.delete_webhook()
-        logger.info("Webhook deleted")
-    except Exception as e:
-        logger.warning(f"Webhook delete error: {e}")
-    
     time.sleep(2)
     
-    # Очищаем все ожидающие обновления
     try:
-        bot.get_updates(offset=-1, timeout=5)
-        logger.info("Pending updates cleared")
+        bot.remove_webhook()
+        logger.info("Webhook removed")
     except Exception as e:
-        logger.warning(f"Clear updates error: {e}")
+        logger.warning(f"Webhook error: {e}")
+    
+    time.sleep(1)
     
     logger.info("✅ Bot started!")
     
-    # Запускаем с уменьшенным timeout для избежания таймаутов
     while True:
         try:
-            # Уменьшаем timeout до 20 секунд
-            bot.infinity_polling(timeout=20, long_polling_timeout=20, skip_pending=True)
+            bot.infinity_polling(timeout=30, long_polling_timeout=30, skip_pending=True)
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Polling error: {error_msg}")
-            
-            if "409" in error_msg:
-                logger.error("Conflict detected! Another instance is running. Sleeping 30 seconds...")
-                time.sleep(30)
-            elif "Timeout" in error_msg or "timed out" in error_msg:
-                logger.warning("Timeout detected, restarting polling...")
-                time.sleep(5)
+            logger.error(f"Polling error: {e}")
+            if "409" in str(e):
+                logger.info("Conflict, waiting 20s...")
+                time.sleep(20)
             else:
-                logger.info(f"Unknown error, restarting in 10 seconds...")
-                time.sleep(10)
+                time.sleep(5)

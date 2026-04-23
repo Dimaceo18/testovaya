@@ -43,9 +43,10 @@ FONT_SIZE_MIN = 60
 # Затемнение фото
 BRIGHTNESS_FACTOR = 0.85
 
-# Градиент
-GRADIENT_HEIGHT_PCT = 0.48
-GRADIENT_MAX_ALPHA = 220
+# Градиент (горизонтальный, слева направо)
+GRADIENT_TOP_ALPHA = 180   # максимальная прозрачность сверху
+GRADIENT_BOTTOM_ALPHA = 60 # минимальная прозрачность снизу
+GRADIENT_WIDTH_PCT = 0.70  # градиент занимает 70% ширины
 
 # Отступы
 MARGIN_LEFT_PCT = 0.08      # отступ слева 8%
@@ -125,45 +126,44 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         top = (h - new_h) // 2
         return img.crop((0, top, w, top + new_h))
 
-def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
+def apply_horizontal_gradient(img: Image.Image) -> Image.Image:
+    """
+    Накладывает горизонтальный градиент слева направо.
+    Сверху градиент сильнее (больше прозрачность), снизу слабее.
+    """
     w, h = img.size
-    gh = int(h * height_pct)
-    if gh <= 0:
-        return img
     
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (1, gh), 0)
-    for y in range(gh):
-        a = int(max_alpha * (1 - y / max(1, gh - 1)))
-        grad.putpixel((0, y), a)
-    grad = grad.resize((w, gh))
-    overlay_alpha.paste(grad, (0, 0))
+    # Ширина градиента - 70% от ширины фото
+    gradient_width = int(w * GRADIENT_WIDTH_PCT)
     
-    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    base = img.convert("RGBA")
-    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    out = Image.alpha_composite(base, overlay)
-    return out.convert("RGB")
-
-def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
-    w, h = img.size
-    gh = int(h * height_pct)
-    if gh <= 0:
-        return img
+    # Создаем маску для градиента
+    mask = Image.new("L", (w, h), 0)
+    draw_mask = ImageDraw.Draw(mask)
     
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (1, gh), 0)
-    for y in range(gh):
-        a = int(max_alpha * (y / max(1, gh - 1)))
-        grad.putpixel((0, y), a)
-    grad = grad.resize((w, gh))
-    overlay_alpha.paste(grad, (0, h - gh))
+    # Рисуем вертикальные полосы с разной прозрачностью
+    for x in range(gradient_width):
+        # Прогресс от 0 до 1
+        progress = x / gradient_width
+        # Инвертируем: слева темнее (180), справа прозрачнее (0)
+        alpha_top = int(GRADIENT_TOP_ALPHA * (1 - progress))
+        alpha_bottom = int(GRADIENT_BOTTOM_ALPHA * (1 - progress))
+        
+        # Рисуем вертикальную линию с градиентом по высоте
+        for y in range(h):
+            # Плавный переход сверху вниз
+            y_progress = y / h
+            alpha = int(alpha_top * (1 - y_progress) + alpha_bottom * y_progress)
+            draw_mask.point((x, y), fill=alpha)
     
-    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    base = img.convert("RGBA")
-    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    out = Image.alpha_composite(base, overlay)
-    return out.convert("RGB")
+    # Создаем черную накладку
+    black_overlay = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    
+    # Применяем маску
+    img_rgba = img.convert("RGBA")
+    masked_overlay = Image.composite(black_overlay, Image.new("RGBA", (w, h), (0, 0, 0, 0)), mask)
+    result = Image.alpha_composite(img_rgba, masked_overlay)
+    
+    return result.convert("RGB")
 
 def text_width(draw, s: str, font) -> int:
     bbox = draw.textbbox((0, 0), s, font=font)
@@ -180,18 +180,16 @@ def split_into_short_lines(text: str, max_words: int = 2) -> List[str]:
     while i < len(words):
         # Берем 1-2 слова в строку
         if i + 1 < len(words) and len(words[i]) + len(words[i+1]) < 30:
-            # Если два слова короткие - объединяем
             lines.append(f"{words[i]} {words[i+1]}")
             i += 2
         else:
-            # Иначе одно слово
             lines.append(words[i])
             i += 1
     
     return lines
 
 def draw_text_with_highlight_large(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
-    """Рисует строку текста с выделением фразы цветом (крупный текст)"""
+    """Рисует строку текста с выделением фразы цветом"""
     line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
@@ -214,9 +212,9 @@ def draw_text_with_highlight_large(draw, line: str, highlight_phrase: str, highl
     
     return y
 
-def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
+def create_poster_chp(image_bytes: bytes, title_text: str,
                       highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
-    """Шаблон ЧП ВМ с большими буквами (1-2 слова в строке)"""
+    """Шаблон ЧП ВМ с горизонтальным градиентом"""
     
     # Открываем фото
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
@@ -226,11 +224,8 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     # Яркость
     img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
     
-    # Градиент
-    if text_position == "top":
-        img = apply_top_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
-    else:
-        img = apply_bottom_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
+    # Горизонтальный градиент (слева направо, сверху сильнее)
+    img = apply_horizontal_gradient(img)
     
     draw = ImageDraw.Draw(img)
     
@@ -250,7 +245,6 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     max_line_width = int(TARGET_W * 0.80)  # максимальная ширина строки 80%
     
     for line in short_lines:
-        # Пробуем крупный шрифт
         font_size = FONT_SIZE_TITLE
         font = load_font(font_size)
         line_width = text_width(draw, line, font)
@@ -269,13 +263,10 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         bbox = draw.textbbox((0, 0), line, font=font)
         line_height = bbox[3] - bbox[1]
         total_height += line_height + LINE_SPACING_LARGE
-    total_height -= LINE_SPACING_LARGE  # убираем лишний отступ после последней строки
+    total_height -= LINE_SPACING_LARGE
     
-    # Позиция текста
-    if text_position == "top":
-        y = margin_top
-    else:
-        y = TARGET_H - margin_bottom - total_height
+    # Текст всегда сверху (как на примере DOUBLE TREE)
+    y = margin_top
     
     # Рисуем строки
     for line, font, font_size, line_width in lines_with_fonts:
@@ -284,10 +275,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         
         # Тень для объема
         shadow_offset = 3
-        shadow_color = (0, 0, 0, 100)
-        
-        # Рисуем тень
-        draw.text((margin_left + shadow_offset, y + shadow_offset), line, font=font, fill=shadow_color)
+        draw.text((margin_left + shadow_offset, y + shadow_offset), line, font=font, fill=(0, 0, 0, 100))
         
         # Рисуем текст с выделением
         draw_text_with_highlight_large(draw, line, highlight_phrase, highlight_color, font, margin_left, y)
@@ -305,14 +293,6 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton("🚨 Шаблон ЧП ВМ"))
-    return kb
-
-def text_position_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("⬆️ Текст сверху", callback_data="text_pos:top"),
-        InlineKeyboardButton("⬇️ Текст снизу", callback_data="text_pos:bottom")
-    )
     return kb
 
 def color_kb():
@@ -335,24 +315,6 @@ def preview_kb():
 # =========================
 # Callback handlers
 # =========================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("text_pos:"))
-def on_text_position(c):
-    uid = c.from_user.id
-    position = c.data.split(":")[1]
-    st = user_state.get(uid) or {}
-    st["text_position"] = position
-    st["step"] = "waiting_title"
-    user_state[uid] = st
-    
-    pos_text = "сверху" if position == "top" else "снизу"
-    bot.answer_callback_query(c.id, f"Текст будет {pos_text} ✅")
-    bot.edit_message_text(
-        f"✅ Текст будет расположен <b>{pos_text}</b> фотографии.\n\n"
-        f"✏️ Теперь отправь <b>ЗАГОЛОВОК</b> (слова будут разбиты по 1-2 в строку):",
-        c.message.chat.id, c.message.message_id,
-        parse_mode="HTML"
-    )
-
 @bot.callback_query_handler(func=lambda c: c.data.startswith("color:"))
 def on_color_select(c):
     uid = c.from_user.id
@@ -376,7 +338,6 @@ def on_color_select(c):
         card = create_poster_chp(
             st["photo_bytes"],
             st.get("title", ""),
-            st.get("text_position", "top"),
             st.get("highlight_phrase", ""),
             st.get("highlight_color")
         )
@@ -434,15 +395,15 @@ def cmd_start(message):
         "👋 <b>Привет! Бот для оформления постов в стиле ЧП ВМ</b>\n\n"
         "<b>📝 Как работает:</b>\n"
         "1️⃣ Отправь фото\n"
-        "2️⃣ Выбери расположение текста (сверху/снизу)\n"
-        "3️⃣ Отправь ЗАГОЛОВОК\n"
-        "4️⃣ Отправь ФРАЗУ для выделения цветом\n"
-        "5️⃣ Выбери цвет: 🔴 красный или 🟡 желтый\n\n"
+        "2️⃣ Отправь ЗАГОЛОВОК\n"
+        "3️⃣ Отправь ФРАЗУ для выделения цветом\n"
+        "4️⃣ Выбери цвет: 🔴 красный или 🟡 желтый\n\n"
         "<b>📐 Особенности:</b>\n"
         "• Текст разбивается на <b>1-2 слова</b> в строку\n"
         "• Очень <b>крупный шрифт</b> (до 130px)\n"
         "• Выравнивание по <b>левому краю</b>\n"
-        "• <b>Тень</b> для объема текста\n\n"
+        "• <b>Горизонтальный градиент</b> слева направо\n"
+        "• <b>Сверху градиент сильнее, снизу слабее</b>\n\n"
         "Нажми «Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -471,15 +432,14 @@ def on_photo(message):
             photo_bytes = bot.download_file(file_info.file_path)
             
             st["photo_bytes"] = photo_bytes
-            st["step"] = "waiting_text_position"
+            st["step"] = "waiting_title"
             user_state[uid] = st
             
             bot.reply_to(
                 message,
                 "📸 Фото сохранено!\n\n"
-                "📐 <b>Выбери расположение текста:</b>",
-                parse_mode="HTML",
-                reply_markup=text_position_kb()
+                "✏️ <b>Введи ЗАГОЛОВОК</b> (слова будут разбиты по 1-2 в строку):",
+                parse_mode="HTML"
             )
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
@@ -508,7 +468,6 @@ def on_text(message):
             card = create_poster_chp(
                 st["photo_bytes"],
                 text,
-                st.get("text_position", "top"),
                 "",
                 None
             )
@@ -537,7 +496,6 @@ def on_text(message):
                 card = create_poster_chp(
                     st["photo_bytes"],
                     st.get("title", ""),
-                    st.get("text_position", "top"),
                     "",
                     None
                 )

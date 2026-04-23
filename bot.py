@@ -54,23 +54,23 @@ MARGIN_TOP_PCT = 0.15
 TEXT_MAX_WIDTH_PCT = 0.80
 LINE_SPACING_RATIO = 0.22
 
-# Отступ для даты и места
-DATE_PLACE_BOTTOM_MARGIN = 160
-DATE_PLACE_TOP_MARGIN = 280
-DATE_PLACE_LINE_SPACING = 20      # расстояние между эллипсами
+# Отступ для даты и места (подняли выше)
+DATE_PLACE_BOTTOM_MARGIN = 280    # было 160, подняли выше
+DATE_PLACE_TOP_MARGIN = 200       # было 280, подняли выше
+DATE_PLACE_LINE_SPACING = 20
 DATE_PLACE_LEFT_MARGIN = 70
 
 # Скругленный прямоугольник для рубрики
 RUBRIC_TOP_MARGIN = 60
 RUBRIC_PADDING = 35
 RUBRIC_RADIUS = 35
-RUBRIC_BG_COLOR = (255, 255, 255)  # белый фон для рубрики
-RUBRIC_TEXT_COLOR = (0, 0, 0)      # черный текст для рубрики
+RUBRIC_BG_COLOR = (255, 255, 255)  # белый фон
+RUBRIC_TEXT_COLOR = (0, 0, 0)      # черный текст
 
 # Скругленный прямоугольник для даты и места
-DATE_PLACE_PADDING = 25            # отступы внутри эллипса
-DATE_PLACE_RADIUS = 35             # радиус скругления 35px
-DATE_PLACE_BG_COLOR = (255, 255, 255)  # белый фон
+DATE_PLACE_PADDING = 25
+DATE_PLACE_RADIUS = 35
+DATE_PLACE_TEXT_COLOR = (255, 255, 255)  # белый текст
 
 # Цвета
 TEXT_COLOR = (255, 255, 255)
@@ -270,11 +270,11 @@ def draw_highlighted_text(draw, text: str, highlight_word: str, color, font, x, 
     if after:
         draw.text((current_x, y), after, font=font, fill=TEXT_COLOR)
 
-def draw_rounded_rect_with_text(draw, text: str, color, x: int, y: int, padding: int, radius: int, bg_color):
+def draw_rounded_rect_with_text(draw, text: str, bg_color, x: int, y: int, padding: int, radius: int):
     """
     Рисует скругленный прямоугольник с текстом внутри.
     text - текст для отображения
-    color - цвет текста
+    bg_color - цвет фона прямоугольника
     x, y - левый верхний угол прямоугольника
     """
     if not text:
@@ -292,24 +292,24 @@ def draw_rounded_rect_with_text(draw, text: str, color, x: int, y: int, padding:
     rect_w = int(text_w + padding * 2)
     rect_h = int(text_h + padding * 2)
     
-    # Рисуем скругленный прямоугольник
+    # Рисуем скругленный прямоугольник (цветной фон)
     draw.rounded_rectangle(
         [x, y, x + rect_w, y + rect_h],
         radius=radius,
         fill=bg_color
     )
     
-    # Рисуем текст по центру прямоугольника
+    # Рисуем текст белым цветом по центру прямоугольника
     text_x = x + (rect_w - text_w) / 2
     text_y = y + (rect_h - text_h) / 2 - bbox[1]
-    draw.text((text_x, text_y), text_upper, font=font, fill=color)
+    draw.text((text_x, text_y), text_upper, font=font, fill=DATE_PLACE_TEXT_COLOR)
     
     return y + rect_h + DATE_PLACE_LINE_SPACING
 
 def draw_rubric_top_center(draw, rubric: str, highlight_color):
     """
-    Рисует скругленный прямоугольник с рубрикой вверху по центру.
-    Фон - белый, текст - цветом выделения.
+    Рисует белый скругленный прямоугольник с рубрикой вверху по центру.
+    Текст - цветом выделения.
     """
     if not rubric:
         return 0
@@ -400,37 +400,37 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
             draw_highlighted_text(draw, ln, highlight_word, highlight_color, font, x, y)
             y += heights[i] + spacing
         
-        # Дата и место внизу - в белых эллипсах
+        # Дата и место внизу - цветные эллипсы, белый текст
         if date or place:
             date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
             if date:
                 date_place_y = draw_rounded_rect_with_text(
                     draw, f"ДАТА: {date}", highlight_color,
                     DATE_PLACE_LEFT_MARGIN, date_place_y,
-                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS, DATE_PLACE_BG_COLOR
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS
                 )
             if place:
                 draw_rounded_rect_with_text(
                     draw, f"МЕСТО: {place}", highlight_color,
                     DATE_PLACE_LEFT_MARGIN, date_place_y,
-                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS, DATE_PLACE_BG_COLOR
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS
                 )
     
     else:
-        # Дата и место вверху - в белых эллипсах
+        # Дата и место вверху - цветные эллипсы, белый текст
         date_place_y = DATE_PLACE_TOP_MARGIN
         if date or place:
             if date:
                 date_place_y = draw_rounded_rect_with_text(
                     draw, f"ДАТА: {date}", highlight_color,
                     DATE_PLACE_LEFT_MARGIN, date_place_y,
-                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS, DATE_PLACE_BG_COLOR
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS
                 )
             if place:
                 draw_rounded_rect_with_text(
                     draw, f"МЕСТО: {place}", highlight_color,
                     DATE_PLACE_LEFT_MARGIN, date_place_y,
-                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS, DATE_PLACE_BG_COLOR
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS
                 )
             y = date_place_y + 100
         else:
@@ -452,7 +452,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
 # =========================
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("🚨 Шаблон ЧП ВМ"))
+    kb.row(KeyboardButton("🎨 Создать афишу"))
     return kb
 
 def text_position_kb():
@@ -564,7 +564,7 @@ def on_color_select(c):
     st["step"] = "waiting_rubric"
     user_state[uid] = st
     
-    bot.send_message(c.message.chat.id, f"✏️ <b>Введи РУБРИКУ</b> (на белом фоне):", parse_mode="HTML")
+    bot.send_message(c.message.chat.id, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
     bot.delete_message(c.message.chat.id, c.message.message_id)
 
 @bot.callback_query_handler(func=lambda c: c.data in ["publish", "cancel"])
@@ -601,23 +601,23 @@ def cmd_start(message):
     clear_state(message.from_user.id)
     bot.send_message(
         message.chat.id,
-        "👋 <b>Бот для оформления постов</b>\n\n"
+        "👋 <b>Бот для создания афиш</b>\n\n"
         "📝 Отправь фото и следуй инструкциям.\n\n"
         "<b>📐 Настройки:</b>\n"
         "• Размер: 1080×1350 (4:5)\n"
         "• Рубрика: белый фон, цветной текст\n"
-        "• Дата/Место: белые эллипсы, цветной текст\n"
+        "• Дата/Место: цветные эллипсы, белый текст\n"
         "• Скругление: 35px\n\n"
-        "Нажми «🚨 Шаблон ЧП ВМ» 👇",
+        "Нажми «Создать афишу» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
 
-@bot.message_handler(func=lambda message: message.text == "🚨 Шаблон ЧП ВМ")
+@bot.message_handler(func=lambda message: message.text == "🎨 Создать афишу")
 def handle_template_button(message):
     uid = message.from_user.id
     user_state[uid] = {"step": "waiting_photo"}
-    bot.send_message(message.chat.id, "🚨 <b>Шаблон ЧП ВМ</b>\n\n📸 Пришли фото:", parse_mode="HTML")
+    bot.send_message(message.chat.id, "🎨 <b>Создание афиши</b>\n\n📸 Пришли фото:", parse_mode="HTML")
 
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
@@ -639,7 +639,7 @@ def on_photo(message):
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
     else:
-        bot.reply_to(message, "❌ Нажми «🚨 Шаблон ЧП ВМ»")
+        bot.reply_to(message, "❌ Нажми «Создать афишу»")
 
 @bot.message_handler(content_types=["text"])
 def on_text(message):
@@ -694,7 +694,7 @@ def on_text(message):
             st["highlight_color"] = None
             st["step"] = "waiting_rubric"
             user_state[uid] = st
-            bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b> (на белом фоне):", parse_mode="HTML")
+            bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
         else:
             title = st.get("title", "").lower()
             if text.lower() in title:
@@ -725,14 +725,14 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]),
-                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку:",
+                caption="🎉 <b>Афиша готова!</b>\n\nНажми кнопку для публикации:",
                 parse_mode="HTML", reply_markup=preview_kb())
         except Exception as e:
             logger.error(f"Error: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    bot.send_message(message.chat.id, "📝 Нажми «🚨 Шаблон ЧП ВМ»", reply_markup=main_menu_kb())
+    bot.send_message(message.chat.id, "📝 Нажми «Создать афишу»", reply_markup=main_menu_kb())
 
 # =========================
 # Main

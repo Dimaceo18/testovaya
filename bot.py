@@ -300,7 +300,7 @@ def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int
 def draw_rubric_top_center(draw, rubric: str, highlight_color):
     """
     Рисует скругленный прямоугольник (эллипс) с рубрикой вверху по центру.
-    Радиус скругления 20px. Текст идеально отцентрирован.
+    Радиус скругления 30px. Текст идеально отцентрирован.
     """
     if not rubric:
         return 0
@@ -324,8 +324,8 @@ def draw_rubric_top_center(draw, rubric: str, highlight_color):
     rect_x = (TARGET_W - rect_w) // 2
     rect_y = RUBRIC_TOP_MARGIN
     
-    # Рисуем скругленный прямоугольник (радиус 20px)
-    radius = 20
+    # Рисуем скругленный прямоугольник (радиус 30px)
+    radius = 30
     draw.rounded_rectangle(
         [rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], 
         radius=radius, 

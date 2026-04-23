@@ -36,11 +36,11 @@ FONT_PATH = "Inter-ExtraBold.ttf"
 FONT_FALLBACK = "Montserrat-Black.ttf"
 FONT_REGULAR = "Inter-Regular.ttf"
 
-# Размеры шрифта
+# Размеры шрифта (уменьшены на 20%)
 FONT_SIZE_TITLE = 90
 FONT_SIZE_MIN = 30
-FONT_SIZE_DATE_PLACE = 38
-FONT_SIZE_RUBRIC = 48
+FONT_SIZE_DATE_PLACE = 30     # было 38, уменьшил на 20%
+FONT_SIZE_RUBRIC = 38          # было 48, уменьшил на 20%
 
 # Затемнение фото
 BRIGHTNESS_FACTOR = 0.85
@@ -55,20 +55,20 @@ TEXT_MAX_WIDTH_PCT = 0.80
 LINE_SPACING_RATIO = 0.22
 
 # Отступ для даты и места (подняли выше)
-DATE_PLACE_BOTTOM_MARGIN = 280    # было 160, подняли выше
-DATE_PLACE_TOP_MARGIN = 200       # было 280, подняли выше
+DATE_PLACE_BOTTOM_MARGIN = 280
+DATE_PLACE_TOP_MARGIN = 200
 DATE_PLACE_LINE_SPACING = 20
 DATE_PLACE_LEFT_MARGIN = 70
 
-# Скругленный прямоугольник для рубрики
+# Скругленный прямоугольник для рубрики (уменьшен на 20%)
 RUBRIC_TOP_MARGIN = 60
-RUBRIC_PADDING = 35
+RUBRIC_PADDING = 28            # было 35, уменьшил на 20%
 RUBRIC_RADIUS = 35
 RUBRIC_BG_COLOR = (255, 255, 255)  # белый фон
 RUBRIC_TEXT_COLOR = (0, 0, 0)      # черный текст
 
-# Скругленный прямоугольник для даты и места
-DATE_PLACE_PADDING = 25
+# Скругленный прямоугольник для даты и места (уменьшен на 20%)
+DATE_PLACE_PADDING = 20        # было 25, уменьшил на 20%
 DATE_PLACE_RADIUS = 35
 DATE_PLACE_TEXT_COLOR = (255, 255, 255)  # белый текст
 

@@ -42,22 +42,21 @@ FONT_SIZE_MIN = 30
 # Затемнение фото
 BRIGHTNESS_FACTOR = 0.85
 
-# Горизонтальный градиент (слева направо)
-GRADIENT_WIDTH_PCT = 0.70        # градиент занимает 70% ширины
-GRADIENT_TOP_ALPHA = 180         # прозрачность сверху (сильнее)
-GRADIENT_BOTTOM_ALPHA = 60       # прозрачность снизу (слабее)
+# Градиент
+GRADIENT_HEIGHT_PCT = 0.48
+GRADIENT_MAX_ALPHA = 220
 
 # Отступы
-MARGIN_LEFT_PCT = 0.08           # отступ слева 8%
+MARGIN_LEFT_PCT = 0.08      # отступ слева 8%
 MARGIN_TOP_PCT = 0.08
 MARGIN_BOTTOM_PCT = 0.08
-TEXT_MAX_WIDTH_PCT = 0.70        # текст занимает не более 70% ширины
+TEXT_MAX_WIDTH_PCT = 0.70    # текст занимает не более 70% ширины
 LINE_SPACING_RATIO = 0.22
 
 # Цвета для выделения
 HIGHLIGHT_COLORS = {
-    "red": (255, 80, 80),        # красный
-    "yellow": (255, 220, 80)     # желтый
+    "red": (255, 80, 80),     # красный
+    "yellow": (255, 220, 80)  # желтый
 }
 
 # =========================
@@ -122,45 +121,45 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         top = (h - new_h) // 2
         return img.crop((0, top, w, top + new_h))
 
-def apply_horizontal_gradient(img: Image.Image) -> Image.Image:
-    """
-    Накладывает горизонтальный градиент слева направо.
-    Сверху градиент сильнее (больше прозрачность), снизу слабее.
-    """
+def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
     w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
     
-    # Ширина градиента - 70% от ширины фото
-    gradient_width = int(w * GRADIENT_WIDTH_PCT)
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh):
+        a = int(max_alpha * (1 - y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, 0))
     
-    # Создаем маску для градиента
-    mask = Image.new("L", (w, h), 0)
-    draw_mask = ImageDraw.Draw(mask)
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
+
+def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
+    w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
     
-    # Рисуем вертикальные полосы с разной прозрачностью
-    for x in range(gradient_width):
-        # Прогресс от 0 до 1 (слева направо)
-        progress = x / gradient_width
-        # Инвертируем: слева темнее (180), справа прозрачнее (0)
-        alpha_top = int(GRADIENT_TOP_ALPHA * (1 - progress))
-        alpha_bottom = int(GRADIENT_BOTTOM_ALPHA * (1 - progress))
-        
-        # Рисуем вертикальную линию с градиентом по высоте
-        for y in range(h):
-            # Плавный переход сверху вниз
-            y_progress = y / h
-            alpha = int(alpha_top * (1 - y_progress) + alpha_bottom * y_progress)
-            if alpha > 0:
-                draw_mask.point((x, y), fill=alpha)
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh):
+        a = int(max_alpha * (y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, h - gh))
     
-    # Создаем черную накладку
-    black_overlay = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    
-    # Применяем маску
-    img_rgba = img.convert("RGBA")
-    masked_overlay = Image.composite(black_overlay, Image.new("RGBA", (w, h), (0, 0, 0, 0)), mask)
-    result = Image.alpha_composite(img_rgba, masked_overlay)
-    
-    return result.convert("RGB")
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
 
 def text_width(draw, s: str, font) -> int:
     bbox = draw.textbbox((0, 0), s, font=font)
@@ -267,7 +266,7 @@ def draw_text_with_highlight_left(draw, line: str, highlight_phrase: str, highli
 
 def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
                       highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
-    """Шаблон ЧП ВМ с горизонтальным градиентом"""
+    """Шаблон ЧП ВМ с выравниванием по левому краю и ограничением ширины 70%"""
     
     # Открываем фото
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
@@ -277,13 +276,16 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     # Яркость
     img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
     
-    # Горизонтальный градиент (слева направо, сверху сильнее)
-    img = apply_horizontal_gradient(img)
+    # Градиент
+    if text_position == "top":
+        img = apply_top_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
+    else:
+        img = apply_bottom_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
     
     draw = ImageDraw.Draw(img)
     
     # Отступы
-    margin_left = int(TARGET_W * MARGIN_LEFT_PCT)
+    margin_left = int(TARGET_W * MARGIN_LEFT_PCT)      # отступ слева
     margin_top = int(TARGET_H * MARGIN_TOP_PCT)
     margin_bottom = int(TARGET_H * MARGIN_BOTTOM_PCT)
     
@@ -302,7 +304,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         safe_w=max_text_width,
         max_block_h=title_max_h,
         max_lines=6,
-        start_size=FONT_SIZE_TITLE,
+        start_size=int(TARGET_H * 0.11),
         min_size=FONT_SIZE_MIN,
         line_spacing_ratio=LINE_SPACING_RATIO
     )
@@ -313,7 +315,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     else:
         y = TARGET_H - margin_bottom - total_h
     
-    # Рисуем строки с выделением
+    # Рисуем строки с выделением (все строки начинаются с margin_left)
     for i, ln in enumerate(lines):
         draw_text_with_highlight_left(draw, ln, highlight_phrase, highlight_color, font, margin_left, y)
         y += heights[i] + spacing
@@ -465,9 +467,7 @@ def cmd_start(message):
         "<b>📐 Особенности:</b>\n"
         "• Текст выравнивается по <b>левому краю</b>\n"
         "• Ширина текста не более <b>70%</b> от фото\n"
-        "• Шрифт Montserrat Black\n"
-        "• <b>Горизонтальный градиент</b> слева направо\n"
-        "• <b>Сверху градиент сильнее, снизу слабее</b>\n\n"
+        "• Шрифт Montserrat Black\n\n"
         "Нажми «Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()

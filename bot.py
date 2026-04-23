@@ -36,8 +36,8 @@ FONT_BOLD = "Inter-ExtraBold.ttf"
 FONT_REGULAR = "Inter-Regular.ttf"
 FONT_FALLBACK = "Montserrat-Black.ttf"
 
-# Размеры шрифтов
-FONT_SIZE_TITLE = 90
+# Размеры шрифтов (как было ранее)
+FONT_SIZE_TITLE = 90      # вернули 90
 FONT_SIZE_RUBRIC = 52
 FONT_SIZE_DATE = 38
 FONT_SIZE_PLACE = 38
@@ -45,7 +45,7 @@ FONT_SIZE_PLACE = 38
 # Отступы
 MARGIN_LEFT = 70
 RUBRIC_TOP_MARGIN = 60
-RUBRIC_PADDING = 35
+RUBRIC_PADDING = 30        # ОДИНАКОВЫЙ отступ со всех сторон
 TITLE_TOP_MARGIN = 220
 DATE_BOTTOM_MARGIN = 160
 LINE_SPACING = 15
@@ -124,7 +124,6 @@ def crop_4x5(img: Image.Image) -> Image.Image:
         return img.crop((0, top, w, top + new_h))
 
 def apply_gradient(img: Image.Image, direction: str) -> Image.Image:
-    """direction: 'top' или 'bottom'"""
     w, h = img.size
     gh = int(h * 0.48)
     if gh <= 0:
@@ -176,7 +175,6 @@ def wrap_text(draw, text: str, font, max_width: int) -> List[str]:
     return lines
 
 def fit_font_size(draw, text: str, max_width: int, max_height: int, start_size: int = 90, min_size: int = 30):
-    """Подбирает размер шрифта"""
     for size in range(start_size, min_size - 1, -2):
         font = get_font(FONT_BOLD, size)
         lines = wrap_text(draw, text, font, max_width)
@@ -200,17 +198,14 @@ def fit_font_size(draw, text: str, max_width: int, max_height: int, start_size: 
     return font, lines, total_h
 
 def draw_text_with_highlight(draw, text: str, highlight: str, color, font, x, y):
-    """Рисует текст с выделением слова"""
     if not highlight or highlight.lower() not in text.lower():
         draw.text((x, y), text, font=font, fill=WHITE)
         return
     
-    # Находим позицию слова
     text_lower = text.lower()
     word_lower = highlight.lower()
     pos = text_lower.find(word_lower)
     
-    # Разбиваем
     before = text[:pos]
     word = text[pos:pos + len(highlight)]
     after = text[pos + len(highlight):]
@@ -226,42 +221,44 @@ def draw_text_with_highlight(draw, text: str, highlight: str, color, font, x, y)
         draw.text((cx, y), after, font=font, fill=WHITE)
 
 def draw_rubric(draw, rubric: str, color, y_offset: int = 0):
-    """Рисует рубрику вверху по центру"""
+    """Рисует рубрику вверху по центру - ОДИНАКОВЫЕ ОТСТУПЫ 30px"""
     if not rubric:
         return 0
     
     font = get_font(FONT_BOLD, FONT_SIZE_RUBRIC)
     text = rubric.upper()
     
-    # Размеры текста
+    # Получаем размеры текста
     bbox = draw.textbbox((0, 0), text, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     
-    # Прямоугольник
-    rect_w = text_w + RUBRIC_PADDING * 2
-    rect_h = text_h + RUBRIC_PADDING * 2
+    # Одинаковые отступы со всех сторон
+    padding = RUBRIC_PADDING  # 30px
+    rect_w = text_w + padding * 2
+    rect_h = text_h + padding * 2
+    
+    # Прямоугольник по центру
     rect_x = (WIDTH - rect_w) // 2
     rect_y = RUBRIC_TOP_MARGIN + y_offset
     
-    # Рисуем
+    # Рисуем прямоугольник
     draw.rectangle([rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], fill=color)
     
-    # Текст по центру
-    text_x = rect_x + (rect_w - text_w) // 2
-    text_y = rect_y + (rect_h - text_h) // 2
+    # Текст со смещением на padding
+    text_x = rect_x + padding
+    text_y = rect_y + padding
+    
     draw.text((text_x, text_y), text, font=font, fill=BLACK)
     
     return rect_y + rect_h
 
 def draw_date_place(draw, date: str, place: str, color, y: int):
-    """Рисует дату и место"""
     font = get_font(FONT_REGULAR, FONT_SIZE_DATE)
     
     current_y = y
     
     if date:
-        # Метка цветная, значение белое
         draw.text((MARGIN_LEFT, current_y), "ДАТА:", font=font, fill=color)
         label_w = text_width(draw, "ДАТА:", font)
         draw.text((MARGIN_LEFT + label_w, current_y), f" {date.upper()}", font=font, fill=WHITE)
@@ -277,7 +274,6 @@ def draw_date_place(draw, date: str, place: str, color, y: int):
         if text_width(draw, full_text, font) <= TEXT_MAX_WIDTH - label_w - 20:
             draw.text((MARGIN_LEFT + label_w, current_y), full_text, font=font, fill=WHITE)
         else:
-            # Перенос
             value = place.upper()
             value_lines = wrap_text(draw, value, font, TEXT_MAX_WIDTH - label_w - 30)
             for i, line in enumerate(value_lines):
@@ -291,19 +287,14 @@ def draw_date_place(draw, date: str, place: str, color, y: int):
     
     return current_y
 
-# =========================
-# Main poster function
-# =========================
 def create_poster(photo_bytes: bytes, title: str, rubric: str, date: str, place: str,
                   highlight_word: str, highlight_color: tuple, text_position: str = "top") -> BytesIO:
     
-    # Открываем фото
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_4x5(img)
     img = img.resize((WIDTH, HEIGHT), Image.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.85)
     
-    # Градиент
     if text_position == "top":
         img = apply_gradient(img, "top")
     else:
@@ -311,7 +302,7 @@ def create_poster(photo_bytes: bytes, title: str, rubric: str, date: str, place:
     
     draw = ImageDraw.Draw(img)
     
-    # Рисуем рубрику (всегда вверху)
+    # Рисуем рубрику
     rubric_bottom = draw_rubric(draw, rubric, highlight_color)
     
     # Отступ для заголовка
@@ -323,7 +314,7 @@ def create_poster(photo_bytes: bytes, title: str, rubric: str, date: str, place:
     # Заголовок
     title_upper = title.upper()
     max_height = HEIGHT - title_y - 300
-    font, lines, total_h = fit_font_size(draw, title_upper, TEXT_MAX_WIDTH, max_height)
+    font, lines, total_h = fit_font_size(draw, title_upper, TEXT_MAX_WIDTH, max_height, start_size=90)
     
     y = title_y
     for line in lines:
@@ -332,7 +323,7 @@ def create_poster(photo_bytes: bytes, title: str, rubric: str, date: str, place:
         draw_text_with_highlight(draw, line, highlight_word, highlight_color, font, x, y)
         y += (draw.textbbox((0, 0), line, font=font)[3] - draw.textbbox((0, 0), line, font=font)[1]) + LINE_SPACING
     
-    # Дата и место (внизу или вверху)
+    # Дата и место
     if text_position == "top":
         date_y = HEIGHT - DATE_BOTTOM_MARGIN
         if date or place:
@@ -431,7 +422,6 @@ def on_yesno(c):
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Пропускаем ✅")
         
-        # Показываем превью
         try:
             card = create_poster(
                 st["photo_bytes"], st.get("title", ""), "", "", "",
@@ -565,7 +555,6 @@ def handle_text(m):
     st = user_state.get(uid, {"step": "idle"})
     step = st.get("step")
     
-    # Заголовок
     if step == "waiting_title":
         if not text:
             bot.reply_to(m, "❌ Заголовок не может быть пустым")
@@ -583,7 +572,6 @@ def handle_text(m):
         )
         return
     
-    # Дата
     if step == "waiting_date":
         st["date"] = text
         st["step"] = "waiting_place"
@@ -591,7 +579,6 @@ def handle_text(m):
         bot.reply_to(m, f"✅ Дата: {text}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
         return
     
-    # Место
     if step == "waiting_place":
         st["place"] = text
         st["step"] = "waiting_highlight"
@@ -616,7 +603,6 @@ def handle_text(m):
             logger.error(f"Error: {e}")
         return
     
-    # Слово для выделения
     if step == "waiting_highlight":
         if text == "-":
             st["highlight_word"] = ""
@@ -644,7 +630,6 @@ def handle_text(m):
                 )
         return
     
-    # Рубрика
     if step == "waiting_rubric":
         st["rubric"] = text
         st["step"] = "creating"
@@ -673,16 +658,11 @@ def handle_text(m):
             bot.reply_to(m, f"❌ Ошибка: {e}")
         return
     
-    # Если не в процессе
     bot.send_message(m.chat.id, "📝 Нажми «Создать карточку»", reply_markup=main_menu_kb())
 
 # =========================
 # Main
 # =========================
-def signal_handler(signum, frame):
-    logger.info("Stopping bot...")
-    sys.exit(0)
-
 if __name__ == "__main__":
     logger.info("🚀 Starting bot...")
     download_fonts()

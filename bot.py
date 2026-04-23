@@ -299,9 +299,8 @@ def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int
 
 def draw_rubric_top_center(draw, rubric: str, highlight_color):
     """
-    Рисует прямоугольник с рубрикой вверху по центру.
-    Текст идеально отцентрирован с одинаковыми отступами со всех сторон.
-    Цвет текста - БЕЛЫЙ.
+    Рисует скругленный прямоугольник (эллипс) с рубрикой вверху по центру.
+    Радиус скругления 20px. Текст идеально отцентрирован.
     """
     if not rubric:
         return 0
@@ -325,13 +324,18 @@ def draw_rubric_top_center(draw, rubric: str, highlight_color):
     rect_x = (TARGET_W - rect_w) // 2
     rect_y = RUBRIC_TOP_MARGIN
     
-    # Рисуем прямоугольник
-    draw.rectangle([rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], fill=highlight_color)
+    # Рисуем скругленный прямоугольник (радиус 20px)
+    radius = 20
+    draw.rounded_rectangle(
+        [rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], 
+        radius=radius, 
+        fill=highlight_color
+    )
     
     # Рисуем текст строго по центру прямоугольника (БЕЛЫЙ цвет)
     text_x = rect_x + (rect_w - text_w) // 2
     text_y = rect_y + (rect_h - text_h) // 2
-    draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=RUBRIC_TEXT_COLOR)  # RUBRIC_TEXT_COLOR = (255,255,255)
+    draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=RUBRIC_TEXT_COLOR)
     
     return rect_y + rect_h
 

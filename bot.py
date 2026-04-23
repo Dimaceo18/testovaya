@@ -36,11 +36,11 @@ FONT_PATH = "Inter-ExtraBold.ttf"
 FONT_FALLBACK = "Montserrat-Black.ttf"
 FONT_REGULAR = "Inter-Regular.ttf"
 
-# Размеры шрифта (уменьшены на 20%)
+# Размеры шрифта
 FONT_SIZE_TITLE = 90
 FONT_SIZE_MIN = 30
-FONT_SIZE_DATE_PLACE = 30     # было 38, уменьшил на 20%
-FONT_SIZE_RUBRIC = 38          # было 48, уменьшил на 20%
+FONT_SIZE_DATE_PLACE = 30
+FONT_SIZE_RUBRIC = 38
 
 # Затемнение фото
 BRIGHTNESS_FACTOR = 0.85
@@ -54,26 +54,25 @@ MARGIN_TOP_PCT = 0.15
 TEXT_MAX_WIDTH_PCT = 0.80
 LINE_SPACING_RATIO = 0.22
 
-# Отступ для даты и места (подняли выше)
+# Отступ для даты и места
 DATE_PLACE_BOTTOM_MARGIN = 280
 DATE_PLACE_TOP_MARGIN = 200
 DATE_PLACE_LINE_SPACING = 20
 DATE_PLACE_LEFT_MARGIN = 70
 
-# Скругленный прямоугольник для рубрики (уменьшен на 20%)
+# Скругленный прямоугольник для рубрики
 RUBRIC_TOP_MARGIN = 60
-RUBRIC_PADDING = 28            # было 35, уменьшил на 20%
+RUBRIC_PADDING = 28
 RUBRIC_RADIUS = 35
-RUBRIC_BG_COLOR = (255, 255, 255)  # белый фон
-RUBRIC_TEXT_COLOR = (0, 0, 0)      # черный текст
 
-# Скругленный прямоугольник для даты и места (уменьшен на 20%)
-DATE_PLACE_PADDING = 20        # было 25, уменьшил на 20%
+# Скругленный прямоугольник для даты и места
+DATE_PLACE_PADDING = 20
 DATE_PLACE_RADIUS = 35
-DATE_PLACE_TEXT_COLOR = (255, 255, 255)  # белый текст
 
 # Цвета
 TEXT_COLOR = (255, 255, 255)
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
 
 # Цвета для выделения
 HIGHLIGHT_COLORS = {
@@ -270,11 +269,12 @@ def draw_highlighted_text(draw, text: str, highlight_word: str, color, font, x, 
     if after:
         draw.text((current_x, y), after, font=font, fill=TEXT_COLOR)
 
-def draw_rounded_rect_with_text(draw, text: str, bg_color, x: int, y: int, padding: int, radius: int):
+def draw_rounded_rect_with_text(draw, text: str, bg_color, text_color, x: int, y: int, padding: int, radius: int):
     """
     Рисует скругленный прямоугольник с текстом внутри.
     text - текст для отображения
     bg_color - цвет фона прямоугольника
+    text_color - цвет текста
     x, y - левый верхний угол прямоугольника
     """
     if not text:
@@ -292,24 +292,25 @@ def draw_rounded_rect_with_text(draw, text: str, bg_color, x: int, y: int, paddi
     rect_w = int(text_w + padding * 2)
     rect_h = int(text_h + padding * 2)
     
-    # Рисуем скругленный прямоугольник (цветной фон)
+    # Рисуем скругленный прямоугольник
     draw.rounded_rectangle(
         [x, y, x + rect_w, y + rect_h],
         radius=radius,
         fill=bg_color
     )
     
-    # Рисуем текст белым цветом по центру прямоугольника
+    # Рисуем текст
     text_x = x + (rect_w - text_w) / 2
     text_y = y + (rect_h - text_h) / 2 - bbox[1]
-    draw.text((text_x, text_y), text_upper, font=font, fill=DATE_PLACE_TEXT_COLOR)
+    draw.text((text_x, text_y), text_upper, font=font, fill=text_color)
     
     return y + rect_h + DATE_PLACE_LINE_SPACING
 
-def draw_rubric_top_center(draw, rubric: str, highlight_color):
+def draw_rubric_top_center(draw, rubric: str, highlight_color, is_yellow: bool):
     """
-    Рисует белый скругленный прямоугольник с рубрикой вверху по центру.
-    Текст - цветом выделения.
+    Рисует скругленный прямоугольник с рубрикой вверху по центру.
+    Если цвет желтый - фон черный, текст белый.
+    Иначе - фон белый, текст цветной.
     """
     if not rubric:
         return 0
@@ -330,26 +331,36 @@ def draw_rubric_top_center(draw, rubric: str, highlight_color):
     rect_x = (TARGET_W - rect_w) // 2
     rect_y = RUBRIC_TOP_MARGIN
     
-    # Рисуем белый скругленный прямоугольник
+    if is_yellow:
+        # Желтый цвет: черный фон, белый текст
+        bg_color = BLACK
+        text_color = WHITE
+    else:
+        # Другие цвета: белый фон, цветной текст
+        bg_color = WHITE
+        text_color = highlight_color
+    
+    # Рисуем скругленный прямоугольник
     draw.rounded_rectangle(
         [rect_x, rect_y, rect_x + rect_w, rect_y + rect_h],
         radius=RUBRIC_RADIUS,
-        fill=RUBRIC_BG_COLOR
+        fill=bg_color
     )
     
-    # Рисуем текст цветом выделения
+    # Рисуем текст
     text_x = rect_x + (rect_w - text_w) / 2
     text_y = rect_y + (rect_h - text_h) / 2 - bbox[1]
-    draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=highlight_color)
+    draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=text_color)
     
     return rect_y + rect_h
 
 def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
                       date: str = "", place: str = "", rubric: str = "",
-                      highlight_word: str = "", highlight_color: tuple = None) -> BytesIO:
+                      highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
     
     if highlight_color is None:
         highlight_color = HIGHLIGHT_COLORS["yellow"]
+        is_yellow = True
     
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -363,10 +374,10 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     
     draw = ImageDraw.Draw(img)
     
-    # Рисуем рубрику
+    # Рисуем рубрику (с учетом желтого цвета)
     rubric_bottom = 0
     if rubric:
-        rubric_bottom = draw_rubric_top_center(draw, rubric, highlight_color)
+        rubric_bottom = draw_rubric_top_center(draw, rubric, highlight_color, is_yellow)
     
     # Отступ для заголовка
     margin_top = int(TARGET_H * MARGIN_TOP_PCT)
@@ -392,6 +403,12 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         line_spacing_ratio=LINE_SPACING_RATIO
     )
     
+    # Определяем цвет текста для даты/места
+    if is_yellow:
+        date_place_text_color = BLACK  # желтый фон - черный текст
+    else:
+        date_place_text_color = WHITE  # другие цвета - белый текст
+    
     if text_position == "top":
         y = margin_top
         for i, ln in enumerate(lines):
@@ -400,35 +417,35 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
             draw_highlighted_text(draw, ln, highlight_word, highlight_color, font, x, y)
             y += heights[i] + spacing
         
-        # Дата и место внизу - цветные эллипсы, белый текст
+        # Дата и место внизу
         if date or place:
             date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
             if date:
                 date_place_y = draw_rounded_rect_with_text(
-                    draw, f"ДАТА: {date}", highlight_color,
+                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
                     DATE_PLACE_LEFT_MARGIN, date_place_y,
                     DATE_PLACE_PADDING, DATE_PLACE_RADIUS
                 )
             if place:
                 draw_rounded_rect_with_text(
-                    draw, f"МЕСТО: {place}", highlight_color,
+                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
                     DATE_PLACE_LEFT_MARGIN, date_place_y,
                     DATE_PLACE_PADDING, DATE_PLACE_RADIUS
                 )
     
     else:
-        # Дата и место вверху - цветные эллипсы, белый текст
+        # Дата и место вверху
         date_place_y = DATE_PLACE_TOP_MARGIN
         if date or place:
             if date:
                 date_place_y = draw_rounded_rect_with_text(
-                    draw, f"ДАТА: {date}", highlight_color,
+                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
                     DATE_PLACE_LEFT_MARGIN, date_place_y,
                     DATE_PLACE_PADDING, DATE_PLACE_RADIUS
                 )
             if place:
                 draw_rounded_rect_with_text(
-                    draw, f"МЕСТО: {place}", highlight_color,
+                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
                     DATE_PLACE_LEFT_MARGIN, date_place_y,
                     DATE_PLACE_PADDING, DATE_PLACE_RADIUS
                 )
@@ -533,7 +550,7 @@ def on_date_place_choice(c):
         try:
             card = create_poster_chp(
                 st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
-                "", "", "", "", None
+                "", "", "", "", None, False
             )
             st["preview_bytes"] = card.getvalue()
             user_state[uid] = st
@@ -554,10 +571,12 @@ def on_color_select(c):
     if color_key == "none":
         st["highlight_word"] = ""
         st["highlight_color"] = None
+        st["is_yellow"] = False
         bot.answer_callback_query(c.id, "Без выделения ✅")
     else:
         st["highlight_word"] = st.get("temp_highlight_word", "")
         st["highlight_color"] = HIGHLIGHT_COLORS.get(color_key)
+        st["is_yellow"] = (color_key == "yellow")
         color_names = {"red": "красный", "yellow": "желтый", "blue": "голубой"}
         bot.answer_callback_query(c.id, f"Выбран {color_names.get(color_key)} цвет ✅")
     
@@ -605,8 +624,8 @@ def cmd_start(message):
         "📝 Отправь фото и следуй инструкциям.\n\n"
         "<b>📐 Настройки:</b>\n"
         "• Размер: 1080×1350 (4:5)\n"
-        "• Рубрика: белый фон, цветной текст\n"
-        "• Дата/Место: цветные эллипсы, белый текст\n"
+        "• Рубрика: белый фон (кроме желтого - черный фон)\n"
+        "• Дата/Место: цветные эллипсы (при желтом - черный текст)\n"
         "• Скругление: 35px\n\n"
         "Нажми «Создать афишу» 👇",
         parse_mode="HTML",
@@ -676,7 +695,7 @@ def on_text(message):
         try:
             card = create_poster_chp(
                 st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
-                st.get("date", ""), st.get("place", ""), "", "", None
+                st.get("date", ""), st.get("place", ""), "", "", None, False
             )
             st["preview_bytes"] = card.getvalue()
             user_state[uid] = st
@@ -692,6 +711,7 @@ def on_text(message):
         if text == "-":
             st["highlight_word"] = ""
             st["highlight_color"] = None
+            st["is_yellow"] = False
             st["step"] = "waiting_rubric"
             user_state[uid] = st
             bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
@@ -701,7 +721,7 @@ def on_text(message):
                 st["temp_highlight_word"] = text
                 st["step"] = "waiting_color"
                 user_state[uid] = st
-                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b>!\n\n🎨 <b>Выбери цвет:</b>",
+                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b>!\n\n🎨 <b>Выбери цвет:</b>\n\n💡 Желтый цвет: рубрика будет черной, в дате/месте - черный текст",
                     parse_mode="HTML", reply_markup=color_kb())
             else:
                 bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b>!\n\nПопробуй другое слово или «-»",
@@ -717,7 +737,7 @@ def on_text(message):
             card = create_poster_chp(
                 st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
                 st.get("date", ""), st.get("place", ""), st.get("rubric", ""),
-                st.get("highlight_word", ""), st.get("highlight_color")
+                st.get("highlight_word", ""), st.get("highlight_color"), st.get("is_yellow", False)
             )
             
             st["card_bytes"] = card.getvalue()

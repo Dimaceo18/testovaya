@@ -234,60 +234,44 @@ def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_bloc
     total_h += spacing * (len(lines) - 1)
     return font, lines, heights, spacing, total_h
 
-def highlight_text_in_line(line: str, phrase: str) -> List[Tuple[str, bool]]:
+def draw_highlighted_text(draw, text: str, highlight_word: str, color, font, x, y):
     """
-    Разбивает строку на части, выделяя фразу (без учета регистра)
+    ПРОСТАЯ ФУНКЦИЯ ВЫДЕЛЕНИЯ
+    Рисует текст, выделяя нужное слово цветом
     """
-    if not phrase:
-        return [(line, False)]
+    if not highlight_word:
+        draw.text((x, y), text, font=font, fill=TEXT_COLOR)
+        return
     
-    # Приводим к нижнему регистру для поиска
-    line_lower = line.lower()
-    phrase_lower = phrase.lower()
+    # Ищем слово в тексте (без учета регистра)
+    text_lower = text.lower()
+    word_lower = highlight_word.lower()
     
-    if phrase_lower not in line_lower:
-        return [(line, False)]
+    if word_lower not in text_lower:
+        # Если слово не найдено - рисуем весь текст белым
+        draw.text((x, y), text, font=font, fill=TEXT_COLOR)
+        return
     
-    parts = []
-    last_pos = 0
+    # Находим позицию слова
+    pos = text_lower.find(word_lower)
     
-    while True:
-        pos = line_lower.find(phrase_lower, last_pos)
-        if pos == -1:
-            if last_pos < len(line):
-                parts.append((line[last_pos:], False))
-            break
-        
-        # Текст до фразы
-        if pos > last_pos:
-            parts.append((line[last_pos:pos], False))
-        
-        # Сама фраза (в оригинальном регистре)
-        parts.append((line[pos:pos + len(phrase)], True))
-        
-        last_pos = pos + len(phrase)
+    # Разбиваем на части
+    before = text[:pos]
+    word_part = text[pos:pos + len(highlight_word)]
+    after = text[pos + len(highlight_word):]
     
-    return parts
-
-def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
-    """Рисует строку с выделением фразы"""
-    # Разбиваем строку на части
-    parts = highlight_text_in_line(line, highlight_phrase)
-    
-    if not parts:
-        draw.text((x, y), line, font=font, fill=TEXT_COLOR)
-        return y
-    
+    # Рисуем
     current_x = x
-    for text_part, is_highlight in parts:
-        if text_part:
-            if is_highlight:
-                draw.text((current_x, y), text_part, font=font, fill=highlight_color)
-            else:
-                draw.text((current_x, y), text_part, font=font, fill=TEXT_COLOR)
-            current_x += text_width(draw, text_part, font)
+    if before:
+        draw.text((current_x, y), before, font=font, fill=TEXT_COLOR)
+        current_x += text_width(draw, before, font)
     
-    return y
+    if word_part:
+        draw.text((current_x, y), word_part, font=font, fill=color)
+        current_x += text_width(draw, word_part, font)
+    
+    if after:
+        draw.text((current_x, y), after, font=font, fill=TEXT_COLOR)
 
 def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int, max_width: int):
     font = load_font(FONT_REGULAR, FONT_SIZE_DATE_PLACE)
@@ -319,37 +303,44 @@ def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int
             draw.text((x, current_y), place_text, font=font, fill=highlight_color)
 
 def draw_rubric(draw, rubric: str, highlight_color, y_level: int):
+    """Рисует прямоугольник с ТОЧНЫМ центрированием текста"""
     if not rubric:
         return
     
     font_rubric = load_font(FONT_PATH, FONT_SIZE_RUBRIC)
     rubric_upper = rubric.upper()
     
+    # Получаем размеры текста
     text_bbox = draw.textbbox((0, 0), rubric_upper, font=font_rubric)
     text_w = text_bbox[2] - text_bbox[0]
     text_h = text_bbox[3] - text_bbox[1]
     
+    # Размер прямоугольника
     rect_w = text_w + RUBRIC_PADDING * 2
     rect_h = text_h + RUBRIC_PADDING * 2
     
+    # Позиция прямоугольника
     rect_x = TARGET_W - rect_w - RUBRIC_RECT_MARGIN_RIGHT
     rect_y = y_level
     
+    # Рисуем прямоугольник
     draw.rectangle([rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], fill=highlight_color)
     
+    # Рисуем текст строго по центру
     text_x = rect_x + (rect_w - text_w) // 2
     text_y = rect_y + (rect_h - text_h) // 2
     draw.text((text_x, text_y), rubric_upper, font=font_rubric, fill=RUBRIC_TEXT_COLOR)
 
 def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
                       date: str = "", place: str = "", rubric: str = "",
-                      highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
+                      highlight_word: str = "", highlight_color: tuple = None) -> BytesIO:
     
     if highlight_color is None:
         highlight_color = HIGHLIGHT_COLORS["yellow"]
     
     logger.info(f"=== CREATE POSTER ===")
-    logger.info(f"Highlight phrase: '{highlight_phrase}'")
+    logger.info(f"Highlight word: '{highlight_word}'")
+    logger.info(f"Title: {title_text[:50]}...")
     
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -383,22 +374,12 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     
     logger.info(f"Lines: {lines}")
     
-    # Проверяем, найдется ли фраза в строках
-    if highlight_phrase:
-        found = False
-        for ln in lines:
-            if highlight_phrase.lower() in ln.lower():
-                found = True
-                logger.info(f"Found '{highlight_phrase}' in line: {ln}")
-        if not found:
-            logger.warning(f"NOT FOUND '{highlight_phrase}' in any line!")
-    
     if text_position == "top":
         y = margin_top
         for i, ln in enumerate(lines):
             line_w = text_width(draw, ln, font)
             x = (TARGET_W - line_w) // 2
-            draw_text_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
+            draw_highlighted_text(draw, ln, highlight_word, highlight_color, font, x, y)
             y += heights[i] + spacing
         
         date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
@@ -418,7 +399,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         for i, ln in enumerate(lines):
             line_w = text_width(draw, ln, font)
             x = (TARGET_W - line_w) // 2
-            draw_text_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
+            draw_highlighted_text(draw, ln, highlight_word, highlight_color, font, x, y)
             y += heights[i] + spacing
     
     out = BytesIO()
@@ -506,7 +487,7 @@ def on_date_place_choice(c):
     else:
         st["date"] = ""
         st["place"] = ""
-        st["step"] = "waiting_highlight_phrase"
+        st["step"] = "waiting_highlight_word"
         user_state[uid] = st
         
         try:
@@ -518,7 +499,7 @@ def on_date_place_choice(c):
             user_state[uid] = st
             
             bot.send_photo(c.message.chat.id, photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения</b>\n(или «-» чтобы пропустить):\n\n💡 Фраза ищется без учета регистра\nПример: «минск» или «Red Wings»",
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Например: «МИНСК» или «WINGS»",
                 parse_mode="HTML")
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except Exception as e:
@@ -531,11 +512,11 @@ def on_color_select(c):
     st = user_state.get(uid) or {}
     
     if color_key == "none":
-        st["highlight_phrase"] = ""
+        st["highlight_word"] = ""
         st["highlight_color"] = None
         bot.answer_callback_query(c.id, "Без выделения ✅")
     else:
-        st["highlight_phrase"] = st.get("temp_highlight_phrase", "")
+        st["highlight_word"] = st.get("temp_highlight_word", "")
         st["highlight_color"] = HIGHLIGHT_COLORS.get(color_key)
         color_names = {"red": "красный", "yellow": "желтый", "blue": "голубой"}
         bot.answer_callback_query(c.id, f"Выбран {color_names.get(color_key)} цвет ✅")
@@ -644,7 +625,7 @@ def on_text(message):
     
     if step == "waiting_place":
         st["place"] = text
-        st["step"] = "waiting_highlight_phrase"
+        st["step"] = "waiting_highlight_word"
         user_state[uid] = st
         
         try:
@@ -656,33 +637,31 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Фраза ищется без учета регистра\n\n📌 Твой заголовок:\n{st.get('title', '')[:100]}...",
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Заголовок: {st.get('title', '')[:100]}...",
                 parse_mode="HTML")
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    if step == "waiting_highlight_phrase":
+    if step == "waiting_highlight_word":
         if text == "-":
-            st["highlight_phrase"] = ""
+            st["highlight_word"] = ""
             st["highlight_color"] = None
             st["step"] = "waiting_rubric"
             user_state[uid] = st
             bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
         else:
-            # Проверяем, есть ли фраза в заголовке
+            # Проверяем наличие слова в заголовке
             title = st.get("title", "").lower()
             if text.lower() in title:
-                bot.reply_to(message, f"✅ Фраза «{text}» <b>НАЙДЕНА</b> в заголовке!\n\n🎨 <b>Выбери цвет выделения:</b>",
+                st["temp_highlight_word"] = text
+                st["step"] = "waiting_color"
+                user_state[uid] = st
+                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b> в заголовке!\n\n🎨 <b>Выбери цвет выделения:</b>",
                     parse_mode="HTML", reply_markup=color_kb())
             else:
-                bot.reply_to(message, f"⚠️ Фраза «{text}» <b>НЕ НАЙДЕНА</b> в заголовке!\n\nЗаголовок: {st.get('title', '')}\n\nПопробуй другую фразу или нажми «-» чтобы пропустить.",
+                bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b> в заголовке!\n\nЗаголовок: «{st.get('title', '')}»\n\nПопробуй другое слово или нажми «-» чтобы пропустить.",
                     parse_mode="HTML")
-                return
-            
-            st["temp_highlight_phrase"] = text
-            st["step"] = "waiting_color"
-            user_state[uid] = st
         return
     
     if step == "waiting_rubric":
@@ -694,7 +673,7 @@ def on_text(message):
             card = create_poster_chp(
                 st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
                 st.get("date", ""), st.get("place", ""), st.get("rubric", ""),
-                st.get("highlight_phrase", ""), st.get("highlight_color")
+                st.get("highlight_word", ""), st.get("highlight_color")
             )
             
             st["card_bytes"] = card.getvalue()

@@ -41,7 +41,6 @@ FONT_SIZE_TITLE = 90
 FONT_SIZE_MIN = 30
 FONT_SIZE_DATE_PLACE = 38
 FONT_SIZE_RUBRIC = 48
-FONT_SIZE_EMOJI = 48      # размер для смайлика
 
 # Затемнение фото
 BRIGHTNESS_FACTOR = 0.85
@@ -64,7 +63,7 @@ DATE_PLACE_LEFT_MARGIN = 70
 # Прямоугольник для рубрики (вверху по центру)
 RUBRIC_TOP_MARGIN = 60
 RUBRIC_PADDING = 30
-RUBRIC_TEXT_COLOR = (0, 0, 0)
+RUBRIC_TEXT_COLOR = (255, 255, 255)  # БЕЛЫЙ цвет текста
 
 # Цвета
 TEXT_COLOR = (255, 255, 255)
@@ -298,78 +297,46 @@ def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int
                 line_bbox = draw.textbbox((0, 0), line, font=font)
                 val_y += line_bbox[3] - line_bbox[1] + 5
 
-def draw_rubric_top_center(draw, rubric: str, emoji: str, highlight_color):
+def draw_rubric_top_center(draw, rubric: str, highlight_color):
     """
     Рисует прямоугольник с рубрикой вверху по центру.
-    Смайлик в левом верхнем углу прямоугольника.
-    Текст идеально отцентрирован с одинаковыми отступами.
+    Текст идеально отцентрирован с одинаковыми отступами со всех сторон.
+    Цвет текста - БЕЛЫЙ.
     """
     if not rubric:
         return 0
     
     font_rubric = load_font(FONT_PATH, FONT_SIZE_RUBRIC)
-    font_emoji = load_font(FONT_PATH, FONT_SIZE_EMOJI)
-    
     rubric_text = rubric.upper()
-    emoji_text = emoji if emoji else ""
     
-    # Получаем размеры текста рубрики
-    rubric_bbox = draw.textbbox((0, 0), rubric_text, font=font_rubric)
-    rubric_w = rubric_bbox[2] - rubric_bbox[0]
-    rubric_h = rubric_bbox[3] - rubric_bbox[1]
+    # Получаем размеры текста
+    text_bbox = draw.textbbox((0, 0), rubric_text, font=font_rubric)
+    text_w = text_bbox[2] - text_bbox[0]
+    text_h = text_bbox[3] - text_bbox[1]
     
-    # Получаем размеры смайлика
-    emoji_w = 0
-    emoji_h = 0
-    if emoji_text:
-        emoji_bbox = draw.textbbox((0, 0), emoji_text, font=font_emoji)
-        emoji_w = emoji_bbox[2] - emoji_bbox[0]
-        emoji_h = emoji_bbox[3] - emoji_bbox[1]
+    # Одинаковые отступы со всех сторон
+    padding = RUBRIC_PADDING  # 30px
     
-    # Общая ширина: отступ слева + смайлик + отступ между + рубрика + отступ справа
-    # Делаем отступы одинаковыми со всех сторон
-    padding = RUBRIC_PADDING
+    # Размер прямоугольника
+    rect_w = text_w + padding * 2
+    rect_h = text_h + padding * 2
     
-    # Ширина смайлика с отступом слева
-    emoji_total_w = emoji_w + padding if emoji_text else 0
-    
-    # Ширина рубрики
-    rubric_total_w = rubric_w + padding * 2 if not emoji_text else rubric_w + padding
-    
-    # Общая ширина прямоугольника
-    if emoji_text:
-        rect_w = emoji_w + padding + rubric_w + padding
-    else:
-        rect_w = rubric_w + padding * 2
-    
-    rect_h = max(rubric_h, emoji_h) + padding * 2
-    
-    # Позиция прямоугольника по центру
+    # Позиция прямоугольника - строго по центру экрана
     rect_x = (TARGET_W - rect_w) // 2
     rect_y = RUBRIC_TOP_MARGIN
     
     # Рисуем прямоугольник
     draw.rectangle([rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], fill=highlight_color)
     
-    # Рисуем смайлик (в левом верхнем углу, с отступом padding)
-    if emoji_text:
-        emoji_x = rect_x + padding
-        emoji_y = rect_y + (rect_h - emoji_h) // 2
-        draw.text((emoji_x, emoji_y), emoji_text, font=font_emoji, fill=RUBRIC_TEXT_COLOR)
-    
-    # Рисуем текст рубрики (после смайлика или по центру)
-    if emoji_text:
-        text_x = rect_x + padding + emoji_w + padding
-    else:
-        text_x = rect_x + (rect_w - rubric_w) // 2
-    
-    text_y = rect_y + (rect_h - rubric_h) // 2
-    draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=RUBRIC_TEXT_COLOR)
+    # Рисуем текст строго по центру прямоугольника (БЕЛЫЙ цвет)
+    text_x = rect_x + (rect_w - text_w) // 2
+    text_y = rect_y + (rect_h - text_h) // 2
+    draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=RUBRIC_TEXT_COLOR)  # RUBRIC_TEXT_COLOR = (255,255,255)
     
     return rect_y + rect_h
 
 def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
-                      date: str = "", place: str = "", rubric: str = "", emoji: str = "",
+                      date: str = "", place: str = "", rubric: str = "",
                       highlight_word: str = "", highlight_color: tuple = None) -> BytesIO:
     
     if highlight_color is None:
@@ -377,7 +344,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     
     logger.info(f"=== CREATE POSTER ===")
     logger.info(f"Highlight word: '{highlight_word}'")
-    logger.info(f"Rubric: '{rubric}', Emoji: '{emoji}'")
+    logger.info(f"Rubric: '{rubric}'")
     
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -391,10 +358,10 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     
     draw = ImageDraw.Draw(img)
     
-    # Рисуем рубрику с эмодзи
+    # Рисуем рубрику вверху по центру
     rubric_bottom = 0
     if rubric:
-        rubric_bottom = draw_rubric_top_center(draw, rubric, emoji, highlight_color)
+        rubric_bottom = draw_rubric_top_center(draw, rubric, highlight_color)
     
     # Отступ для заголовка
     margin_top = int(TARGET_H * MARGIN_TOP_PCT)
@@ -537,7 +504,7 @@ def on_date_place_choice(c):
         try:
             card = create_poster_chp(
                 st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
-                "", "", "", "", "", None
+                "", "", "", "", None
             )
             st["preview_bytes"] = card.getvalue()
             user_state[uid] = st
@@ -675,7 +642,7 @@ def on_text(message):
         try:
             card = create_poster_chp(
                 st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
-                st.get("date", ""), st.get("place", ""), "", "", "", None
+                st.get("date", ""), st.get("place", ""), "", "", None
             )
             st["preview_bytes"] = card.getvalue()
             user_state[uid] = st
@@ -691,9 +658,9 @@ def on_text(message):
         if text == "-":
             st["highlight_word"] = ""
             st["highlight_color"] = None
-            st["step"] = "waiting_emoji"
+            st["step"] = "waiting_rubric"
             user_state[uid] = st
-            bot.reply_to(message, f"✏️ <b>Отправь СМАЙЛИК</b> для прямоугольника (например: 🎶, 🔥, ✨):", parse_mode="HTML")
+            bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b> (слово на цветном прямоугольнике вверху):", parse_mode="HTML")
         else:
             title = st.get("title", "").lower()
             if text.lower() in title:
@@ -709,20 +676,13 @@ def on_text(message):
     
     if step == "waiting_rubric":
         st["rubric"] = text
-        st["step"] = "waiting_emoji"
-        user_state[uid] = st
-        bot.reply_to(message, f"✏️ <b>Отправь СМАЙЛИК</b> для прямоугольника (например: 🎶, 🔥, ✨):", parse_mode="HTML")
-        return
-    
-    if step == "waiting_emoji":
-        st["emoji"] = text
         st["step"] = "creating"
         user_state[uid] = st
         
         try:
             card = create_poster_chp(
                 st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
-                st.get("date", ""), st.get("place", ""), st.get("rubric", ""), st.get("emoji", ""),
+                st.get("date", ""), st.get("place", ""), st.get("rubric", ""),
                 st.get("highlight_word", ""), st.get("highlight_color")
             )
             

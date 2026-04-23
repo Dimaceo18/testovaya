@@ -40,9 +40,9 @@ FONT_REGULAR = "Inter-Regular.ttf"
 # Размеры шрифта
 FONT_SIZE_TITLE = 90
 FONT_SIZE_MIN = 30
-FONT_SIZE_LABEL = 42      # размер для слов ДАТА: и МЕСТО:
-FONT_SIZE_VALUE = 38      # размер для значений даты и места
-FONT_SIZE_RUBRIC = 48     # увеличенный размер для рубрики
+FONT_SIZE_LABEL = 42
+FONT_SIZE_VALUE = 38
+FONT_SIZE_RUBRIC = 48
 
 # Затемнение фото
 BRIGHTNESS_FACTOR = 0.85
@@ -54,25 +54,23 @@ GRADIENT_MAX_ALPHA = 220
 # Отступы
 MARGIN_TOP_PCT = 0.10
 MARGIN_BOTTOM_PCT = 0.10
-TEXT_MAX_WIDTH_PCT = 0.80    # текст занимает 80% ширины (было 70%)
+TEXT_MAX_WIDTH_PCT = 0.80
 LINE_SPACING_RATIO = 0.22
 
-# Отступ для даты и места от края
+# Отступ для даты и места
 DATE_PLACE_BOTTOM_MARGIN = 160
 DATE_PLACE_TOP_MARGIN = 280
-DATE_PLACE_LINE_SPACING = 15   # уменьшенное расстояние между датой и местом
+DATE_PLACE_LINE_SPACING = 15
 
-# Желтый прямоугольник для рубрики
+# Желтый прямоугольник для рубрики (используется как цвет по умолчанию, но будет заменяться)
 RUBRIC_RECT_MARGIN_RIGHT = 40
 RUBRIC_RECT_MARGIN_BOTTOM = 40
-RUBRIC_RECT_COLOR = (255, 220, 80)  # желтый
 RUBRIC_TEXT_COLOR = (0, 0, 0)  # черный текст
 
-# Цвета
+# Цвета для выделения (основные)
 TEXT_COLOR = (255, 255, 255)
-LABEL_COLOR = (255, 200, 80)  # золотистый для ДАТА: и МЕСТО:
 
-# Цвета для выделения
+# Цвета для выделения фразы, меток и прямоугольника
 HIGHLIGHT_COLORS = {
     "red": (255, 80, 80),     # красный
     "yellow": (255, 220, 80), # желтый
@@ -176,7 +174,6 @@ def text_width(draw, s: str, font) -> int:
     return bbox[2] - bbox[0]
 
 def wrap_text_center(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
-    """Перенос текста с центрированием"""
     words = [w for w in (text or "").split() if w.strip()]
     if not words:
         return [""], True
@@ -251,37 +248,27 @@ def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_bloc
     return font, lines, heights, spacing, total_h
 
 def draw_text_with_highlight_center(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
-    """Рисует строку текста с выделением фразы цветом (центрирование)"""
     line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
-    # Если нет фразы для выделения или фразы нет в строке
     if not highlight_upper or highlight_upper not in line_upper:
         draw.text((x, y), line_upper, font=font, fill=TEXT_COLOR)
         return y
     
-    # Рисуем текст с выделением
     # Находим позицию фразы
-    lower_text = line_upper.lower()
-    lower_highlight = highlight_upper.lower()
-    start_pos = lower_text.find(lower_highlight)
+    start_pos = line_upper.find(highlight_upper)
     
     if start_pos == -1:
         draw.text((x, y), line_upper, font=font, fill=TEXT_COLOR)
         return y
     
-    # Текст до выделения
     before = line_upper[:start_pos]
-    # Выделенная фраза
     highlighted = line_upper[start_pos:start_pos + len(highlight_upper)]
-    # Текст после выделения
     after = line_upper[start_pos + len(highlight_upper):]
     
-    # Считаем ширины частей
     before_w = text_width(draw, before, font)
     highlight_w = text_width(draw, highlighted, font)
     
-    # Рисуем с центрированием по x
     current_x = x
     draw.text((current_x, y), before, font=font, fill=TEXT_COLOR)
     current_x += before_w
@@ -291,16 +278,16 @@ def draw_text_with_highlight_center(draw, line: str, highlight_phrase: str, high
     
     return y
 
-def draw_date_place(draw, date: str, place: str, x: int, y: int, max_width: int):
-    """Рисует дату и место в левом углу с уменьшенным расстоянием"""
+def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int, max_width: int):
+    """Рисует дату и место - метки ДАТА: и МЕСТО: цветом highlight_color"""
     font_label = load_font(FONT_PATH, FONT_SIZE_LABEL)
     font_value = load_font(FONT_REGULAR, FONT_SIZE_VALUE)
     
     current_y = y
     
-    # Дата
     if date:
-        draw.text((x, current_y), "ДАТА:", font=font_label, fill=LABEL_COLOR)
+        # Метка ДАТА: цветом highlight_color
+        draw.text((x, current_y), "ДАТА:", font=font_label, fill=highlight_color)
         label_bbox = draw.textbbox((0, 0), "ДАТА:", font=font_label)
         label_width = label_bbox[2] - label_bbox[0]
         
@@ -311,13 +298,13 @@ def draw_date_place(draw, date: str, place: str, x: int, y: int, max_width: int)
             else:
                 draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
             line_bbox = draw.textbbox((0, 0), line, font=font_value)
-            current_y += line_bbox[3] - line_bbox[1] + 5  # уменьшенный отступ
+            current_y += line_bbox[3] - line_bbox[1] + 5
         
-        current_y += DATE_PLACE_LINE_SPACING  # маленький отступ после даты
+        current_y += DATE_PLACE_LINE_SPACING
     
-    # Место
     if place:
-        draw.text((x, current_y), "МЕСТО:", font=font_label, fill=LABEL_COLOR)
+        # Метка МЕСТО: цветом highlight_color
+        draw.text((x, current_y), "МЕСТО:", font=font_label, fill=highlight_color)
         label_bbox = draw.textbbox((0, 0), "МЕСТО:", font=font_label)
         label_width = label_bbox[2] - label_bbox[0]
         
@@ -330,33 +317,30 @@ def draw_date_place(draw, date: str, place: str, x: int, y: int, max_width: int)
             line_bbox = draw.textbbox((0, 0), line, font=font_value)
             current_y += line_bbox[3] - line_bbox[1] + 5
 
-def draw_rubric(draw, rubric: str):
-    """Рисует желтый прямоугольник с рубрикой в правом нижнем углу"""
+def draw_rubric(draw, rubric: str, highlight_color):
+    """Рисует прямоугольник цветом highlight_color с рубрикой"""
     if not rubric:
         return
     
     font_rubric = load_font(FONT_PATH, FONT_SIZE_RUBRIC)
     rubric_upper = rubric.upper()
     
-    # Вычисляем размер текста
     text_bbox = draw.textbbox((0, 0), rubric_upper, font=font_rubric)
     text_w = text_bbox[2] - text_bbox[0]
     text_h = text_bbox[3] - text_bbox[1]
     
-    # Размер прямоугольника с отступами
     rect_padding_x = 40
     rect_padding_y = 25
     rect_w = text_w + rect_padding_x * 2
     rect_h = text_h + rect_padding_y * 2
     
-    # Позиция в правом нижнем углу
     rect_x = TARGET_W - rect_w - RUBRIC_RECT_MARGIN_RIGHT
     rect_y = TARGET_H - rect_h - RUBRIC_RECT_MARGIN_BOTTOM
     
-    # Рисуем желтый прямоугольник
-    draw.rectangle([rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], fill=RUBRIC_RECT_COLOR)
+    # Прямоугольник цветом highlight_color
+    draw.rectangle([rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], fill=highlight_color)
     
-    # Рисуем текст по центру прямоугольника
+    # Текст черный
     text_x = rect_x + (rect_w - text_w) // 2
     text_y = rect_y + (rect_h - text_h) // 2
     draw.text((text_x, text_y), rubric_upper, font=font_rubric, fill=RUBRIC_TEXT_COLOR)
@@ -365,12 +349,15 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
                       date: str = "", place: str = "", rubric: str = "",
                       highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
     
+    # Если цвет не выбран, используем желтый по умолчанию
+    if highlight_color is None:
+        highlight_color = HIGHLIGHT_COLORS["yellow"]
+    
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
     
-    # Градиент в зависимости от положения текста
     if text_position == "top":
         img = apply_gradient(img, "top", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
     else:
@@ -379,7 +366,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     draw = ImageDraw.Draw(img)
     
     margin_top = int(TARGET_H * MARGIN_TOP_PCT)
-    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)  # 80% ширины
+    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
     
     text = (title_text or "").strip().upper()
     title_max_h = int(TARGET_H * 0.23)
@@ -396,7 +383,6 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         line_spacing_ratio=LINE_SPACING_RATIO
     )
     
-    # Основной текст с центрированием
     if text_position == "top":
         y = margin_top
         for i, ln in enumerate(lines):
@@ -405,15 +391,13 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
             draw_text_with_highlight_center(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
         
-        # Дата и место внизу
         if date or place:
-            draw_date_place(draw, date, place, 70, TARGET_H - DATE_PLACE_BOTTOM_MARGIN, max_text_width)
+            draw_date_place(draw, date, place, highlight_color, 70, TARGET_H - DATE_PLACE_BOTTOM_MARGIN, max_text_width)
     
     else:
-        # Дата и место вверху
         y = DATE_PLACE_TOP_MARGIN
         if date or place:
-            draw_date_place(draw, date, place, 70, y, max_text_width)
+            draw_date_place(draw, date, place, highlight_color, 70, y, max_text_width)
             y += 200
         
         for i, ln in enumerate(lines):
@@ -422,8 +406,8 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
             draw_text_with_highlight_center(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
     
-    # Желтый прямоугольник с рубрикой
-    draw_rubric(draw, rubric)
+    # Рисуем рубрику с тем же цветом
+    draw_rubric(draw, rubric, highlight_color)
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0)
@@ -487,8 +471,7 @@ def on_text_position(c):
     pos_text = "сверху" if position == "top" else "снизу"
     bot.answer_callback_query(c.id, f"Текст будет {pos_text} ✅")
     bot.edit_message_text(
-        f"✅ Текст будет расположен <b>{pos_text}</b>\n\n"
-        f"✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:",
+        f"✅ Текст будет расположен <b>{pos_text}</b>\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:",
         c.message.chat.id, c.message.message_id,
         parse_mode="HTML"
     )
@@ -504,7 +487,7 @@ def on_date_place_choice(c):
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Добавляем дату и место ✅")
         bot.edit_message_text(
-            f"✏️ <b>Введи ДАТУ</b> (например: 25 МАЯ, 19:00 или УТОЧНЯЕТСЯ):",
+            f"✏️ <b>Введи ДАТУ</b>:",
             c.message.chat.id, c.message.message_id,
             parse_mode="HTML"
         )
@@ -516,23 +499,15 @@ def on_date_place_choice(c):
         
         try:
             card = create_poster_chp(
-                st["photo_bytes"],
-                st.get("title", ""),
-                st.get("text_position", "top"),
-                "", "", "",
-                "", None
+                st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
+                "", "", "", "", None
             )
             st["preview_bytes"] = card.getvalue()
             user_state[uid] = st
             
-            bot.send_photo(
-                c.message.chat.id,
-                photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предварительный просмотр</b>\n\n"
-                       f"✏️ <b>Напиши ФРАЗУ, которую нужно выделить цветом</b>\n"
-                       f"(или отправь «-» чтобы пропустить):",
-                parse_mode="HTML"
-            )
+            bot.send_photo(c.message.chat.id, photo=BytesIO(st["preview_bytes"]),
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения</b>\n(или «-»):",
+                parse_mode="HTML")
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except Exception as e:
             bot.send_message(c.message.chat.id, f"❌ Ошибка: {e}")
@@ -556,12 +531,7 @@ def on_color_select(c):
     st["step"] = "waiting_rubric"
     user_state[uid] = st
     
-    bot.send_message(
-        c.message.chat.id,
-        f"✏️ <b>Введи РУБРИКУ</b>\n"
-        f"(слово будет на желтом прямоугольнике в правом нижнем углу):",
-        parse_mode="HTML"
-    )
+    bot.send_message(c.message.chat.id, f"✏️ <b>Введи РУБРИКУ</b> (будет на прямоугольнике такого же цвета):", parse_mode="HTML")
     bot.delete_message(c.message.chat.id, c.message.message_id)
 
 @bot.callback_query_handler(func=lambda c: c.data in ["publish", "cancel"])
@@ -598,22 +568,13 @@ def cmd_start(message):
     clear_state(message.from_user.id)
     bot.send_message(
         message.chat.id,
-        "👋 <b>Привет! Бот для оформления постов в стиле ЧП ВМ</b>\n\n"
-        "<b>📝 Порядок работы:</b>\n"
-        "1️⃣ Отправь фото\n"
-        "2️⃣ Выбери расположение текста\n"
-        "3️⃣ Отправь ЗАГОЛОВОК\n"
-        "4️⃣ Реши, добавлять дату и место\n"
-        "5️⃣ Отправь ДАТУ и МЕСТО (если нужно)\n"
-        "6️⃣ Отправь ФРАЗУ для выделения цветом\n"
-        "7️⃣ Выбери цвет: 🔴 красный, 🟡 желтый или 🔵 голубой\n"
-        "8️⃣ Отправь РУБРИКУ\n\n"
-        "<b>📐 Особенности:</b>\n"
-        "• Текст <b>отцентрирован</b>\n"
-        "• Ширина текста <b>80%</b> от фото\n"
-        "• Шрифт Inter ExtraBold\n"
-        "• Выделение фразы работает!\n\n"
-        "Нажми «Шаблон ЧП ВМ» 👇",
+        "👋 <b>Бот для оформления постов</b>\n\n"
+        "📝 Отправь фото и следуй инструкциям.\n\n"
+        "🎨 <b>Выбранный цвет будет использован для:</b>\n"
+        "• Выделенной фразы в тексте\n"
+        "• Слов ДАТА: и МЕСТО:\n"
+        "• Прямоугольника с рубрикой\n\n"
+        "Нажми «🚨 Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
@@ -622,12 +583,7 @@ def cmd_start(message):
 def handle_template_button(message):
     uid = message.from_user.id
     user_state[uid] = {"step": "waiting_photo"}
-    bot.send_message(
-        message.chat.id,
-        "🚨 <b>Шаблон ЧП ВМ</b>\n\n"
-        "📸 Пришли фото для поста:",
-        parse_mode="HTML"
-    )
+    bot.send_message(message.chat.id, "🚨 <b>Шаблон ЧП ВМ</b>\n\n📸 Пришли фото:", parse_mode="HTML")
 
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
@@ -644,17 +600,12 @@ def on_photo(message):
             st["step"] = "waiting_text_position"
             user_state[uid] = st
             
-            bot.reply_to(
-                message,
-                "📸 Фото сохранено!\n\n"
-                "📐 <b>Выбери расположение текста:</b>",
-                parse_mode="HTML",
-                reply_markup=text_position_kb()
-            )
+            bot.reply_to(message, "📸 Фото сохранено!\n\n📐 <b>Выбери расположение текста:</b>",
+                parse_mode="HTML", reply_markup=text_position_kb())
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
     else:
-        bot.reply_to(message, "❌ Сначала нажми «🚨 Шаблон ЧП ВМ»")
+        bot.reply_to(message, "❌ Нажми «🚨 Шаблон ЧП ВМ»")
 
 @bot.message_handler(content_types=["text"])
 def on_text(message):
@@ -663,7 +614,6 @@ def on_text(message):
     st = user_state.get(uid) or {"step": "idle"}
     step = st.get("step")
     
-    # Заголовок
     if step == "waiting_title":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
@@ -673,16 +623,10 @@ def on_text(message):
         st["step"] = "waiting_date_place_choice"
         user_state[uid] = st
         
-        bot.reply_to(
-            message,
-            f"✅ Заголовок: <b>{html.escape(text)}</b>\n\n"
-            f"📅 <b>Добавить дату и место?</b>",
-            parse_mode="HTML",
-            reply_markup=add_date_place_kb()
-        )
+        bot.reply_to(message, f"✅ Заголовок: <b>{html.escape(text)}</b>\n\n📅 <b>Добавить дату и место?</b>",
+            parse_mode="HTML", reply_markup=add_date_place_kb())
         return
     
-    # Дата
     if step == "waiting_date":
         st["date"] = text
         st["step"] = "waiting_place"
@@ -690,7 +634,6 @@ def on_text(message):
         bot.reply_to(message, f"✅ Дата: {text}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
         return
     
-    # Место
     if step == "waiting_place":
         st["place"] = text
         st["step"] = "waiting_highlight_phrase"
@@ -698,59 +641,34 @@ def on_text(message):
         
         try:
             card = create_poster_chp(
-                st["photo_bytes"],
-                st.get("title", ""),
-                st.get("text_position", "top"),
-                st.get("date", ""),
-                st.get("place", ""),
-                "",
-                "", None
+                st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
+                st.get("date", ""), st.get("place", ""), "", "", None
             )
             st["preview_bytes"] = card.getvalue()
             user_state[uid] = st
             
-            bot.send_photo(
-                message.chat.id,
-                photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предварительный просмотр</b>\n\n"
-                       f"✏️ <b>Напиши ФРАЗУ, которую нужно выделить цветом</b>\n"
-                       f"(или отправь «-» чтобы пропустить):\n\n"
-                       f"💡 Фраза будет выделена выбранным цветом",
-                parse_mode="HTML"
-            )
+            bot.send_photo(message.chat.id, photo=BytesIO(st["preview_bytes"]),
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения</b>\n(или «-»):\n\n💡 Выбранный цвет также изменит ДАТА:/МЕСТО: и прямоугольник",
+                parse_mode="HTML")
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Фраза для выделения
     if step == "waiting_highlight_phrase":
         if text == "-":
             st["highlight_phrase"] = ""
             st["highlight_color"] = None
             st["step"] = "waiting_rubric"
             user_state[uid] = st
-            
-            bot.reply_to(
-                message,
-                f"✏️ <b>Введи РУБРИКУ</b>\n"
-                f"(слово будет на желтом прямоугольнике):",
-                parse_mode="HTML"
-            )
+            bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
         else:
             st["temp_highlight_phrase"] = text
             st["step"] = "waiting_color"
             user_state[uid] = st
-            
-            bot.reply_to(
-                message,
-                f"✏️ Фраза для выделения: <b>{html.escape(text)}</b>\n\n"
-                f"🎨 <b>Выбери цвет:</b>",
-                parse_mode="HTML",
-                reply_markup=color_kb()
-            )
+            bot.reply_to(message, f"✏️ Фраза: <b>{html.escape(text)}</b>\n\n🎨 <b>Выбери цвет:</b>\n(цвет будет применен к фразе, меткам ДАТА:/МЕСТО: и прямоугольнику)",
+                parse_mode="HTML", reply_markup=color_kb())
         return
     
-    # Рубрика
     if step == "waiting_rubric":
         st["rubric"] = text
         st["step"] = "creating"
@@ -758,27 +676,18 @@ def on_text(message):
         
         try:
             card = create_poster_chp(
-                st["photo_bytes"],
-                st.get("title", ""),
-                st.get("text_position", "top"),
-                st.get("date", ""),
-                st.get("place", ""),
-                st.get("rubric", ""),
-                st.get("highlight_phrase", ""),
-                st.get("highlight_color")
+                st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
+                st.get("date", ""), st.get("place", ""), st.get("rubric", ""),
+                st.get("highlight_phrase", ""), st.get("highlight_color")
             )
             
             st["card_bytes"] = card.getvalue()
             st["step"] = "waiting_action"
             user_state[uid] = st
             
-            bot.send_photo(
-                message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку для публикации:",
-                parse_mode="HTML",
-                reply_markup=preview_kb()
-            )
+            bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]),
+                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку:",
+                parse_mode="HTML", reply_markup=preview_kb())
         except Exception as e:
             logger.error(f"Error: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
@@ -787,37 +696,37 @@ def on_text(message):
     bot.send_message(message.chat.id, "📝 Нажми «🚨 Шаблон ЧП ВМ»", reply_markup=main_menu_kb())
 
 # =========================
-# Main with anti-conflict
+# Main
 # =========================
 if __name__ == "__main__":
     logger.info("🚀 Starting bot...")
     download_fonts()
     
-    time.sleep(3)
+    time.sleep(2)
     
     try:
-        bot.delete_webhook()
-        logger.info("Webhook deleted")
-        time.sleep(1)
+        bot.remove_webhook()
+        logger.info("Webhook removed")
     except Exception as e:
         logger.warning(f"Webhook error: {e}")
     
+    time.sleep(1)
+    
     try:
         bot.get_updates(offset=-1, timeout=5)
-        logger.info("Pending updates cleared")
+        logger.info("Updates cleared")
     except Exception as e:
-        logger.warning(f"Clear updates error: {e}")
+        logger.warning(f"Clear error: {e}")
     
-    logger.info("✅ Bot started polling!")
+    logger.info("✅ Bot started!")
     
     while True:
         try:
-            bot.infinity_polling(timeout=30, long_polling_timeout=30, skip_pending=True)
+            bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
         except Exception as e:
             logger.error(f"Polling error: {e}")
             if "409" in str(e):
-                logger.error("Conflict detected! Waiting 15 seconds...")
-                time.sleep(15)
+                logger.info("Conflict, waiting 20s...")
+                time.sleep(20)
             else:
-                logger.info("Restarting polling in 5 seconds...")
                 time.sleep(5)

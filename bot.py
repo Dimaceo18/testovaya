@@ -309,7 +309,7 @@ def draw_rounded_rect_with_text(draw, text: str, bg_color, text_color, x: int, y
 def draw_rubric_top_center(draw, rubric: str, highlight_color, is_yellow: bool):
     """
     Рисует скругленный прямоугольник с рубрикой вверху по центру.
-    Если цвет желтый - фон черный, текст белый.
+    Если цвет желтый - фон желтый, текст черный.
     Иначе - фон белый, текст цветной.
     """
     if not rubric:
@@ -332,9 +332,9 @@ def draw_rubric_top_center(draw, rubric: str, highlight_color, is_yellow: bool):
     rect_y = RUBRIC_TOP_MARGIN
     
     if is_yellow:
-        # Желтый цвет: черный фон, белый текст
-        bg_color = BLACK
-        text_color = WHITE
+        # Желтый цвет: желтый фон, черный текст
+        bg_color = highlight_color  # желтый
+        text_color = BLACK          # черный текст
     else:
         # Другие цвета: белый фон, цветной текст
         bg_color = WHITE
@@ -622,11 +622,10 @@ def cmd_start(message):
         message.chat.id,
         "👋 <b>Бот для создания афиш</b>\n\n"
         "📝 Отправь фото и следуй инструкциям.\n\n"
-        "<b>📐 Настройки:</b>\n"
-        "• Размер: 1080×1350 (4:5)\n"
-        "• Рубрика: белый фон (кроме желтого - черный фон)\n"
-        "• Дата/Место: цветные эллипсы (при желтом - черный текст)\n"
-        "• Скругление: 35px\n\n"
+        "<b>📐 Настройки цветов:</b>\n"
+        "• 🔴 Красный: белая рубрика, красные эллипсы с белым текстом\n"
+        "• 🟡 Желтый: желтая рубрика с черным текстом, желтые эллипсы с черным текстом\n"
+        "• 🔵 Голубой: белая рубрика, голубые эллипсы с белым текстом\n\n"
         "Нажми «Создать афишу» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -701,7 +700,7 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):",
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Желтый цвет: рубрика и эллипсы будут желтыми с черным текстом",
                 parse_mode="HTML")
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
@@ -721,7 +720,7 @@ def on_text(message):
                 st["temp_highlight_word"] = text
                 st["step"] = "waiting_color"
                 user_state[uid] = st
-                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b>!\n\n🎨 <b>Выбери цвет:</b>\n\n💡 Желтый цвет: рубрика будет черной, в дате/месте - черный текст",
+                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b>!\n\n🎨 <b>Выбери цвет:</b>",
                     parse_mode="HTML", reply_markup=color_kb())
             else:
                 bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b>!\n\nПопробуй другое слово или «-»",

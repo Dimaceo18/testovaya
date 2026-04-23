@@ -39,8 +39,7 @@ FONT_REGULAR = "Inter-Regular.ttf"
 # Размеры шрифта
 FONT_SIZE_TITLE = 90
 FONT_SIZE_MIN = 30
-FONT_SIZE_LABEL = 42
-FONT_SIZE_VALUE = 38
+FONT_SIZE_DATE_PLACE = 38      # единый размер для ДАТА и МЕСТО
 FONT_SIZE_RUBRIC = 48
 
 # Затемнение фото
@@ -60,11 +59,13 @@ LINE_SPACING_RATIO = 0.22
 DATE_PLACE_BOTTOM_MARGIN = 160
 DATE_PLACE_TOP_MARGIN = 280
 DATE_PLACE_LINE_SPACING = 15
+DATE_PLACE_LEFT_MARGIN = 70
 
-# Желтый прямоугольник для рубрики
+# Прямоугольник для рубрики
 RUBRIC_RECT_MARGIN_RIGHT = 40
 RUBRIC_RECT_MARGIN_BOTTOM = 40
-RUBRIC_TEXT_COLOR = (0, 0, 0)
+RUBRIC_PADDING = 30           # одинаковый отступ со всех сторон
+RUBRIC_TEXT_COLOR = (0, 0, 0)  # черный текст
 
 # Цвета
 TEXT_COLOR = (255, 255, 255)
@@ -235,26 +236,21 @@ def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_bloc
     return font, lines, heights, spacing, total_h
 
 def draw_text_line_with_highlight(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
-    """Рисует строку с выделением фразы - гарантированно работает"""
     line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
-    # Если нет фразы для выделения
     if not highlight_upper or highlight_upper not in line_upper:
         draw.text((x, y), line_upper, font=font, fill=TEXT_COLOR)
         return y
     
-    # Разделяем строку на части
     parts = line_upper.split(highlight_upper)
     current_x = x
     
     for i, part in enumerate(parts):
-        # Рисуем обычную часть
         if part:
             draw.text((current_x, y), part, font=font, fill=TEXT_COLOR)
             current_x += text_width(draw, part, font)
         
-        # Рисуем выделенную фразу (если не последняя часть)
         if i < len(parts) - 1:
             draw.text((current_x, y), highlight_upper, font=font, fill=highlight_color)
             current_x += text_width(draw, highlight_upper, font)
@@ -262,71 +258,74 @@ def draw_text_line_with_highlight(draw, line: str, highlight_phrase: str, highli
     return y
 
 def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int, max_width: int):
-    font_label = load_font(FONT_PATH, FONT_SIZE_LABEL)
-    font_value = load_font(FONT_REGULAR, FONT_SIZE_VALUE)
+    """Рисует дату и место - единым шрифтом"""
+    font = load_font(FONT_REGULAR, FONT_SIZE_DATE_PLACE)
     
     current_y = y
     
+    # Формируем строку ДАТА: значение
     if date:
-        draw.text((x, current_y), "ДАТА:", font=font_label, fill=highlight_color)
-        label_bbox = draw.textbbox((0, 0), "ДАТА:", font=font_label)
-        label_width = label_bbox[2] - label_bbox[0]
-        
-        date_lines = wrap_text_center(draw, date.upper(), font_value, max_width - label_width - 20, 3)[0]
-        for i, line in enumerate(date_lines):
-            if i == 0:
-                draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
-            else:
-                draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
-            line_bbox = draw.textbbox((0, 0), line, font=font_value)
-            current_y += line_bbox[3] - line_bbox[1] + 5
-        
-        current_y += DATE_PLACE_LINE_SPACING
+        date_text = f"ДАТА: {date.upper()}"
+        draw.text((x, current_y), date_text, font=font, fill=highlight_color)
+        line_bbox = draw.textbbox((0, 0), date_text, font=font)
+        current_y += line_bbox[3] - line_bbox[1] + DATE_PLACE_LINE_SPACING
     
+    # Формируем строку МЕСТО: значение
     if place:
-        draw.text((x, current_y), "МЕСТО:", font=font_label, fill=highlight_color)
-        label_bbox = draw.textbbox((0, 0), "МЕСТО:", font=font_label)
-        label_width = label_bbox[2] - label_bbox[0]
-        
-        place_lines = wrap_text_center(draw, place.upper(), font_value, max_width - label_width - 20, 3)[0]
-        for i, line in enumerate(place_lines):
-            if i == 0:
-                draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
-            else:
-                draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
-            line_bbox = draw.textbbox((0, 0), line, font=font_value)
-            current_y += line_bbox[3] - line_bbox[1] + 5
+        place_text = f"МЕСТО: {place.upper()}"
+        # Если место длинное - переносим
+        if text_width(draw, place_text, font) > max_width:
+            # Переносим только значение
+            label = "МЕСТО: "
+            value = place.upper()
+            value_lines = wrap_text_center(draw, value, font, max_width - text_width(draw, label, font), 3)[0]
+            draw.text((x, current_y), label, font=font, fill=highlight_color)
+            label_width = text_width(draw, label, font)
+            for i, line in enumerate(value_lines):
+                if i == 0:
+                    draw.text((x + label_width, current_y), line, font=font, fill=TEXT_COLOR)
+                else:
+                    draw.text((x + label_width, current_y), line, font=font, fill=TEXT_COLOR)
+                line_bbox = draw.textbbox((0, 0), line, font=font)
+                current_y += line_bbox[3] - line_bbox[1] + 5
+        else:
+            draw.text((x, current_y), place_text, font=font, fill=highlight_color)
 
-def draw_rubric(draw, rubric: str, highlight_color):
+def draw_rubric(draw, rubric: str, highlight_color, y_level: int):
+    """Рисует прямоугольник с идеальным центрированием текста, на одном уровне с датой/местом"""
     if not rubric:
         return
     
     font_rubric = load_font(FONT_PATH, FONT_SIZE_RUBRIC)
     rubric_upper = rubric.upper()
     
+    # Вычисляем размер текста
     text_bbox = draw.textbbox((0, 0), rubric_upper, font=font_rubric)
     text_w = text_bbox[2] - text_bbox[0]
     text_h = text_bbox[3] - text_bbox[1]
     
-    rect_padding_x = 40
-    rect_padding_y = 25
-    rect_w = text_w + rect_padding_x * 2
-    rect_h = text_h + rect_padding_y * 2
+    # Размер прямоугольника с одинаковыми отступами со всех сторон
+    rect_w = text_w + RUBRIC_PADDING * 2
+    rect_h = text_h + RUBRIC_PADDING * 2
     
+    # Позиция в правом нижнем углу, на уровне с датой/местом по Y
     rect_x = TARGET_W - rect_w - RUBRIC_RECT_MARGIN_RIGHT
-    rect_y = TARGET_H - rect_h - RUBRIC_RECT_MARGIN_BOTTOM
+    rect_y = y_level  # на одном уровне с датой/местом
     
+    # Рисуем прямоугольник
     draw.rectangle([rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], fill=highlight_color)
     
+    # Рисуем текст строго по центру прямоугольника
     text_x = rect_x + (rect_w - text_w) // 2
     text_y = rect_y + (rect_h - text_h) // 2
     draw.text((text_x, text_y), rubric_upper, font=font_rubric, fill=RUBRIC_TEXT_COLOR)
+    
+    return rect_y + rect_h  # возвращаем нижнюю границу для возможного использования
 
 def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
                       date: str = "", place: str = "", rubric: str = "",
                       highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
     
-    # Цвет по умолчанию - желтый
     if highlight_color is None:
         highlight_color = HIGHLIGHT_COLORS["yellow"]
     
@@ -368,22 +367,29 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
             draw_text_line_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
         
+        # Дата и место внизу
+        date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
         if date or place:
-            draw_date_place(draw, date, place, highlight_color, 70, TARGET_H - DATE_PLACE_BOTTOM_MARGIN, max_text_width)
+            draw_date_place(draw, date, place, highlight_color, DATE_PLACE_LEFT_MARGIN, date_place_y, max_text_width)
+            # Рисуем рубрику на том же уровне, что и дата/место
+            draw_rubric(draw, rubric, highlight_color, date_place_y)
     
     else:
-        y = DATE_PLACE_TOP_MARGIN
+        # Дата и место вверху
+        date_place_y = DATE_PLACE_TOP_MARGIN
         if date or place:
-            draw_date_place(draw, date, place, highlight_color, 70, y, max_text_width)
-            y += 200
+            draw_date_place(draw, date, place, highlight_color, DATE_PLACE_LEFT_MARGIN, date_place_y, max_text_width)
+            # Рисуем рубрику на том же уровне, что и дата/место
+            draw_rubric(draw, rubric, highlight_color, date_place_y)
+            y = date_place_y + 250
+        else:
+            y = margin_top
         
         for i, ln in enumerate(lines):
             line_w = text_width(draw, ln, font)
             x = (TARGET_W - line_w) // 2
             draw_text_line_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
-    
-    draw_rubric(draw, rubric, highlight_color)
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0)
@@ -546,10 +552,6 @@ def cmd_start(message):
         message.chat.id,
         "👋 <b>Бот для оформления постов</b>\n\n"
         "📝 Отправь фото и следуй инструкциям.\n\n"
-        "🎨 <b>Выбранный цвет будет использован для:</b>\n"
-        "• Выделенной фразы в тексте\n"
-        "• Слов ДАТА: и МЕСТО:\n"
-        "• Прямоугольника с рубрикой\n\n"
         "Нажми «🚨 Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -590,7 +592,6 @@ def on_text(message):
     st = user_state.get(uid) or {"step": "idle"}
     step = st.get("step")
     
-    # Заголовок
     if step == "waiting_title":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
@@ -604,7 +605,6 @@ def on_text(message):
             parse_mode="HTML", reply_markup=add_date_place_kb())
         return
     
-    # Дата
     if step == "waiting_date":
         st["date"] = text
         st["step"] = "waiting_place"
@@ -612,7 +612,6 @@ def on_text(message):
         bot.reply_to(message, f"✅ Дата: {text}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
         return
     
-    # Место
     if step == "waiting_place":
         st["place"] = text
         st["step"] = "waiting_highlight_phrase"
@@ -627,13 +626,12 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Фраза ДОЛЖНА быть в заголовке (в любом регистре)",
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения цветом</b>\n(или «-» чтобы пропустить):",
                 parse_mode="HTML")
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Фраза для выделения
     if step == "waiting_highlight_phrase":
         if text == "-":
             st["highlight_phrase"] = ""
@@ -649,7 +647,6 @@ def on_text(message):
                 parse_mode="HTML", reply_markup=color_kb())
         return
     
-    # Рубрика
     if step == "waiting_rubric":
         st["rubric"] = text
         st["step"] = "creating"

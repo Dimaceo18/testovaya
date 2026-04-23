@@ -35,9 +35,10 @@ TARGET_H = 1350
 FONT_PATH = "Montserrat-Black.ttf"
 FONT_FALLBACK = "CaviarDreams.ttf"
 
-# Размеры шрифта
-FONT_SIZE_TITLE = 90
-FONT_SIZE_MIN = 30
+# Размеры шрифта (очень крупные)
+FONT_SIZE_TITLE = 130      # очень крупный для заголовка
+FONT_SIZE_SUBTITLE = 90    # крупный для подзаголовка
+FONT_SIZE_MIN = 60
 
 # Затемнение фото
 BRIGHTNESS_FACTOR = 0.85
@@ -48,10 +49,14 @@ GRADIENT_MAX_ALPHA = 220
 
 # Отступы
 MARGIN_LEFT_PCT = 0.08      # отступ слева 8%
-MARGIN_TOP_PCT = 0.08
-MARGIN_BOTTOM_PCT = 0.08
-TEXT_MAX_WIDTH_PCT = 0.70    # текст занимает не более 70% ширины
-LINE_SPACING_RATIO = 0.22
+MARGIN_TOP_PCT = 0.10
+MARGIN_BOTTOM_PCT = 0.10
+
+# Максимальное количество слов в строке
+MAX_WORDS_PER_LINE = 2      # 1-2 слова в строке
+
+# Межстрочный интервал
+LINE_SPACING_LARGE = 25     # большой отступ между строками
 
 # Цвета для выделения
 HIGHLIGHT_COLORS = {
@@ -78,7 +83,6 @@ user_state: Dict[int, Dict] = {}
 # Helper functions
 # =========================
 def download_font():
-    """Скачивает шрифт если нет"""
     if os.path.exists(FONT_PATH):
         return True
     
@@ -165,83 +169,29 @@ def text_width(draw, s: str, font) -> int:
     bbox = draw.textbbox((0, 0), s, font=font)
     return bbox[2] - bbox[0]
 
-def wrap_no_truncate_left(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
-    """Перенос текста с выравниванием по левому краю"""
-    words = [w for w in (text or "").split() if w.strip()]
+def split_into_short_lines(text: str, max_words: int = 2) -> List[str]:
+    """Разбивает текст на строки по 1-2 слова"""
+    words = text.split()
     if not words:
-        return [""], True
-
-    lines: List[str] = []
-    cur = ""
+        return []
+    
+    lines = []
     i = 0
-
     while i < len(words):
-        w = words[i]
-        test = (cur + " " + w).strip()
-        if text_width(draw, test, font) <= max_width:
-            cur = test
-            i += 1
+        # Берем 1-2 слова в строку
+        if i + 1 < len(words) and len(words[i]) + len(words[i+1]) < 30:
+            # Если два слова короткие - объединяем
+            lines.append(f"{words[i]} {words[i+1]}")
+            i += 2
         else:
-            if not cur:
-                return [words[i]], False
-            lines.append(cur)
-            cur = ""
-            if len(lines) >= max_lines:
-                return lines, False
+            # Иначе одно слово
+            lines.append(words[i])
+            i += 1
+    
+    return lines
 
-    if cur:
-        lines.append(cur)
-
-    if len(lines) > max_lines:
-        return lines[:max_lines], False
-
-    return lines, True
-
-def fit_text_block_left(draw, text: str, font_path: str, safe_w: int, max_block_h: int,
-                        max_lines: int = 6, start_size: int = 90, min_size: int = 16,
-                        line_spacing_ratio: float = 0.22):
-    text = (text or "").strip()
-    if not text:
-        text = " "
-
-    size = start_size
-    while size >= min_size:
-        font = ImageFont.truetype(font_path, size)
-        lines, ok = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
-        spacing = int(size * line_spacing_ratio)
-
-        heights = []
-        total_h = 0
-        max_w = 0
-        for ln in lines:
-            bb = draw.textbbox((0, 0), ln, font=font)
-            lw = bb[2] - bb[0]
-            lh = bb[3] - bb[1]
-            heights.append(lh)
-            total_h += lh
-            max_w = max(max_w, lw)
-        total_h += spacing * (len(lines) - 1)
-
-        if ok and max_w <= safe_w and total_h <= max_block_h:
-            return font, lines, heights, spacing, total_h
-
-        size -= 2
-
-    font = ImageFont.truetype(font_path, min_size)
-    lines, _ = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
-    spacing = int(min_size * line_spacing_ratio)
-    heights = []
-    total_h = 0
-    for ln in lines:
-        bb = draw.textbbox((0, 0), ln, font=font)
-        lh = bb[3] - bb[1]
-        heights.append(lh)
-        total_h += lh
-    total_h += spacing * (len(lines) - 1)
-    return font, lines, heights, spacing, total_h
-
-def draw_text_with_highlight_left(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
-    """Рисует строку текста с выделением фразы цветом (выравнивание по левому краю)"""
+def draw_text_with_highlight_large(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+    """Рисует строку текста с выделением фразы цветом (крупный текст)"""
     line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
@@ -266,7 +216,7 @@ def draw_text_with_highlight_left(draw, line: str, highlight_phrase: str, highli
 
 def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
                       highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
-    """Шаблон ЧП ВМ с выравниванием по левому краю и ограничением ширины 70%"""
+    """Шаблон ЧП ВМ с большими буквами (1-2 слова в строке)"""
     
     # Открываем фото
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
@@ -285,40 +235,64 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     draw = ImageDraw.Draw(img)
     
     # Отступы
-    margin_left = int(TARGET_W * MARGIN_LEFT_PCT)      # отступ слева
+    margin_left = int(TARGET_W * MARGIN_LEFT_PCT)
     margin_top = int(TARGET_H * MARGIN_TOP_PCT)
     margin_bottom = int(TARGET_H * MARGIN_BOTTOM_PCT)
     
-    # Максимальная ширина текста - 70% от ширины фото
-    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
-    
     # Текст в верхний регистр
     text = (title_text or "").strip().upper()
-    title_max_h = int(TARGET_H * 0.23)
     
-    # Подбор шрифта
-    font, lines, heights, spacing, total_h = fit_text_block_left(
-        draw=draw,
-        text=text,
-        font_path=FONT_PATH,
-        safe_w=max_text_width,
-        max_block_h=title_max_h,
-        max_lines=6,
-        start_size=int(TARGET_H * 0.11),
-        min_size=FONT_SIZE_MIN,
-        line_spacing_ratio=LINE_SPACING_RATIO
-    )
+    # Разбиваем на короткие строки (1-2 слова)
+    short_lines = split_into_short_lines(text, MAX_WORDS_PER_LINE)
     
-    # Позиция текста (по левому краю)
+    # Определяем размер шрифта в зависимости от длины строк
+    lines_with_fonts = []
+    max_line_width = int(TARGET_W * 0.80)  # максимальная ширина строки 80%
+    
+    for line in short_lines:
+        # Пробуем крупный шрифт
+        font_size = FONT_SIZE_TITLE
+        font = load_font(font_size)
+        line_width = text_width(draw, line, font)
+        
+        # Уменьшаем шрифт если строка слишком широкая
+        while line_width > max_line_width and font_size > FONT_SIZE_MIN:
+            font_size -= 4
+            font = load_font(font_size)
+            line_width = text_width(draw, line, font)
+        
+        lines_with_fonts.append((line, font, font_size, line_width))
+    
+    # Вычисляем общую высоту текста
+    total_height = 0
+    for line, font, font_size, line_width in lines_with_fonts:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        line_height = bbox[3] - bbox[1]
+        total_height += line_height + LINE_SPACING_LARGE
+    total_height -= LINE_SPACING_LARGE  # убираем лишний отступ после последней строки
+    
+    # Позиция текста
     if text_position == "top":
         y = margin_top
     else:
-        y = TARGET_H - margin_bottom - total_h
+        y = TARGET_H - margin_bottom - total_height
     
-    # Рисуем строки с выделением (все строки начинаются с margin_left)
-    for i, ln in enumerate(lines):
-        draw_text_with_highlight_left(draw, ln, highlight_phrase, highlight_color, font, margin_left, y)
-        y += heights[i] + spacing
+    # Рисуем строки
+    for line, font, font_size, line_width in lines_with_fonts:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        line_height = bbox[3] - bbox[1]
+        
+        # Тень для объема
+        shadow_offset = 3
+        shadow_color = (0, 0, 0, 100)
+        
+        # Рисуем тень
+        draw.text((margin_left + shadow_offset, y + shadow_offset), line, font=font, fill=shadow_color)
+        
+        # Рисуем текст с выделением
+        draw_text_with_highlight_large(draw, line, highlight_phrase, highlight_color, font, margin_left, y)
+        
+        y += line_height + LINE_SPACING_LARGE
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0)
@@ -374,7 +348,7 @@ def on_text_position(c):
     bot.answer_callback_query(c.id, f"Текст будет {pos_text} ✅")
     bot.edit_message_text(
         f"✅ Текст будет расположен <b>{pos_text}</b> фотографии.\n\n"
-        f"✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:",
+        f"✏️ Теперь отправь <b>ЗАГОЛОВОК</b> (слова будут разбиты по 1-2 в строку):",
         c.message.chat.id, c.message.message_id,
         parse_mode="HTML"
     )
@@ -465,9 +439,10 @@ def cmd_start(message):
         "4️⃣ Отправь ФРАЗУ для выделения цветом\n"
         "5️⃣ Выбери цвет: 🔴 красный или 🟡 желтый\n\n"
         "<b>📐 Особенности:</b>\n"
-        "• Текст выравнивается по <b>левому краю</b>\n"
-        "• Ширина текста не более <b>70%</b> от фото\n"
-        "• Шрифт Montserrat Black\n\n"
+        "• Текст разбивается на <b>1-2 слова</b> в строку\n"
+        "• Очень <b>крупный шрифт</b> (до 130px)\n"
+        "• Выравнивание по <b>левому краю</b>\n"
+        "• <b>Тень</b> для объема текста\n\n"
         "Нажми «Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -543,10 +518,10 @@ def on_text(message):
             bot.send_photo(
                 message.chat.id,
                 photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ Заголовок: <b>{html.escape(text)}</b>\n\n"
+                caption=f"✅ Заголовок сохранён!\n\n"
                        f"✏️ <b>Напиши ФРАЗУ, которую нужно выделить цветом</b>\n"
                        f"(или отправь «-» чтобы пропустить):\n\n"
-                       f"💡 Фраза будет найдена в тексте и выделена выбранным цветом",
+                       f"💡 Фраза будет найдена в тексте и выделена цветом",
                 parse_mode="HTML"
             )
         except Exception as e:

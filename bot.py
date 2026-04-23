@@ -27,43 +27,45 @@ if not TOKEN:
 if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
 
-# Размеры (4:5)
+# Размеры
 TARGET_W = 1080
 TARGET_H = 1350
 
-# Шрифты
-FONT_BOLD = "Montserrat-Bold.ttf"
-FONT_REGULAR = "Montserrat-Regular.ttf"
+# Шрифт
+FONT_PATH = "Montserrat-Black.ttf"
+FONT_FALLBACK = "CaviarDreams.ttf"
 
-# Размеры шрифтов
-FONT_SIZE_TITLE = 56       # Заголовок (ВЕЧЕР ЖИВОЙ МУЗЫКИ)
-FONT_SIZE_SUBTITLE = 40    # Подзаголовок (ОРГАНИЗУЮТ В...)
-FONT_SIZE_BODY = 34        # Основной текст
-FONT_SIZE_LABEL = 38       # Метки (ДАТА:, МЕСТО:)
-FONT_SIZE_FOOTER = 30      # Нижний текст
+# Размеры шрифта
+FONT_SIZE_TITLE = 90
+FONT_SIZE_MIN = 30
+FONT_SIZE_LABEL = 42      # размер для слов ДАТА: и МЕСТО:
+FONT_SIZE_VALUE = 38      # размер для значений даты и места
 
 # Затемнение фото
-BRIGHTNESS_FACTOR = 0.55
+BRIGHTNESS_FACTOR = 0.85
 
-# Вертикальный градиент (сверху вниз)
-GRADIENT_HEIGHT_PCT = 0.40
-GRADIENT_MAX_ALPHA = 200
+# Градиент
+GRADIENT_HEIGHT_PCT = 0.48
+GRADIENT_MAX_ALPHA = 220
 
 # Отступы
-MARGIN_LEFT = 70
-MARGIN_TOP = 280
-MARGIN_BOTTOM = 280
-LINE_SPACING = 10
-SECTION_SPACING = 25
+MARGIN_LEFT_PCT = 0.08      # отступ слева 8%
+MARGIN_TOP_PCT = 0.08
+MARGIN_BOTTOM_PCT = 0.08
+TEXT_MAX_WIDTH_PCT = 0.70    # текст занимает не более 70% ширины
+LINE_SPACING_RATIO = 0.22
+
+# Отступ для даты и места от нижнего края
+DATE_PLACE_BOTTOM_MARGIN = 80
 
 # Цвета
 TEXT_COLOR = (255, 255, 255)
-LABEL_COLOR = (255, 200, 80)  # золотистый
+LABEL_COLOR = (255, 200, 80)  # золотистый для ДАТА: и МЕСТО:
 
 # Цвета для выделения
 HIGHLIGHT_COLORS = {
-    "red": (255, 80, 80),
-    "yellow": (255, 220, 80)
+    "red": (255, 80, 80),     # красный
+    "yellow": (255, 220, 80)  # желтый
 }
 
 # =========================
@@ -84,29 +86,31 @@ user_state: Dict[int, Dict] = {}
 # =========================
 # Helper functions
 # =========================
-def download_fonts():
-    fonts = {
-        "Montserrat-Regular.ttf": "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Regular.ttf",
-        "Montserrat-Bold.ttf": "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Bold.ttf"
-    }
+def download_font():
+    if os.path.exists(FONT_PATH):
+        return True
     
-    for font_name, url in fonts.items():
-        if not os.path.exists(font_name):
-            try:
-                import requests
-                logger.info(f"Downloading {font_name}...")
-                response = requests.get(url, timeout=30)
-                with open(font_name, "wb") as f:
-                    f.write(response.content)
-                logger.info(f"Downloaded {font_name}")
-            except Exception as e:
-                logger.error(f"Failed to download {font_name}: {e}")
-
-def load_font(font_name: str, size: int):
+    url = "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Black.ttf"
     try:
-        return ImageFont.truetype(font_name, size=size)
+        import requests
+        logger.info(f"Downloading font...")
+        response = requests.get(url, timeout=30)
+        with open(FONT_PATH, "wb") as f:
+            f.write(response.content)
+        logger.info("Font downloaded")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to download font: {e}")
+        return False
+
+def load_font(size: int):
+    try:
+        return ImageFont.truetype(FONT_PATH, size=size)
     except Exception:
-        return ImageFont.load_default()
+        try:
+            return ImageFont.truetype(FONT_FALLBACK, size=size)
+        except:
+            return ImageFont.load_default()
 
 def clear_state(user_id: int):
     if user_id in user_state:
@@ -125,7 +129,7 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         top = (h - new_h) // 2
         return img.crop((0, top, w, top + new_h))
 
-def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 200) -> Image.Image:
+def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -145,34 +149,110 @@ def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 200
     out = Image.alpha_composite(base, overlay)
     return out.convert("RGB")
 
+def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
+    w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
+    
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh):
+        a = int(max_alpha * (y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, h - gh))
+    
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
+
 def text_width(draw, s: str, font) -> int:
     bbox = draw.textbbox((0, 0), s, font=font)
     return bbox[2] - bbox[0]
 
-def wrap_text(draw, text: str, font, max_width: int) -> List[str]:
-    words = text.split()
+def wrap_no_truncate_left(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
+    words = [w for w in (text or "").split() if w.strip()]
     if not words:
-        return []
-    
-    lines = []
-    current = words[0]
-    
-    for word in words[1:]:
-        candidate = current + " " + word
-        if text_width(draw, candidate, font) <= max_width:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
-    return lines
+        return [""], True
 
-def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+    lines: List[str] = []
+    cur = ""
+    i = 0
+
+    while i < len(words):
+        w = words[i]
+        test = (cur + " " + w).strip()
+        if text_width(draw, test, font) <= max_width:
+            cur = test
+            i += 1
+        else:
+            if not cur:
+                return [words[i]], False
+            lines.append(cur)
+            cur = ""
+            if len(lines) >= max_lines:
+                return lines, False
+
+    if cur:
+        lines.append(cur)
+
+    if len(lines) > max_lines:
+        return lines[:max_lines], False
+
+    return lines, True
+
+def fit_text_block_left(draw, text: str, font_path: str, safe_w: int, max_block_h: int,
+                        max_lines: int = 6, start_size: int = 90, min_size: int = 16,
+                        line_spacing_ratio: float = 0.22):
+    text = (text or "").strip()
+    if not text:
+        text = " "
+
+    size = start_size
+    while size >= min_size:
+        font = ImageFont.truetype(font_path, size)
+        lines, ok = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
+        spacing = int(size * line_spacing_ratio)
+
+        heights = []
+        total_h = 0
+        max_w = 0
+        for ln in lines:
+            bb = draw.textbbox((0, 0), ln, font=font)
+            lw = bb[2] - bb[0]
+            lh = bb[3] - bb[1]
+            heights.append(lh)
+            total_h += lh
+            max_w = max(max_w, lw)
+        total_h += spacing * (len(lines) - 1)
+
+        if ok and max_w <= safe_w and total_h <= max_block_h:
+            return font, lines, heights, spacing, total_h
+
+        size -= 2
+
+    font = ImageFont.truetype(font_path, min_size)
+    lines, _ = wrap_no_truncate_left(draw, text, font, safe_w, max_lines=max_lines)
+    spacing = int(min_size * line_spacing_ratio)
+    heights = []
+    total_h = 0
+    for ln in lines:
+        bb = draw.textbbox((0, 0), ln, font=font)
+        lh = bb[3] - bb[1]
+        heights.append(lh)
+        total_h += lh
+    total_h += spacing * (len(lines) - 1)
+    return font, lines, heights, spacing, total_h
+
+def draw_text_with_highlight_left(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
     line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
     if not highlight_upper or highlight_upper not in line_upper:
-        draw.text((x, y), line, font=font, fill=TEXT_COLOR)
+        draw.text((x, y), line_upper, font=font, fill=TEXT_COLOR)
         return y
     
     parts = line_upper.split(highlight_upper)
@@ -189,135 +269,109 @@ def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_c
     
     return y
 
-def draw_section(draw, label: str, value: str, font_label, font_value, x, y, max_width):
-    """Рисует секцию с меткой и значением"""
-    draw.text((x, y), label, font=font_label, fill=LABEL_COLOR)
-    label_bbox = draw.textbbox((0, 0), label, font=font_label)
-    label_width = label_bbox[2] - label_bbox[0]
+def draw_date_place(draw, date: str, place: str, x: int, y: int, max_width: int):
+    """Рисует дату и место в левом углу"""
+    font_label = load_font(FONT_SIZE_LABEL)
+    font_value = load_font(FONT_SIZE_VALUE)
     
-    value_lines = wrap_text(draw, value, font_value, max_width - label_width - 20)
-    value_y = y
+    current_y = y
     
-    for i, line in enumerate(value_lines):
-        if i == 0:
-            draw.text((x + label_width + 15, value_y), line, font=font_value, fill=TEXT_COLOR)
-        else:
-            draw.text((x + label_width + 15, value_y), line, font=font_value, fill=TEXT_COLOR)
+    # Дата
+    if date:
+        draw.text((x, current_y), "ДАТА:", font=font_label, fill=LABEL_COLOR)
+        label_bbox = draw.textbbox((0, 0), "ДАТА:", font=font_label)
+        label_width = label_bbox[2] - label_bbox[0]
         
-        line_bbox = draw.textbbox((0, 0), line, font=font_value)
-        value_y += line_bbox[3] - line_bbox[1] + 8
+        # Перенос длинной даты
+        date_lines = wrap_no_truncate_left(draw, date.upper(), font_value, max_width - label_width - 20, 3)[0]
+        for i, line in enumerate(date_lines):
+            if i == 0:
+                draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
+            else:
+                draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
+            line_bbox = draw.textbbox((0, 0), line, font=font_value)
+            current_y += line_bbox[3] - line_bbox[1] + 10
+        
+        current_y += 25
     
-    total_height = value_y - y
-    return y + total_height + SECTION_SPACING
+    # Место
+    if place:
+        draw.text((x, current_y), "МЕСТО:", font=font_label, fill=LABEL_COLOR)
+        label_bbox = draw.textbbox((0, 0), "МЕСТО:", font=font_label)
+        label_width = label_bbox[2] - label_bbox[0]
+        
+        # Перенос длинного места
+        place_lines = wrap_no_truncate_left(draw, place.upper(), font_value, max_width - label_width - 20, 3)[0]
+        for i, line in enumerate(place_lines):
+            if i == 0:
+                draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
+            else:
+                draw.text((x + label_width + 15, current_y), line, font=font_value, fill=TEXT_COLOR)
+            line_bbox = draw.textbbox((0, 0), line, font=font_value)
+            current_y += line_bbox[3] - line_bbox[1] + 10
 
-def create_poster(image_bytes: bytes, data: dict, text_position: str,
-                  highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
+def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
+                      date: str = "", place: str = "",
+                      highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
     
-    # Открываем фото
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-    img = apply_top_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
+    
+    if text_position == "top":
+        img = apply_top_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
+    else:
+        img = apply_bottom_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
     
     draw = ImageDraw.Draw(img)
     
-    # Шрифты
-    font_title = load_font(FONT_BOLD, FONT_SIZE_TITLE)
-    font_subtitle = load_font(FONT_BOLD, FONT_SIZE_SUBTITLE)
-    font_body = load_font(FONT_REGULAR, FONT_SIZE_BODY)
-    font_label = load_font(FONT_BOLD, FONT_SIZE_LABEL)
-    font_footer = load_font(FONT_BOLD, FONT_SIZE_FOOTER)
+    margin_left = int(TARGET_W * MARGIN_LEFT_PCT)
+    margin_top = int(TARGET_H * MARGIN_TOP_PCT)
+    margin_bottom = int(TARGET_H * MARGIN_BOTTOM_PCT)
+    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
     
-    max_text_width = TARGET_W - MARGIN_LEFT - 70
+    text = (title_text or "").strip().upper()
+    title_max_h = int(TARGET_H * 0.23)
     
-    # Если текст внизу - дата и место вверху
-    if text_position == "bottom":
-        # Рисуем дату и место вверху
-        y = MARGIN_TOP - 80
-        
-        if data.get("date"):
-            y = draw_section(draw, "ДАТА:", data.get("date", "").upper(), font_label, font_body, MARGIN_LEFT, y, max_text_width)
-        
-        if data.get("place"):
-            y = draw_section(draw, "МЕСТО:", data.get("place", "").upper(), font_label, font_body, MARGIN_LEFT, y, max_text_width)
-        
-        y += 40
-        
-        # Заголовок
-        title_lines = wrap_text(draw, data.get("title", "").upper(), font_title, max_text_width)
-        for line in title_lines:
-            y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_title, MARGIN_LEFT, y)
-            y += FONT_SIZE_TITLE + LINE_SPACING
-        y += 15
-        
-        # Подзаголовок
-        if data.get("subtitle"):
-            sub_lines = wrap_text(draw, data.get("subtitle", "").upper(), font_subtitle, max_text_width)
-            for line in sub_lines:
-                y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_subtitle, MARGIN_LEFT, y)
-                y += FONT_SIZE_SUBTITLE + LINE_SPACING
-            y += 20
-        
-        # Основной текст
-        if data.get("body"):
-            body_lines = wrap_text(draw, data.get("body", ""), font_body, max_text_width)
-            for line in body_lines:
-                y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_body, MARGIN_LEFT, y)
-                y += FONT_SIZE_BODY + LINE_SPACING
-            y += 25
-        
-        # Нижний текст
-        if data.get("footer"):
-            footer_lines = wrap_text(draw, data.get("footer", "").upper(), font_footer, max_text_width)
-            for line in footer_lines:
-                draw.text((MARGIN_LEFT, y), line, font=font_footer, fill=TEXT_COLOR)
-                y += FONT_SIZE_FOOTER + LINE_SPACING
+    font, lines, heights, spacing, total_h = fit_text_block_left(
+        draw=draw,
+        text=text,
+        font_path=FONT_PATH,
+        safe_w=max_text_width,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(TARGET_H * 0.11),
+        min_size=FONT_SIZE_MIN,
+        line_spacing_ratio=LINE_SPACING_RATIO
+    )
     
-    # Если текст вверху - дата и место внизу
+    # Основной текст
+    if text_position == "top":
+        y = margin_top
+        # Рисуем текст
+        for i, ln in enumerate(lines):
+            draw_text_with_highlight_left(draw, ln, highlight_phrase, highlight_color, font, margin_left, y)
+            y += heights[i] + spacing
+        
+        # Дата и место внизу (левый нижний угол)
+        if date or place:
+            draw_date_place(draw, date, place, margin_left, TARGET_H - DATE_PLACE_BOTTOM_MARGIN - 200, max_text_width)
+    
     else:
-        y = MARGIN_TOP
+        # Дата и место вверху (левый верхний угол)
+        y = margin_top
+        if date or place:
+            draw_date_place(draw, date, place, margin_left, y, max_text_width)
+            # Вычисляем сколько места заняла дата и место
+            temp_font = load_font(FONT_SIZE_LABEL)
+            temp_bbox = draw.textbbox((0, 0), "ДАТА:", font=temp_font)
+            y += 200  # отступ после даты и места
         
-        # Заголовок
-        title_lines = wrap_text(draw, data.get("title", "").upper(), font_title, max_text_width)
-        for line in title_lines:
-            y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_title, MARGIN_LEFT, y)
-            y += FONT_SIZE_TITLE + LINE_SPACING
-        y += 15
-        
-        # Подзаголовок
-        if data.get("subtitle"):
-            sub_lines = wrap_text(draw, data.get("subtitle", "").upper(), font_subtitle, max_text_width)
-            for line in sub_lines:
-                y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_subtitle, MARGIN_LEFT, y)
-                y += FONT_SIZE_SUBTITLE + LINE_SPACING
-            y += 20
-        
-        # Основной текст
-        if data.get("body"):
-            body_lines = wrap_text(draw, data.get("body", ""), font_body, max_text_width)
-            for line in body_lines:
-                y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_body, MARGIN_LEFT, y)
-                y += FONT_SIZE_BODY + LINE_SPACING
-            y += 25
-        
-        # Дата и место внизу
-        y = TARGET_H - MARGIN_BOTTOM - 200
-        
-        if data.get("date"):
-            y = draw_section(draw, "ДАТА:", data.get("date", "").upper(), font_label, font_body, MARGIN_LEFT, y, max_text_width)
-        
-        if data.get("place"):
-            y = draw_section(draw, "МЕСТО:", data.get("place", "").upper(), font_label, font_body, MARGIN_LEFT, y, max_text_width)
-        
-        y += 30
-        
-        # Нижний текст
-        if data.get("footer"):
-            footer_lines = wrap_text(draw, data.get("footer", "").upper(), font_footer, max_text_width)
-            for line in footer_lines:
-                draw.text((MARGIN_LEFT, y), line, font=font_footer, fill=TEXT_COLOR)
-                y += FONT_SIZE_FOOTER + LINE_SPACING
+        # Рисуем текст
+        for i, ln in enumerate(lines):
+            draw_text_with_highlight_left(draw, ln, highlight_phrase, highlight_color, font, margin_left, y)
+            y += heights[i] + spacing
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0)
@@ -329,14 +383,14 @@ def create_poster(image_bytes: bytes, data: dict, text_position: str,
 # =========================
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("🎨 Создать афишу"))
+    kb.row(KeyboardButton("🚨 Шаблон ЧП ВМ"))
     return kb
 
 def text_position_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("⬆️ Текст сверху (дата внизу)", callback_data="pos:top"),
-        InlineKeyboardButton("⬇️ Текст снизу (дата вверху)", callback_data="pos:bottom")
+        InlineKeyboardButton("⬆️ Текст сверху (дата внизу)", callback_data="text_pos:top"),
+        InlineKeyboardButton("⬇️ Текст снизу (дата вверху)", callback_data="text_pos:bottom")
     )
     return kb
 
@@ -368,7 +422,7 @@ def preview_kb():
 # =========================
 # Callback handlers
 # =========================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("pos:"))
+@bot.callback_query_handler(func=lambda c: c.data.startswith("text_pos:"))
 def on_text_position(c):
     uid = c.from_user.id
     position = c.data.split(":")[1]
@@ -404,14 +458,32 @@ def on_date_place_choice(c):
     else:
         st["date"] = ""
         st["place"] = ""
-        st["step"] = "waiting_footer"
+        st["step"] = "waiting_highlight_phrase"
         user_state[uid] = st
-        bot.answer_callback_query(c.id, "Без даты и места ✅")
-        bot.edit_message_text(
-            f"✏️ <b>Введи НИЖНИЙ ТЕКСТ</b> (или отправь «-» чтобы пропустить):",
-            c.message.chat.id, c.message.message_id,
-            parse_mode="HTML"
-        )
+        
+        # Показываем превью
+        try:
+            card = create_poster_chp(
+                st["photo_bytes"],
+                st.get("title", ""),
+                st.get("text_position", "top"),
+                "", "",
+                "", None
+            )
+            st["preview_bytes"] = card.getvalue()
+            user_state[uid] = st
+            
+            bot.send_photo(
+                c.message.chat.id,
+                photo=BytesIO(st["preview_bytes"]),
+                caption=f"✅ <b>Предварительный просмотр</b>\n\n"
+                       f"✏️ <b>Напиши ФРАЗУ, которую нужно выделить цветом</b>\n"
+                       f"(или отправь «-» чтобы пропустить):",
+                parse_mode="HTML"
+            )
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except Exception as e:
+            bot.send_message(c.message.chat.id, f"❌ Ошибка: {e}")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("color:"))
 def on_color_select(c):
@@ -433,10 +505,12 @@ def on_color_select(c):
     user_state[uid] = st
     
     try:
-        card = create_poster(
+        card = create_poster_chp(
             st["photo_bytes"],
-            st.get("data", {}),
+            st.get("title", ""),
             st.get("text_position", "top"),
+            st.get("date", ""),
+            st.get("place", ""),
             st.get("highlight_phrase", ""),
             st.get("highlight_color")
         )
@@ -448,7 +522,7 @@ def on_color_select(c):
         bot.send_photo(
             c.message.chat.id,
             photo=BytesIO(st["card_bytes"]),
-            caption="🎉 <b>Афиша готова!</b>\n\nНажми кнопку для публикации:",
+            caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку для публикации:",
             parse_mode="HTML",
             reply_markup=preview_kb()
         )
@@ -491,27 +565,35 @@ def cmd_start(message):
     clear_state(message.from_user.id)
     bot.send_message(
         message.chat.id,
-        "👋 <b>Привет! Я создаю афиши для мероприятий</b>\n\n"
-        "<b>📝 Порядок работы:</b>\n"
+        "👋 <b>Привет! Бот для оформления постов в стиле ЧП ВМ</b>\n\n"
+        "<b>📝 Как работает:</b>\n"
         "1️⃣ Отправь фото\n"
         "2️⃣ Выбери расположение текста\n"
         "3️⃣ Отправь ЗАГОЛОВОК\n"
-        "4️⃣ Отправь ПОДЗАГОЛОВОК\n"
-        "5️⃣ Отправь ОПИСАНИЕ\n"
-        "6️⃣ Реши, добавлять дату и место\n"
-        "7️⃣ Отправь ДАТУ и МЕСТО (если нужно)\n"
-        "8️⃣ Отправь НИЖНИЙ ТЕКСТ\n"
-        "9️⃣ Отправь фразу для выделения и цвет\n\n"
-        "Нажми «Создать афишу» 👇",
+        "4️⃣ Реши, добавлять дату и место\n"
+        "5️⃣ Отправь ДАТУ и МЕСТО (если нужно)\n"
+        "6️⃣ Отправь ФРАЗУ для выделения цветом\n"
+        "7️⃣ Выбери цвет: 🔴 красный или 🟡 желтый\n\n"
+        "<b>📐 Особенности:</b>\n"
+        "• Текст выравнивается по <b>левому краю</b>\n"
+        "• Ширина текста не более <b>70%</b> от фото\n"
+        "• Шрифт Montserrat Black\n"
+        "• Дата и место в <b>левом углу</b>\n\n"
+        "Нажми «Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
 
-@bot.message_handler(func=lambda message: message.text == "🎨 Создать афишу")
-def handle_create_button(message):
+@bot.message_handler(func=lambda message: message.text == "🚨 Шаблон ЧП ВМ")
+def handle_template_button(message):
     uid = message.from_user.id
-    user_state[uid] = {"step": "waiting_photo", "data": {}}
-    bot.send_message(message.chat.id, "🎨 <b>Создание афиши</b>\n\n📸 Пришли фото:", parse_mode="HTML")
+    user_state[uid] = {"step": "waiting_photo"}
+    bot.send_message(
+        message.chat.id,
+        "🚨 <b>Шаблон ЧП ВМ</b>\n\n"
+        "📸 Пришли фото для поста:",
+        parse_mode="HTML"
+    )
 
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
@@ -538,39 +620,28 @@ def on_photo(message):
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
     else:
-        bot.reply_to(message, "❌ Сначала нажми «🎨 Создать афишу»")
+        bot.reply_to(message, "❌ Сначала нажми «🚨 Шаблон ЧП ВМ»")
 
 @bot.message_handler(content_types=["text"])
 def on_text(message):
     uid = message.from_user.id
     text = message.text.strip()
-    st = user_state.get(uid) or {"step": "idle", "data": {}}
+    st = user_state.get(uid) or {"step": "idle"}
     step = st.get("step")
     
     # Заголовок
     if step == "waiting_title":
-        st["data"]["title"] = text
-        st["step"] = "waiting_subtitle"
-        user_state[uid] = st
-        bot.reply_to(message, f"✅ Заголовок: {text}\n\n✏️ <b>Введи ПОДЗАГОЛОВОК</b> (или «-»):", parse_mode="HTML")
-        return
-    
-    # Подзаголовок
-    if step == "waiting_subtitle":
-        st["data"]["subtitle"] = "" if text == "-" else text
-        st["step"] = "waiting_body"
-        user_state[uid] = st
-        bot.reply_to(message, f"✅ Подзаголовок: {text if text != '-' else 'пропущен'}\n\n✏️ <b>Введи ОПИСАНИЕ</b>:", parse_mode="HTML")
-        return
-    
-    # Основной текст
-    if step == "waiting_body":
-        st["data"]["body"] = text
+        if not text:
+            bot.reply_to(message, "❌ Заголовок не может быть пустым")
+            return
+        
+        st["title"] = text
         st["step"] = "waiting_date_place_choice"
         user_state[uid] = st
+        
         bot.reply_to(
             message,
-            f"✅ Описание сохранено\n\n"
+            f"✅ Заголовок: <b>{html.escape(text)}</b>\n\n"
             f"📅 <b>Добавить дату и место?</b>",
             parse_mode="HTML",
             reply_markup=add_date_place_kb()
@@ -579,34 +650,27 @@ def on_text(message):
     
     # Дата
     if step == "waiting_date":
-        st["data"]["date"] = text.upper()
+        st["date"] = text
         st["step"] = "waiting_place"
         user_state[uid] = st
-        bot.reply_to(message, f"✅ Дата: {text.upper()}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
+        bot.reply_to(message, f"✅ Дата: {text}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
         return
     
     # Место
     if step == "waiting_place":
-        st["data"]["place"] = text.upper()
-        st["step"] = "waiting_footer"
-        user_state[uid] = st
-        bot.reply_to(message, f"✅ Место: {text.upper()}\n\n✏️ <b>Введи НИЖНИЙ ТЕКСТ</b> (или «-»):", parse_mode="HTML")
-        return
-    
-    # Нижний текст
-    if step == "waiting_footer":
-        st["data"]["footer"] = "" if text == "-" else text.upper()
+        st["place"] = text
         st["step"] = "waiting_highlight_phrase"
         user_state[uid] = st
         
         # Показываем превью
         try:
-            card = create_poster(
+            card = create_poster_chp(
                 st["photo_bytes"],
-                st["data"],
+                st.get("title", ""),
                 st.get("text_position", "top"),
-                "",
-                None
+                st.get("date", ""),
+                st.get("place", ""),
+                "", None
             )
             st["preview_bytes"] = card.getvalue()
             user_state[uid] = st
@@ -626,12 +690,13 @@ def on_text(message):
     # Фраза для выделения
     if step == "waiting_highlight_phrase":
         if text == "-":
-            card = create_poster(
+            card = create_poster_chp(
                 st["photo_bytes"],
-                st["data"],
+                st.get("title", ""),
                 st.get("text_position", "top"),
-                "",
-                None
+                st.get("date", ""),
+                st.get("place", ""),
+                "", None
             )
             st["card_bytes"] = card.getvalue()
             st["step"] = "waiting_action"
@@ -640,7 +705,7 @@ def on_text(message):
             bot.send_photo(
                 message.chat.id,
                 photo=BytesIO(st["card_bytes"]),
-                caption="🎉 <b>Афиша готова!</b>\n\nНажми кнопку для публикации:",
+                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку для публикации:",
                 parse_mode="HTML",
                 reply_markup=preview_kb()
             )
@@ -658,14 +723,14 @@ def on_text(message):
             )
         return
     
-    bot.send_message(message.chat.id, "📝 Нажми «🎨 Создать афишу»", reply_markup=main_menu_kb())
+    bot.send_message(message.chat.id, "📝 Нажми «🚨 Шаблон ЧП ВМ»", reply_markup=main_menu_kb())
 
 # =========================
 # Main
 # =========================
 if __name__ == "__main__":
     logger.info("🚀 Starting bot...")
-    download_fonts()
+    download_font()
     
     time.sleep(2)
     

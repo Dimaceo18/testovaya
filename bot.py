@@ -234,44 +234,58 @@ def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_bloc
     total_h += spacing * (len(lines) - 1)
     return font, lines, heights, spacing, total_h
 
-def draw_text_with_highlight_simple(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+def highlight_text_in_line(line: str, phrase: str) -> List[Tuple[str, bool]]:
     """
-    ПРОСТЕЙШАЯ функция выделения - гарантированно работает
+    Разбивает строку на части, выделяя фразу (без учета регистра)
     """
-    # Если нет фразы для выделения
-    if not highlight_phrase:
-        draw.text((x, y), line, font=font, fill=TEXT_COLOR)
-        return y
+    if not phrase:
+        return [(line, False)]
     
-    # Приводим к одному регистру для поиска
+    # Приводим к нижнему регистру для поиска
     line_lower = line.lower()
-    phrase_lower = highlight_phrase.lower()
+    phrase_lower = phrase.lower()
     
-    # Если фразы нет в строке
     if phrase_lower not in line_lower:
+        return [(line, False)]
+    
+    parts = []
+    last_pos = 0
+    
+    while True:
+        pos = line_lower.find(phrase_lower, last_pos)
+        if pos == -1:
+            if last_pos < len(line):
+                parts.append((line[last_pos:], False))
+            break
+        
+        # Текст до фразы
+        if pos > last_pos:
+            parts.append((line[last_pos:pos], False))
+        
+        # Сама фраза (в оригинальном регистре)
+        parts.append((line[pos:pos + len(phrase)], True))
+        
+        last_pos = pos + len(phrase)
+    
+    return parts
+
+def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+    """Рисует строку с выделением фразы"""
+    # Разбиваем строку на части
+    parts = highlight_text_in_line(line, highlight_phrase)
+    
+    if not parts:
         draw.text((x, y), line, font=font, fill=TEXT_COLOR)
         return y
     
-    # Находим позицию фразы
-    pos = line_lower.find(phrase_lower)
-    
-    # Разбиваем на три части: ДО, ФРАЗА, ПОСЛЕ
-    before = line[:pos]
-    highlighted = line[pos:pos + len(highlight_phrase)]
-    after = line[pos + len(highlight_phrase):]
-    
-    # Рисуем
     current_x = x
-    if before:
-        draw.text((current_x, y), before, font=font, fill=TEXT_COLOR)
-        current_x += text_width(draw, before, font)
-    
-    if highlighted:
-        draw.text((current_x, y), highlighted, font=font, fill=highlight_color)
-        current_x += text_width(draw, highlighted, font)
-    
-    if after:
-        draw.text((current_x, y), after, font=font, fill=TEXT_COLOR)
+    for text_part, is_highlight in parts:
+        if text_part:
+            if is_highlight:
+                draw.text((current_x, y), text_part, font=font, fill=highlight_color)
+            else:
+                draw.text((current_x, y), text_part, font=font, fill=TEXT_COLOR)
+            current_x += text_width(draw, text_part, font)
     
     return y
 
@@ -334,11 +348,8 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
     if highlight_color is None:
         highlight_color = HIGHLIGHT_COLORS["yellow"]
     
-    # Логируем для отладки
     logger.info(f"=== CREATE POSTER ===")
-    logger.info(f"Title: {title_text[:50]}...")
     logger.info(f"Highlight phrase: '{highlight_phrase}'")
-    logger.info(f"Highlight color: {highlight_color}")
     
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -370,14 +381,24 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         line_spacing_ratio=LINE_SPACING_RATIO
     )
     
-    logger.info(f"Lines to draw: {lines}")
+    logger.info(f"Lines: {lines}")
+    
+    # Проверяем, найдется ли фраза в строках
+    if highlight_phrase:
+        found = False
+        for ln in lines:
+            if highlight_phrase.lower() in ln.lower():
+                found = True
+                logger.info(f"Found '{highlight_phrase}' in line: {ln}")
+        if not found:
+            logger.warning(f"NOT FOUND '{highlight_phrase}' in any line!")
     
     if text_position == "top":
         y = margin_top
         for i, ln in enumerate(lines):
             line_w = text_width(draw, ln, font)
             x = (TARGET_W - line_w) // 2
-            draw_text_with_highlight_simple(draw, ln, highlight_phrase, highlight_color, font, x, y)
+            draw_text_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
         
         date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
@@ -397,7 +418,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         for i, ln in enumerate(lines):
             line_w = text_width(draw, ln, font)
             x = (TARGET_W - line_w) // 2
-            draw_text_with_highlight_simple(draw, ln, highlight_phrase, highlight_color, font, x, y)
+            draw_text_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
     
     out = BytesIO()
@@ -497,7 +518,7 @@ def on_date_place_choice(c):
             user_state[uid] = st
             
             bot.send_photo(c.message.chat.id, photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения</b>\n(или «-» чтобы пропустить):\n\n💡 Фраза ищется без учета регистра",
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения</b>\n(или «-» чтобы пропустить):\n\n💡 Фраза ищется без учета регистра\nПример: «минск» или «Red Wings»",
                 parse_mode="HTML")
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except Exception as e:
@@ -635,7 +656,7 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Фраза ищется без учета регистра\nПример: если в тексте есть слово «НОВОСТИ», отправь «новости»",
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Фраза ищется без учета регистра\n\n📌 Твой заголовок:\n{st.get('title', '')[:100]}...",
                 parse_mode="HTML")
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
@@ -649,20 +670,19 @@ def on_text(message):
             user_state[uid] = st
             bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
         else:
+            # Проверяем, есть ли фраза в заголовке
+            title = st.get("title", "").lower()
+            if text.lower() in title:
+                bot.reply_to(message, f"✅ Фраза «{text}» <b>НАЙДЕНА</b> в заголовке!\n\n🎨 <b>Выбери цвет выделения:</b>",
+                    parse_mode="HTML", reply_markup=color_kb())
+            else:
+                bot.reply_to(message, f"⚠️ Фраза «{text}» <b>НЕ НАЙДЕНА</b> в заголовке!\n\nЗаголовок: {st.get('title', '')}\n\nПопробуй другую фразу или нажми «-» чтобы пропустить.",
+                    parse_mode="HTML")
+                return
+            
             st["temp_highlight_phrase"] = text
             st["step"] = "waiting_color"
             user_state[uid] = st
-            
-            # Показываем пример выделения
-            example_text = st.get("title", "").upper()
-            if text.upper() in example_text:
-                preview_text = f"✅ Фраза «{text}» НАЙДЕНА в заголовке!"
-            else:
-                preview_text = f"⚠️ Фраза «{text}» НЕ НАЙДЕНА в заголовке. Проверь написание."
-            
-            bot.reply_to(message, 
-                f"✏️ Фраза: <b>{html.escape(text)}</b>\n\n{preview_text}\n\n🎨 <b>Выбери цвет выделения:</b>",
-                parse_mode="HTML", reply_markup=color_kb())
         return
     
     if step == "waiting_rubric":
@@ -712,7 +732,7 @@ if __name__ == "__main__":
     
     while True:
         try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+            bot.infinity_polling(timeout=30, long_polling_timeout=30, skip_pending=True)
         except Exception as e:
             logger.error(f"Polling error: {e}")
             if "409" in str(e):

@@ -31,26 +31,34 @@ if CHANNEL and not CHANNEL.startswith("@"):
 TARGET_W = 1080
 TARGET_H = 1350
 
-# Шрифт
-FONT_PATH = "Montserrat-Regular.ttf"
+# Шрифты
 FONT_BOLD = "Montserrat-Bold.ttf"
+FONT_REGULAR = "Montserrat-Regular.ttf"
 
-# Размеры шрифта (как на фото - средний, компактный)
-FONT_SIZE_NORMAL = 48
-FONT_SIZE_BOLD = 52
-LINE_SPACING = 12
+# Размеры шрифтов
+FONT_SIZE_TITLE = 56       # Заголовок (ВЕЧЕР ЖИВОЙ МУЗЫКИ)
+FONT_SIZE_SUBTITLE = 40    # Подзаголовок (ОРГАНИЗУЮТ В...)
+FONT_SIZE_BODY = 34        # Основной текст
+FONT_SIZE_LABEL = 38       # Метки (ДАТА:, МЕСТО:)
+FONT_SIZE_FOOTER = 30      # Нижний текст
 
 # Затемнение фото
 BRIGHTNESS_FACTOR = 0.55
 
 # Вертикальный градиент (сверху вниз)
-GRADIENT_HEIGHT_PCT = 0.35      # градиент занимает 35% высоты сверху
+GRADIENT_HEIGHT_PCT = 0.40
 GRADIENT_MAX_ALPHA = 200
 
-# Отступы (как на фото - слева хороший отступ)
-MARGIN_LEFT = 80
-MARGIN_TOP = 300
-MAX_TEXT_WIDTH = TARGET_W - MARGIN_LEFT - 80   # максимальная ширина текста
+# Отступы
+MARGIN_LEFT = 70
+MARGIN_TOP = 280
+MARGIN_BOTTOM = 280
+LINE_SPACING = 10
+SECTION_SPACING = 25
+
+# Цвета
+TEXT_COLOR = (255, 255, 255)
+LABEL_COLOR = (255, 200, 80)  # золотистый
 
 # Цвета для выделения
 HIGHLIGHT_COLORS = {
@@ -118,7 +126,6 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         return img.crop((0, top, w, top + new_h))
 
 def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 200) -> Image.Image:
-    """Вертикальный градиент сверху вниз"""
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -143,7 +150,6 @@ def text_width(draw, s: str, font) -> int:
     return bbox[2] - bbox[0]
 
 def wrap_text(draw, text: str, font, max_width: int) -> List[str]:
-    """Перенос текста по словам"""
     words = text.split()
     if not words:
         return []
@@ -162,12 +168,11 @@ def wrap_text(draw, text: str, font, max_width: int) -> List[str]:
     return lines
 
 def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
-    """Рисует строку с выделением фразы цветом"""
     line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
     if not highlight_upper or highlight_upper not in line_upper:
-        draw.text((x, y), line, font=font, fill="white")
+        draw.text((x, y), line, font=font, fill=TEXT_COLOR)
         return y
     
     parts = line_upper.split(highlight_upper)
@@ -175,7 +180,7 @@ def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_c
     
     for i, part in enumerate(parts):
         if part:
-            draw.text((current_x, y), part, font=font, fill="white")
+            draw.text((current_x, y), part, font=font, fill=TEXT_COLOR)
             current_x += text_width(draw, part, font)
         
         if i < len(parts) - 1:
@@ -184,46 +189,135 @@ def draw_text_with_highlight(draw, line: str, highlight_phrase: str, highlight_c
     
     return y
 
-def create_poster(image_bytes: bytes, title_text: str, highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
-    """Создает постер как на фото"""
+def draw_section(draw, label: str, value: str, font_label, font_value, x, y, max_width):
+    """Рисует секцию с меткой и значением"""
+    draw.text((x, y), label, font=font_label, fill=LABEL_COLOR)
+    label_bbox = draw.textbbox((0, 0), label, font=font_label)
+    label_width = label_bbox[2] - label_bbox[0]
+    
+    value_lines = wrap_text(draw, value, font_value, max_width - label_width - 20)
+    value_y = y
+    
+    for i, line in enumerate(value_lines):
+        if i == 0:
+            draw.text((x + label_width + 15, value_y), line, font=font_value, fill=TEXT_COLOR)
+        else:
+            draw.text((x + label_width + 15, value_y), line, font=font_value, fill=TEXT_COLOR)
+        
+        line_bbox = draw.textbbox((0, 0), line, font=font_value)
+        value_y += line_bbox[3] - line_bbox[1] + 8
+    
+    total_height = value_y - y
+    return y + total_height + SECTION_SPACING
+
+def create_poster(image_bytes: bytes, data: dict, text_position: str,
+                  highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
     
     # Открываем фото
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-    
-    # Затемнение
     img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-    
-    # Вертикальный градиент сверху
     img = apply_top_gradient(img, height_pct=GRADIENT_HEIGHT_PCT, max_alpha=GRADIENT_MAX_ALPHA)
     
     draw = ImageDraw.Draw(img)
     
     # Шрифты
-    font_bold = load_font(FONT_BOLD, FONT_SIZE_BOLD)
-    font_normal = load_font(FONT_PATH, FONT_SIZE_NORMAL)
+    font_title = load_font(FONT_BOLD, FONT_SIZE_TITLE)
+    font_subtitle = load_font(FONT_BOLD, FONT_SIZE_SUBTITLE)
+    font_body = load_font(FONT_REGULAR, FONT_SIZE_BODY)
+    font_label = load_font(FONT_BOLD, FONT_SIZE_LABEL)
+    font_footer = load_font(FONT_BOLD, FONT_SIZE_FOOTER)
     
-    # Текст в верхний регистр
-    text = (title_text or "").strip().upper()
+    max_text_width = TARGET_W - MARGIN_LEFT - 70
     
-    # Разбиваем на строки
-    lines = wrap_text(draw, text, font_normal, MAX_TEXT_WIDTH)
+    # Если текст внизу - дата и место вверху
+    if text_position == "bottom":
+        # Рисуем дату и место вверху
+        y = MARGIN_TOP - 80
+        
+        if data.get("date"):
+            y = draw_section(draw, "ДАТА:", data.get("date", "").upper(), font_label, font_body, MARGIN_LEFT, y, max_text_width)
+        
+        if data.get("place"):
+            y = draw_section(draw, "МЕСТО:", data.get("place", "").upper(), font_label, font_body, MARGIN_LEFT, y, max_text_width)
+        
+        y += 40
+        
+        # Заголовок
+        title_lines = wrap_text(draw, data.get("title", "").upper(), font_title, max_text_width)
+        for line in title_lines:
+            y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_title, MARGIN_LEFT, y)
+            y += FONT_SIZE_TITLE + LINE_SPACING
+        y += 15
+        
+        # Подзаголовок
+        if data.get("subtitle"):
+            sub_lines = wrap_text(draw, data.get("subtitle", "").upper(), font_subtitle, max_text_width)
+            for line in sub_lines:
+                y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_subtitle, MARGIN_LEFT, y)
+                y += FONT_SIZE_SUBTITLE + LINE_SPACING
+            y += 20
+        
+        # Основной текст
+        if data.get("body"):
+            body_lines = wrap_text(draw, data.get("body", ""), font_body, max_text_width)
+            for line in body_lines:
+                y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_body, MARGIN_LEFT, y)
+                y += FONT_SIZE_BODY + LINE_SPACING
+            y += 25
+        
+        # Нижний текст
+        if data.get("footer"):
+            footer_lines = wrap_text(draw, data.get("footer", "").upper(), font_footer, max_text_width)
+            for line in footer_lines:
+                draw.text((MARGIN_LEFT, y), line, font=font_footer, fill=TEXT_COLOR)
+                y += FONT_SIZE_FOOTER + LINE_SPACING
     
-    # Позиция текста (как на фото - сверху с отступом)
-    y = MARGIN_TOP
-    
-    # Рисуем первую строку (может быть жирным как заголовок)
-    if lines:
-        first_line = lines[0]
-        # Первая строка жирным шрифтом
-        draw_text_with_highlight(draw, first_line, highlight_phrase, highlight_color, font_bold, MARGIN_LEFT, y)
-        y += FONT_SIZE_BOLD + LINE_SPACING
-    
-    # Остальные строки обычным шрифтом
-    for line in lines[1:]:
-        y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_normal, MARGIN_LEFT, y)
-        y += FONT_SIZE_NORMAL + LINE_SPACING
+    # Если текст вверху - дата и место внизу
+    else:
+        y = MARGIN_TOP
+        
+        # Заголовок
+        title_lines = wrap_text(draw, data.get("title", "").upper(), font_title, max_text_width)
+        for line in title_lines:
+            y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_title, MARGIN_LEFT, y)
+            y += FONT_SIZE_TITLE + LINE_SPACING
+        y += 15
+        
+        # Подзаголовок
+        if data.get("subtitle"):
+            sub_lines = wrap_text(draw, data.get("subtitle", "").upper(), font_subtitle, max_text_width)
+            for line in sub_lines:
+                y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_subtitle, MARGIN_LEFT, y)
+                y += FONT_SIZE_SUBTITLE + LINE_SPACING
+            y += 20
+        
+        # Основной текст
+        if data.get("body"):
+            body_lines = wrap_text(draw, data.get("body", ""), font_body, max_text_width)
+            for line in body_lines:
+                y = draw_text_with_highlight(draw, line, highlight_phrase, highlight_color, font_body, MARGIN_LEFT, y)
+                y += FONT_SIZE_BODY + LINE_SPACING
+            y += 25
+        
+        # Дата и место внизу
+        y = TARGET_H - MARGIN_BOTTOM - 200
+        
+        if data.get("date"):
+            y = draw_section(draw, "ДАТА:", data.get("date", "").upper(), font_label, font_body, MARGIN_LEFT, y, max_text_width)
+        
+        if data.get("place"):
+            y = draw_section(draw, "МЕСТО:", data.get("place", "").upper(), font_label, font_body, MARGIN_LEFT, y, max_text_width)
+        
+        y += 30
+        
+        # Нижний текст
+        if data.get("footer"):
+            footer_lines = wrap_text(draw, data.get("footer", "").upper(), font_footer, max_text_width)
+            for line in footer_lines:
+                draw.text((MARGIN_LEFT, y), line, font=font_footer, fill=TEXT_COLOR)
+                y += FONT_SIZE_FOOTER + LINE_SPACING
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0)
@@ -235,7 +329,23 @@ def create_poster(image_bytes: bytes, title_text: str, highlight_phrase: str = "
 # =========================
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("📝 Создать пост"))
+    kb.row(KeyboardButton("🎨 Создать афишу"))
+    return kb
+
+def text_position_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("⬆️ Текст сверху (дата внизу)", callback_data="pos:top"),
+        InlineKeyboardButton("⬇️ Текст снизу (дата вверху)", callback_data="pos:bottom")
+    )
+    return kb
+
+def add_date_place_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("✅ Да, добавить", callback_data="date_place:yes"),
+        InlineKeyboardButton("➖ Нет, пропустить", callback_data="date_place:no")
+    )
     return kb
 
 def color_kb():
@@ -258,6 +368,51 @@ def preview_kb():
 # =========================
 # Callback handlers
 # =========================
+@bot.callback_query_handler(func=lambda c: c.data.startswith("pos:"))
+def on_text_position(c):
+    uid = c.from_user.id
+    position = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    st["text_position"] = position
+    st["step"] = "waiting_title"
+    user_state[uid] = st
+    
+    pos_text = "сверху (дата внизу)" if position == "top" else "снизу (дата вверху)"
+    bot.answer_callback_query(c.id, f"Выбрано: {pos_text} ✅")
+    bot.edit_message_text(
+        f"✅ Текст будет расположен <b>{pos_text}</b>\n\n"
+        f"✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:",
+        c.message.chat.id, c.message.message_id,
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("date_place:"))
+def on_date_place_choice(c):
+    uid = c.from_user.id
+    choice = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if choice == "yes":
+        st["step"] = "waiting_date"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Добавляем дату и место ✅")
+        bot.edit_message_text(
+            f"✏️ <b>Введи ДАТУ</b> (например: 25 МАЯ, 19:00 или УТОЧНЯЕТСЯ):",
+            c.message.chat.id, c.message.message_id,
+            parse_mode="HTML"
+        )
+    else:
+        st["date"] = ""
+        st["place"] = ""
+        st["step"] = "waiting_footer"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Без даты и места ✅")
+        bot.edit_message_text(
+            f"✏️ <b>Введи НИЖНИЙ ТЕКСТ</b> (или отправь «-» чтобы пропустить):",
+            c.message.chat.id, c.message.message_id,
+            parse_mode="HTML"
+        )
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("color:"))
 def on_color_select(c):
     uid = c.from_user.id
@@ -280,7 +435,8 @@ def on_color_select(c):
     try:
         card = create_poster(
             st["photo_bytes"],
-            st.get("title", ""),
+            st.get("data", {}),
+            st.get("text_position", "top"),
             st.get("highlight_phrase", ""),
             st.get("highlight_color")
         )
@@ -292,7 +448,7 @@ def on_color_select(c):
         bot.send_photo(
             c.message.chat.id,
             photo=BytesIO(st["card_bytes"]),
-            caption="🎉 <b>Пост готов!</b>\n\nНажми кнопку для публикации:",
+            caption="🎉 <b>Афиша готова!</b>\n\nНажми кнопку для публикации:",
             parse_mode="HTML",
             reply_markup=preview_kb()
         )
@@ -335,33 +491,27 @@ def cmd_start(message):
     clear_state(message.from_user.id)
     bot.send_message(
         message.chat.id,
-        "👋 <b>Привет! Я делаю посты как на фото</b>\n\n"
-        "<b>📝 Как работает:</b>\n"
+        "👋 <b>Привет! Я создаю афиши для мероприятий</b>\n\n"
+        "<b>📝 Порядок работы:</b>\n"
         "1️⃣ Отправь фото\n"
-        "2️⃣ Отправь ТЕКСТ\n"
-        "3️⃣ Отправь ФРАЗУ для выделения цветом\n"
-        "4️⃣ Выбери цвет: 🔴 красный или 🟡 желтый\n\n"
-        "<b>📐 Настройки:</b>\n"
-        "• Размер: 1080×1350 (4:5)\n"
-        "• Шрифт: Montserrat\n"
-        "• Выравнивание: по левому краю\n"
-        "• Градиент: сверху вниз\n"
-        "• Без плашки под текстом\n\n"
-        "Нажми «Создать пост» 👇",
+        "2️⃣ Выбери расположение текста\n"
+        "3️⃣ Отправь ЗАГОЛОВОК\n"
+        "4️⃣ Отправь ПОДЗАГОЛОВОК\n"
+        "5️⃣ Отправь ОПИСАНИЕ\n"
+        "6️⃣ Реши, добавлять дату и место\n"
+        "7️⃣ Отправь ДАТУ и МЕСТО (если нужно)\n"
+        "8️⃣ Отправь НИЖНИЙ ТЕКСТ\n"
+        "9️⃣ Отправь фразу для выделения и цвет\n\n"
+        "Нажми «Создать афишу» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
 
-@bot.message_handler(func=lambda message: message.text == "📝 Создать пост")
+@bot.message_handler(func=lambda message: message.text == "🎨 Создать афишу")
 def handle_create_button(message):
     uid = message.from_user.id
-    user_state[uid] = {"step": "waiting_photo"}
-    bot.send_message(
-        message.chat.id,
-        "📝 <b>Создание поста</b>\n\n"
-        "📸 Пришли фото:",
-        parse_mode="HTML"
-    )
+    user_state[uid] = {"step": "waiting_photo", "data": {}}
+    bot.send_message(message.chat.id, "🎨 <b>Создание афиши</b>\n\n📸 Пришли фото:", parse_mode="HTML")
 
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
@@ -375,42 +525,86 @@ def on_photo(message):
             photo_bytes = bot.download_file(file_info.file_path)
             
             st["photo_bytes"] = photo_bytes
-            st["step"] = "waiting_title"
+            st["step"] = "waiting_text_position"
             user_state[uid] = st
             
             bot.reply_to(
                 message,
                 "📸 Фото сохранено!\n\n"
-                "✏️ <b>Введи ТЕКСТ</b> (будет наложен на фото):",
-                parse_mode="HTML"
+                "📐 <b>Выбери расположение текста:</b>",
+                parse_mode="HTML",
+                reply_markup=text_position_kb()
             )
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
     else:
-        bot.reply_to(message, "❌ Сначала нажми «📝 Создать пост»")
+        bot.reply_to(message, "❌ Сначала нажми «🎨 Создать афишу»")
 
 @bot.message_handler(content_types=["text"])
 def on_text(message):
     uid = message.from_user.id
     text = message.text.strip()
-    st = user_state.get(uid) or {"step": "idle"}
+    st = user_state.get(uid) or {"step": "idle", "data": {}}
     step = st.get("step")
     
-    # Текст поста
+    # Заголовок
     if step == "waiting_title":
-        if not text:
-            bot.reply_to(message, "❌ Текст не может быть пустым")
-            return
-        
-        st["title"] = text
+        st["data"]["title"] = text
+        st["step"] = "waiting_subtitle"
+        user_state[uid] = st
+        bot.reply_to(message, f"✅ Заголовок: {text}\n\n✏️ <b>Введи ПОДЗАГОЛОВОК</b> (или «-»):", parse_mode="HTML")
+        return
+    
+    # Подзаголовок
+    if step == "waiting_subtitle":
+        st["data"]["subtitle"] = "" if text == "-" else text
+        st["step"] = "waiting_body"
+        user_state[uid] = st
+        bot.reply_to(message, f"✅ Подзаголовок: {text if text != '-' else 'пропущен'}\n\n✏️ <b>Введи ОПИСАНИЕ</b>:", parse_mode="HTML")
+        return
+    
+    # Основной текст
+    if step == "waiting_body":
+        st["data"]["body"] = text
+        st["step"] = "waiting_date_place_choice"
+        user_state[uid] = st
+        bot.reply_to(
+            message,
+            f"✅ Описание сохранено\n\n"
+            f"📅 <b>Добавить дату и место?</b>",
+            parse_mode="HTML",
+            reply_markup=add_date_place_kb()
+        )
+        return
+    
+    # Дата
+    if step == "waiting_date":
+        st["data"]["date"] = text.upper()
+        st["step"] = "waiting_place"
+        user_state[uid] = st
+        bot.reply_to(message, f"✅ Дата: {text.upper()}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
+        return
+    
+    # Место
+    if step == "waiting_place":
+        st["data"]["place"] = text.upper()
+        st["step"] = "waiting_footer"
+        user_state[uid] = st
+        bot.reply_to(message, f"✅ Место: {text.upper()}\n\n✏️ <b>Введи НИЖНИЙ ТЕКСТ</b> (или «-»):", parse_mode="HTML")
+        return
+    
+    # Нижний текст
+    if step == "waiting_footer":
+        st["data"]["footer"] = "" if text == "-" else text.upper()
         st["step"] = "waiting_highlight_phrase"
         user_state[uid] = st
         
-        # Показываем превью без выделения
+        # Показываем превью
         try:
             card = create_poster(
                 st["photo_bytes"],
-                text,
+                st["data"],
+                st.get("text_position", "top"),
                 "",
                 None
             )
@@ -420,13 +614,12 @@ def on_text(message):
             bot.send_photo(
                 message.chat.id,
                 photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ Текст сохранён!\n\n"
+                caption=f"✅ <b>Предварительный просмотр</b>\n\n"
                        f"✏️ <b>Напиши ФРАЗУ, которую нужно выделить цветом</b>\n"
                        f"(или отправь «-» чтобы пропустить):",
                 parse_mode="HTML"
             )
         except Exception as e:
-            logger.error(f"Error: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
@@ -435,7 +628,8 @@ def on_text(message):
         if text == "-":
             card = create_poster(
                 st["photo_bytes"],
-                st.get("title", ""),
+                st["data"],
+                st.get("text_position", "top"),
                 "",
                 None
             )
@@ -446,7 +640,7 @@ def on_text(message):
             bot.send_photo(
                 message.chat.id,
                 photo=BytesIO(st["card_bytes"]),
-                caption="🎉 <b>Пост готов!</b>\n\nНажми кнопку для публикации:",
+                caption="🎉 <b>Афиша готова!</b>\n\nНажми кнопку для публикации:",
                 parse_mode="HTML",
                 reply_markup=preview_kb()
             )
@@ -464,11 +658,7 @@ def on_text(message):
             )
         return
     
-    bot.send_message(
-        message.chat.id,
-        "📝 Нажми «📝 Создать пост» чтобы начать",
-        reply_markup=main_menu_kb()
-    )
+    bot.send_message(message.chat.id, "📝 Нажми «🎨 Создать афишу»", reply_markup=main_menu_kb())
 
 # =========================
 # Main

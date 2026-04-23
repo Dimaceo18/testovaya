@@ -3,7 +3,6 @@ import os
 import html
 import time
 import logging
-import sys
 from io import BytesIO
 from typing import Dict, List, Tuple
 
@@ -62,19 +61,19 @@ DATE_PLACE_BOTTOM_MARGIN = 160
 DATE_PLACE_TOP_MARGIN = 280
 DATE_PLACE_LINE_SPACING = 15
 
-# Желтый прямоугольник для рубрики (используется как цвет по умолчанию, но будет заменяться)
+# Желтый прямоугольник для рубрики
 RUBRIC_RECT_MARGIN_RIGHT = 40
 RUBRIC_RECT_MARGIN_BOTTOM = 40
-RUBRIC_TEXT_COLOR = (0, 0, 0)  # черный текст
+RUBRIC_TEXT_COLOR = (0, 0, 0)
 
-# Цвета для выделения (основные)
+# Цвета
 TEXT_COLOR = (255, 255, 255)
 
-# Цвета для выделения фразы, меток и прямоугольника
+# Цвета для выделения
 HIGHLIGHT_COLORS = {
-    "red": (255, 80, 80),     # красный
-    "yellow": (255, 220, 80), # желтый
-    "blue": (80, 150, 255)    # голубой
+    "red": (255, 80, 80),
+    "yellow": (255, 220, 80),
+    "blue": (80, 150, 255)
 }
 
 # =========================
@@ -174,34 +173,22 @@ def text_width(draw, s: str, font) -> int:
     return bbox[2] - bbox[0]
 
 def wrap_text_center(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
-    words = [w for w in (text or "").split() if w.strip()]
+    words = text.split()
     if not words:
         return [""], True
 
-    lines: List[str] = []
-    cur = ""
-    i = 0
-
-    while i < len(words):
-        w = words[i]
-        test = (cur + " " + w).strip()
+    lines = []
+    current = words[0]
+    
+    for word in words[1:]:
+        test = current + " " + word
         if text_width(draw, test, font) <= max_width:
-            cur = test
-            i += 1
+            current = test
         else:
-            if not cur:
-                return [words[i]], False
-            lines.append(cur)
-            cur = ""
-            if len(lines) >= max_lines:
-                return lines, False
-
-    if cur:
-        lines.append(cur)
-
-    if len(lines) > max_lines:
-        return lines[:max_lines], False
-
+            lines.append(current)
+            current = word
+    lines.append(current)
+    
     return lines, True
 
 def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_block_h: int,
@@ -247,46 +234,40 @@ def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_bloc
     total_h += spacing * (len(lines) - 1)
     return font, lines, heights, spacing, total_h
 
-def draw_text_with_highlight_center(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+def draw_text_line_with_highlight(draw, line: str, highlight_phrase: str, highlight_color, font, x, y):
+    """Рисует строку с выделением фразы - гарантированно работает"""
     line_upper = line.upper()
     highlight_upper = highlight_phrase.upper() if highlight_phrase else ""
     
+    # Если нет фразы для выделения
     if not highlight_upper or highlight_upper not in line_upper:
         draw.text((x, y), line_upper, font=font, fill=TEXT_COLOR)
         return y
     
-    # Находим позицию фразы
-    start_pos = line_upper.find(highlight_upper)
-    
-    if start_pos == -1:
-        draw.text((x, y), line_upper, font=font, fill=TEXT_COLOR)
-        return y
-    
-    before = line_upper[:start_pos]
-    highlighted = line_upper[start_pos:start_pos + len(highlight_upper)]
-    after = line_upper[start_pos + len(highlight_upper):]
-    
-    before_w = text_width(draw, before, font)
-    highlight_w = text_width(draw, highlighted, font)
-    
+    # Разделяем строку на части
+    parts = line_upper.split(highlight_upper)
     current_x = x
-    draw.text((current_x, y), before, font=font, fill=TEXT_COLOR)
-    current_x += before_w
-    draw.text((current_x, y), highlighted, font=font, fill=highlight_color)
-    current_x += highlight_w
-    draw.text((current_x, y), after, font=font, fill=TEXT_COLOR)
+    
+    for i, part in enumerate(parts):
+        # Рисуем обычную часть
+        if part:
+            draw.text((current_x, y), part, font=font, fill=TEXT_COLOR)
+            current_x += text_width(draw, part, font)
+        
+        # Рисуем выделенную фразу (если не последняя часть)
+        if i < len(parts) - 1:
+            draw.text((current_x, y), highlight_upper, font=font, fill=highlight_color)
+            current_x += text_width(draw, highlight_upper, font)
     
     return y
 
 def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int, max_width: int):
-    """Рисует дату и место - метки ДАТА: и МЕСТО: цветом highlight_color"""
     font_label = load_font(FONT_PATH, FONT_SIZE_LABEL)
     font_value = load_font(FONT_REGULAR, FONT_SIZE_VALUE)
     
     current_y = y
     
     if date:
-        # Метка ДАТА: цветом highlight_color
         draw.text((x, current_y), "ДАТА:", font=font_label, fill=highlight_color)
         label_bbox = draw.textbbox((0, 0), "ДАТА:", font=font_label)
         label_width = label_bbox[2] - label_bbox[0]
@@ -303,7 +284,6 @@ def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int
         current_y += DATE_PLACE_LINE_SPACING
     
     if place:
-        # Метка МЕСТО: цветом highlight_color
         draw.text((x, current_y), "МЕСТО:", font=font_label, fill=highlight_color)
         label_bbox = draw.textbbox((0, 0), "МЕСТО:", font=font_label)
         label_width = label_bbox[2] - label_bbox[0]
@@ -318,7 +298,6 @@ def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int
             current_y += line_bbox[3] - line_bbox[1] + 5
 
 def draw_rubric(draw, rubric: str, highlight_color):
-    """Рисует прямоугольник цветом highlight_color с рубрикой"""
     if not rubric:
         return
     
@@ -337,10 +316,8 @@ def draw_rubric(draw, rubric: str, highlight_color):
     rect_x = TARGET_W - rect_w - RUBRIC_RECT_MARGIN_RIGHT
     rect_y = TARGET_H - rect_h - RUBRIC_RECT_MARGIN_BOTTOM
     
-    # Прямоугольник цветом highlight_color
     draw.rectangle([rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], fill=highlight_color)
     
-    # Текст черный
     text_x = rect_x + (rect_w - text_w) // 2
     text_y = rect_y + (rect_h - text_h) // 2
     draw.text((text_x, text_y), rubric_upper, font=font_rubric, fill=RUBRIC_TEXT_COLOR)
@@ -349,7 +326,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
                       date: str = "", place: str = "", rubric: str = "",
                       highlight_phrase: str = "", highlight_color: tuple = None) -> BytesIO:
     
-    # Если цвет не выбран, используем желтый по умолчанию
+    # Цвет по умолчанию - желтый
     if highlight_color is None:
         highlight_color = HIGHLIGHT_COLORS["yellow"]
     
@@ -388,7 +365,7 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         for i, ln in enumerate(lines):
             line_w = text_width(draw, ln, font)
             x = (TARGET_W - line_w) // 2
-            draw_text_with_highlight_center(draw, ln, highlight_phrase, highlight_color, font, x, y)
+            draw_text_line_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
         
         if date or place:
@@ -403,10 +380,9 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
         for i, ln in enumerate(lines):
             line_w = text_width(draw, ln, font)
             x = (TARGET_W - line_w) // 2
-            draw_text_with_highlight_center(draw, ln, highlight_phrase, highlight_color, font, x, y)
+            draw_text_line_with_highlight(draw, ln, highlight_phrase, highlight_color, font, x, y)
             y += heights[i] + spacing
     
-    # Рисуем рубрику с тем же цветом
     draw_rubric(draw, rubric, highlight_color)
     
     out = BytesIO()
@@ -506,7 +482,7 @@ def on_date_place_choice(c):
             user_state[uid] = st
             
             bot.send_photo(c.message.chat.id, photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения</b>\n(или «-»):",
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения</b>\n(или «-» чтобы пропустить):",
                 parse_mode="HTML")
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except Exception as e:
@@ -531,7 +507,7 @@ def on_color_select(c):
     st["step"] = "waiting_rubric"
     user_state[uid] = st
     
-    bot.send_message(c.message.chat.id, f"✏️ <b>Введи РУБРИКУ</b> (будет на прямоугольнике такого же цвета):", parse_mode="HTML")
+    bot.send_message(c.message.chat.id, f"✏️ <b>Введи РУБРИКУ</b> (слово на цветном прямоугольнике):", parse_mode="HTML")
     bot.delete_message(c.message.chat.id, c.message.message_id)
 
 @bot.callback_query_handler(func=lambda c: c.data in ["publish", "cancel"])
@@ -614,6 +590,7 @@ def on_text(message):
     st = user_state.get(uid) or {"step": "idle"}
     step = st.get("step")
     
+    # Заголовок
     if step == "waiting_title":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
@@ -627,6 +604,7 @@ def on_text(message):
             parse_mode="HTML", reply_markup=add_date_place_kb())
         return
     
+    # Дата
     if step == "waiting_date":
         st["date"] = text
         st["step"] = "waiting_place"
@@ -634,6 +612,7 @@ def on_text(message):
         bot.reply_to(message, f"✅ Дата: {text}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
         return
     
+    # Место
     if step == "waiting_place":
         st["place"] = text
         st["step"] = "waiting_highlight_phrase"
@@ -648,12 +627,13 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения</b>\n(или «-»):\n\n💡 Выбранный цвет также изменит ДАТА:/МЕСТО: и прямоугольник",
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши ФРАЗУ для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Фраза ДОЛЖНА быть в заголовке (в любом регистре)",
                 parse_mode="HTML")
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
+    # Фраза для выделения
     if step == "waiting_highlight_phrase":
         if text == "-":
             st["highlight_phrase"] = ""
@@ -665,10 +645,11 @@ def on_text(message):
             st["temp_highlight_phrase"] = text
             st["step"] = "waiting_color"
             user_state[uid] = st
-            bot.reply_to(message, f"✏️ Фраза: <b>{html.escape(text)}</b>\n\n🎨 <b>Выбери цвет:</b>\n(цвет будет применен к фразе, меткам ДАТА:/МЕСТО: и прямоугольнику)",
+            bot.reply_to(message, f"✏️ Фраза: <b>{html.escape(text)}</b>\n\n🎨 <b>Выбери цвет выделения:</b>",
                 parse_mode="HTML", reply_markup=color_kb())
         return
     
+    # Рубрика
     if step == "waiting_rubric":
         st["rubric"] = text
         st["step"] = "creating"
@@ -686,7 +667,7 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]),
-                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку:",
+                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку для публикации:",
                 parse_mode="HTML", reply_markup=preview_kb())
         except Exception as e:
             logger.error(f"Error: {e}")
@@ -711,12 +692,6 @@ if __name__ == "__main__":
         logger.warning(f"Webhook error: {e}")
     
     time.sleep(1)
-    
-    try:
-        bot.get_updates(offset=-1, timeout=5)
-        logger.info("Updates cleared")
-    except Exception as e:
-        logger.warning(f"Clear error: {e}")
     
     logger.info("✅ Bot started!")
     

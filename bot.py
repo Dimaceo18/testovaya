@@ -57,18 +57,23 @@ LINE_SPACING_RATIO = 0.22
 # Отступ для даты и места
 DATE_PLACE_BOTTOM_MARGIN = 160
 DATE_PLACE_TOP_MARGIN = 280
-DATE_PLACE_LINE_SPACING = 15
+DATE_PLACE_LINE_SPACING = 20      # расстояние между эллипсами
 DATE_PLACE_LEFT_MARGIN = 70
 
 # Скругленный прямоугольник для рубрики
 RUBRIC_TOP_MARGIN = 60
-RUBRIC_PADDING = 35          # отступы со всех сторон
-RUBRIC_RADIUS = 35           # радиус скругления 35px
-RUBRIC_TEXT_COLOR = (255, 255, 255)  # белый текст
+RUBRIC_PADDING = 35
+RUBRIC_RADIUS = 35
+RUBRIC_BG_COLOR = (255, 255, 255)  # белый фон для рубрики
+RUBRIC_TEXT_COLOR = (0, 0, 0)      # черный текст для рубрики
+
+# Скругленный прямоугольник для даты и места
+DATE_PLACE_PADDING = 25            # отступы внутри эллипса
+DATE_PLACE_RADIUS = 35             # радиус скругления 35px
+DATE_PLACE_BG_COLOR = (255, 255, 255)  # белый фон
 
 # Цвета
 TEXT_COLOR = (255, 255, 255)
-DATE_VALUE_COLOR = (255, 255, 255)  # белые значения даты и места
 
 # Цвета для выделения
 HIGHLIGHT_COLORS = {
@@ -236,7 +241,6 @@ def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_bloc
     return font, lines, heights, spacing, total_h
 
 def draw_highlighted_text(draw, text: str, highlight_word: str, color, font, x, y):
-    """Рисует текст с выделением слова цветом"""
     if not highlight_word:
         draw.text((x, y), text, font=font, fill=TEXT_COLOR)
         return
@@ -266,44 +270,46 @@ def draw_highlighted_text(draw, text: str, highlight_word: str, color, font, x, 
     if after:
         draw.text((current_x, y), after, font=font, fill=TEXT_COLOR)
 
-def draw_date_place(draw, date: str, place: str, highlight_color, x: int, y: int, max_width: int):
-    """Рисует дату и место - метки цветные, значения белые"""
+def draw_rounded_rect_with_text(draw, text: str, color, x: int, y: int, padding: int, radius: int, bg_color):
+    """
+    Рисует скругленный прямоугольник с текстом внутри.
+    text - текст для отображения
+    color - цвет текста
+    x, y - левый верхний угол прямоугольника
+    """
+    if not text:
+        return y
+    
     font = load_font(FONT_REGULAR, FONT_SIZE_DATE_PLACE)
+    text_upper = text.upper()
     
-    current_y = y
+    # Получаем размеры текста
+    text_w = draw.textlength(text_upper, font=font)
+    bbox = draw.textbbox((0, 0), text_upper, font=font)
+    text_h = bbox[3] - bbox[1]
     
-    if date:
-        draw.text((x, current_y), "ДАТА:", font=font, fill=highlight_color)
-        label_width = text_width(draw, "ДАТА:", font)
-        date_value = f" {date.upper()}"
-        draw.text((x + label_width, current_y), date_value, font=font, fill=DATE_VALUE_COLOR)
-        line_bbox = draw.textbbox((0, 0), f"ДАТА: {date.upper()}", font=font)
-        current_y += line_bbox[3] - line_bbox[1] + DATE_PLACE_LINE_SPACING
+    # Размер прямоугольника
+    rect_w = int(text_w + padding * 2)
+    rect_h = int(text_h + padding * 2)
     
-    if place:
-        draw.text((x, current_y), "МЕСТО:", font=font, fill=highlight_color)
-        label_width = text_width(draw, "МЕСТО:", font)
-        place_value = f" {place.upper()}"
-        
-        full_text = f"МЕСТО: {place.upper()}"
-        if text_width(draw, full_text, font) <= max_width:
-            draw.text((x + label_width, current_y), place_value, font=font, fill=DATE_VALUE_COLOR)
-        else:
-            draw.text((x, current_y), "МЕСТО:", font=font, fill=highlight_color)
-            value_lines = wrap_text_center(draw, place.upper(), font, max_width - label_width - 20, 3)[0]
-            val_y = current_y
-            for i, line in enumerate(value_lines):
-                if i == 0:
-                    draw.text((x + label_width + 15, val_y), line, font=font, fill=DATE_VALUE_COLOR)
-                else:
-                    draw.text((x + label_width + 15, val_y), line, font=font, fill=DATE_VALUE_COLOR)
-                line_bbox = draw.textbbox((0, 0), line, font=font)
-                val_y += line_bbox[3] - line_bbox[1] + 5
+    # Рисуем скругленный прямоугольник
+    draw.rounded_rectangle(
+        [x, y, x + rect_w, y + rect_h],
+        radius=radius,
+        fill=bg_color
+    )
+    
+    # Рисуем текст по центру прямоугольника
+    text_x = x + (rect_w - text_w) / 2
+    text_y = y + (rect_h - text_h) / 2 - bbox[1]
+    draw.text((text_x, text_y), text_upper, font=font, fill=color)
+    
+    return y + rect_h + DATE_PLACE_LINE_SPACING
 
 def draw_rubric_top_center(draw, rubric: str, highlight_color):
     """
     Рисует скругленный прямоугольник с рубрикой вверху по центру.
-    Радиус скругления 35px. Текст идеально отцентрирован.
+    Фон - белый, текст - цветом выделения.
     """
     if not rubric:
         return 0
@@ -316,29 +322,25 @@ def draw_rubric_top_center(draw, rubric: str, highlight_color):
     bbox = draw.textbbox((0, 0), rubric_text, font=font_rubric)
     text_h = bbox[3] - bbox[1]
     
-    # Одинаковые отступы со всех сторон
-    padding = RUBRIC_PADDING
-    
     # Размер прямоугольника
-    rect_w = int(text_w + padding * 2)
-    rect_h = int(text_h + padding * 2)
+    rect_w = int(text_w + RUBRIC_PADDING * 2)
+    rect_h = int(text_h + RUBRIC_PADDING * 2)
     
-    # Позиция прямоугольника - строго по центру экрана
+    # Позиция - по центру
     rect_x = (TARGET_W - rect_w) // 2
     rect_y = RUBRIC_TOP_MARGIN
     
-    # Рисуем скругленный прямоугольник (радиус 35px)
+    # Рисуем белый скругленный прямоугольник
     draw.rounded_rectangle(
-        [rect_x, rect_y, rect_x + rect_w, rect_y + rect_h], 
-        radius=RUBRIC_RADIUS, 
-        fill=highlight_color
+        [rect_x, rect_y, rect_x + rect_w, rect_y + rect_h],
+        radius=RUBRIC_RADIUS,
+        fill=RUBRIC_BG_COLOR
     )
     
-    # Вычисляем позицию текста для идеального центрирования
+    # Рисуем текст цветом выделения
     text_x = rect_x + (rect_w - text_w) / 2
     text_y = rect_y + (rect_h - text_h) / 2 - bbox[1]
-    
-    draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=RUBRIC_TEXT_COLOR)
+    draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=highlight_color)
     
     return rect_y + rect_h
 
@@ -398,15 +400,39 @@ def create_poster_chp(image_bytes: bytes, title_text: str, text_position: str,
             draw_highlighted_text(draw, ln, highlight_word, highlight_color, font, x, y)
             y += heights[i] + spacing
         
-        date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
+        # Дата и место внизу - в белых эллипсах
         if date or place:
-            draw_date_place(draw, date, place, highlight_color, DATE_PLACE_LEFT_MARGIN, date_place_y, max_text_width)
+            date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
+            if date:
+                date_place_y = draw_rounded_rect_with_text(
+                    draw, f"ДАТА: {date}", highlight_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y,
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS, DATE_PLACE_BG_COLOR
+                )
+            if place:
+                draw_rounded_rect_with_text(
+                    draw, f"МЕСТО: {place}", highlight_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y,
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS, DATE_PLACE_BG_COLOR
+                )
     
     else:
+        # Дата и место вверху - в белых эллипсах
         date_place_y = DATE_PLACE_TOP_MARGIN
         if date or place:
-            draw_date_place(draw, date, place, highlight_color, DATE_PLACE_LEFT_MARGIN, date_place_y, max_text_width)
-            y = date_place_y + 200
+            if date:
+                date_place_y = draw_rounded_rect_with_text(
+                    draw, f"ДАТА: {date}", highlight_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y,
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS, DATE_PLACE_BG_COLOR
+                )
+            if place:
+                draw_rounded_rect_with_text(
+                    draw, f"МЕСТО: {place}", highlight_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y,
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS, DATE_PLACE_BG_COLOR
+                )
+            y = date_place_y + 100
         else:
             y = margin_top
         
@@ -538,7 +564,7 @@ def on_color_select(c):
     st["step"] = "waiting_rubric"
     user_state[uid] = st
     
-    bot.send_message(c.message.chat.id, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
+    bot.send_message(c.message.chat.id, f"✏️ <b>Введи РУБРИКУ</b> (на белом фоне):", parse_mode="HTML")
     bot.delete_message(c.message.chat.id, c.message.message_id)
 
 @bot.callback_query_handler(func=lambda c: c.data in ["publish", "cancel"])
@@ -579,9 +605,9 @@ def cmd_start(message):
         "📝 Отправь фото и следуй инструкциям.\n\n"
         "<b>📐 Настройки:</b>\n"
         "• Размер: 1080×1350 (4:5)\n"
-        "• Шрифт: Inter ExtraBold\n"
-        "• Скругление рубрики: 35px\n"
-        "• Выделение слов цветом\n\n"
+        "• Рубрика: белый фон, цветной текст\n"
+        "• Дата/Место: белые эллипсы, цветной текст\n"
+        "• Скругление: 35px\n\n"
         "Нажми «🚨 Шаблон ЧП ВМ» 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -668,17 +694,17 @@ def on_text(message):
             st["highlight_color"] = None
             st["step"] = "waiting_rubric"
             user_state[uid] = st
-            bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
+            bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b> (на белом фоне):", parse_mode="HTML")
         else:
             title = st.get("title", "").lower()
             if text.lower() in title:
                 st["temp_highlight_word"] = text
                 st["step"] = "waiting_color"
                 user_state[uid] = st
-                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b> в заголовке!\n\n🎨 <b>Выбери цвет выделения:</b>",
+                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b>!\n\n🎨 <b>Выбери цвет:</b>",
                     parse_mode="HTML", reply_markup=color_kb())
             else:
-                bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b> в заголовке!\n\nЗаголовок: «{st.get('title', '')}»\n\nПопробуй другое слово или нажми «-»",
+                bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b>!\n\nПопробуй другое слово или «-»",
                     parse_mode="HTML")
         return
     
@@ -699,7 +725,7 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]),
-                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку для публикации:",
+                caption="🎉 <b>Карточка готова!</b>\n\nНажми кнопку:",
                 parse_mode="HTML", reply_markup=preview_kb())
         except Exception as e:
             logger.error(f"Error: {e}")

@@ -22,7 +22,7 @@ DB_PATH = "news.db"
 
 # Водяной знак
 WATERMARK_TEXT = "MINSK NEWS"
-WATERMARK_OPACITY = 26  # примерно 10% (255 * 0.1 = 26)
+WATERMARK_OPACITY = 38  # 15% от 255 = 38
 
 # Инициализация DeepSeek клиента
 deepseek_client = AsyncOpenAI(
@@ -102,7 +102,7 @@ def remove_emojis(text: str) -> str:
 
 def format_caption(title: str, body: str) -> str:
     if body and body.strip():
-        return f"<b>{title}</b>\n{body}"
+        return f"<b>{title}</b>\n\n{body}"
     else:
         return f"<b>{title}</b>"
 
@@ -114,71 +114,84 @@ def get_post_publish_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== ОБРАБОТКА ФОТО ====================
-def add_watermark(image: Image.Image) -> Image.Image:
+# ==================== ОБРАБОТКА ФОТО С ВОДЯНЫМ ЗНАКОМ ====================
+def add_watermark_to_image(image: Image.Image) -> Image.Image:
+    """Добавляет полупрозрачный водяной знак по центру изображения"""
+    # Создаем копию изображения
     img = image.copy()
+    
+    # Конвертируем в RGBA для работы с прозрачностью
     if img.mode != 'RGBA':
         img = img.convert('RGBA')
     
-    watermark_layer = Image.new('RGBA', img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(watermark_layer)
+    # Создаем слой для водяного знака
+    watermark = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(watermark)
     
-    font_size = min(img.width, img.height) // 30
+    # Рассчитываем размер шрифта (8% от меньшей стороны)
+    font_size = min(img.width, img.height) // 12
+    
+    # Пытаемся загрузить шрифт
+    font = None
     font_paths = [
-        "Montserrat-Black.ttf",
-        "fonts/Montserrat-Black.ttf",
-        "/app/Montserrat-Black.ttf",
         "Montserrat-Bold.ttf",
-        "arial.ttf"
+        "Montserrat-Black.ttf",
+        "fonts/Montserrat-Bold.ttf",
+        "/app/Montserrat-Bold.ttf",
+        "arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     ]
     
-    font = None
     for font_path in font_paths:
         try:
             if os.path.exists(font_path):
                 font = ImageFont.truetype(font_path, font_size)
+                print(f"✅ Загружен шрифт для водяного знака: {font_path}")
                 break
-        except:
+        except Exception as e:
             continue
     
     if font is None:
         font = ImageFont.load_default()
+        print("⚠️ Шрифт для водяного знака не найден, использую стандартный")
     
+    # Получаем размер текста
     bbox = draw.textbbox((0, 0), WATERMARK_TEXT, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
     
+    # Позиция по центру
     x = (img.width - text_width) // 2
     y = (img.height - text_height) // 2
     
+    # Рисуем текст с прозрачностью
     draw.text((x, y), WATERMARK_TEXT, font=font, fill=(255, 255, 255, WATERMARK_OPACITY))
     
-    result = Image.alpha_composite(img, watermark_layer)
+    # Объединяем слои
+    result = Image.alpha_composite(img, watermark)
+    
+    # Конвертируем обратно в RGB для сохранения
     return result.convert('RGB')
 
 def add_watermark_only(photo_bytes: bytes) -> io.BytesIO:
+    """Только добавляет водяной знак без оформления"""
     if not photo_bytes or len(photo_bytes) == 0:
         raise ValueError("Фото пустое")
     
     print(f"💧 Добавляю водяной знак, размер: {len(photo_bytes) / 1024:.1f}KB")
     
-    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
-    img = add_watermark(img)
+    # Открываем изображение
+    img = Image.open(io.BytesIO(photo_bytes))
     
+    # Добавляем водяной знак
+    img_with_watermark = add_watermark_to_image(img)
+    
+    # Сохраняем результат
     output = io.BytesIO()
-    quality = 85
-    while quality >= 60:
-        output.seek(0)
-        output.truncate()
-        img.save(output, format="JPEG", quality=quality, subsampling=0, optimize=True)
-        size = output.tell() / (1024 * 1024)
-        if size <= 15:
-            break
-        quality -= 10
+    img_with_watermark.save(output, format="JPEG", quality=90, optimize=True)
     output.seek(0)
-    if output.getbuffer().nbytes == 0:
-        raise ValueError("Результирующий файл пустой")
-    print(f"✅ Водяной знак добавлен: {output.getbuffer().nbytes / (1024 * 1024):.2f}MB")
+    
+    print(f"✅ Водяной знак добавлен, размер: {output.getbuffer().nbytes / (1024 * 1024):.2f}MB")
     return output
 
 def wrap_text_auto(text: str, font, max_width: int, max_lines: int = 6) -> List[str]:
@@ -295,7 +308,7 @@ def process_photo(photo_bytes: bytes, title_text: str, add_watermark_flag: bool 
         y += line_height + spacing
     
     if add_watermark_flag:
-        img = add_watermark(img)
+        img = add_watermark_to_image(img)
     
     output = io.BytesIO()
     quality = 85
@@ -319,7 +332,6 @@ def get_main_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def get_media_preview_keyboard(media_type: str):
-    """Клавиатура для предпросмотра (фото или видео)"""
     if media_type == "video":
         keyboard = [
             [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_video_with_buttons")],
@@ -377,6 +389,7 @@ def get_ai_result_keyboard(media_type: str = "photo"):
             [InlineKeyboardButton("📤 Опубликовать (с кнопками)", callback_data="publish_raw_with_buttons")],
             [InlineKeyboardButton("📤 Опубликовать (без кнопок)", callback_data="publish_raw_no_buttons")],
             [InlineKeyboardButton("🎨 Оформить пост", callback_data="design_post")],
+            [InlineKeyboardButton("💧 Добавить водяной знак", callback_data="add_watermark_only")],
             [InlineKeyboardButton("📝 Отправить новый запрос ИИ", callback_data="ai_new_request")],
             [InlineKeyboardButton("✏️ Редактировать вручную", callback_data="edit_text")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_preview")]
@@ -1205,10 +1218,11 @@ async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             context.chat_data["pending_post"] = pending
         
+        # Показываем полный текст результата
         await query.message.reply_text(
             f"✅ *Текст обработан!*\n\n"
             f"📰 *Заголовок:* {title}\n\n"
-            f"📝 *Текст:*\n{body[:500]}...\n\n"
+            f"📝 *Текст:*\n{body}\n\n"
             f"Выберите действие:",
             parse_mode="Markdown",
             reply_markup=get_ai_result_keyboard(media_type)

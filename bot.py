@@ -100,9 +100,8 @@ def remove_emojis(text: str) -> str:
 
 def format_caption(title: str, body: str) -> str:
     if body and body.strip():
-        # Форматируем абзацы для HTML
-        formatted_body = body.replace('\n\n', '\n\n')
-        return f"<b>{title}</b>\n\n{formatted_body}"
+        # Только один перенос строки между заголовком и текстом
+        return f"<b>{title}</b>\n{body}"
     else:
         return f"<b>{title}</b>"
 
@@ -159,6 +158,34 @@ def add_watermark(image: Image.Image) -> Image.Image:
     
     result = Image.alpha_composite(img, watermark_layer)
     return result.convert('RGB')
+
+def add_watermark_only(photo_bytes: bytes) -> io.BytesIO:
+    """Только добавляет водяной знак без оформления"""
+    if not photo_bytes or len(photo_bytes) == 0:
+        raise ValueError("Фото пустое")
+    
+    print(f"💧 Добавляю водяной знак, размер: {len(photo_bytes) / 1024:.1f}KB")
+    
+    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
+    
+    # Добавляем водяной знак
+    img = add_watermark(img)
+    
+    output = io.BytesIO()
+    quality = 85
+    while quality >= 60:
+        output.seek(0)
+        output.truncate()
+        img.save(output, format="JPEG", quality=quality, subsampling=0, optimize=True)
+        size = output.tell() / (1024 * 1024)
+        if size <= 15:
+            break
+        quality -= 10
+    output.seek(0)
+    if output.getbuffer().nbytes == 0:
+        raise ValueError("Результирующий файл пустой")
+    print(f"✅ Водяной знак добавлен: {output.getbuffer().nbytes / (1024 * 1024):.2f}MB")
+    return output
 
 def wrap_text_auto(text: str, font, max_width: int, max_lines: int = 6) -> List[str]:
     words = text.split()
@@ -303,7 +330,7 @@ def get_post_preview_keyboard():
         [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_raw_with_buttons")],
         [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_raw_no_buttons")],
         [InlineKeyboardButton("🎨 Оформить пост", callback_data="design_post")],
-        [InlineKeyboardButton("💧 Добавить водяной знак", callback_data="show_watermark_preview")],
+        [InlineKeyboardButton("💧 Добавить водяной знак", callback_data="add_watermark_only")],
         [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
         [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process")],
         [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_menu")]
@@ -505,7 +532,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(f"❌ Не удалось загрузить фото")
 
 # ==================== ВОДЯНОЙ ЗНАК ====================
-async def show_watermark_preview_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_watermark_only_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
@@ -524,11 +551,8 @@ async def show_watermark_preview_callback(update: Update, context: ContextTypes.
     try:
         await query.message.reply_text("💧 Добавляю водяной знак...")
         
-        lines = full_text.split('\n')
-        title_for_photo = lines[0][:150] if lines else "Пост"
-        
-        # Обрабатываем фото с водяным знаком
-        photo_io = process_photo(photo_bytes, title_for_photo, add_watermark_flag=True)
+        # Только добавляем водяной знак без оформления
+        photo_io = add_watermark_only(photo_bytes)
         
         # Сохраняем водяной вариант
         context.chat_data["watermarked_post"] = {
@@ -550,7 +574,7 @@ async def show_watermark_preview_callback(update: Update, context: ContextTypes.
             pass
     except Exception as e:
         print(f"❌ Ошибка: {e}")
-        await query.message.reply_text(f"⚠️ Ошибка: {e}")
+        await query.message.reply_text(f"⚠️ Ошибка при добавлении водяного знака: {e}")
 
 async def publish_watermarked_with_buttons_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -711,10 +735,8 @@ async def add_watermark_to_designed_callback(update: Update, context: ContextTyp
     try:
         await query.message.reply_text("💧 Добавляю водяной знак...")
         
-        lines = full_text.split('\n')
-        title_for_photo = lines[0][:150] if lines else "Пост"
-        
-        photo_io = process_photo(original_photo_bytes, title_for_photo, add_watermark_flag=True)
+        # Только добавляем водяной знак без оформления
+        photo_io = add_watermark_only(original_photo_bytes)
         
         context.chat_data["watermarked_post"] = {
             "text": full_text,
@@ -1290,8 +1312,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "publish_raw_no_buttons":
         await publish_raw_no_buttons_callback(update, context)
     
-    elif data == "show_watermark_preview":
-        await show_watermark_preview_callback(update, context)
+    elif data == "add_watermark_only":
+        await add_watermark_only_callback(update, context)
     elif data == "publish_watermarked_with_buttons":
         await publish_watermarked_with_buttons_callback(update, context)
     elif data == "publish_watermarked_no_buttons":

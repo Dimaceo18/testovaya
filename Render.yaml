@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: minsk-news-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: CHANNEL_LINK
+        value: https://t.me/minsk_news
+      - key: SUGGEST_LINK
+        value: https://t.me/minsk_news_bot?start=suggest

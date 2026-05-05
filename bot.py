@@ -82,7 +82,8 @@ def add_links_to_text(text, has_buttons=True):
     if not has_buttons:
         return text
     
-    links = f"\n\n<a href=\"{CHANNEL_LINK}\">📢 Подписаться на канал</a> | <a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
+    links = f"\n\n<a href=\"{CHANNEL_LINK}\">📢 Подписаться на канал</a>
+    <a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
     return text + links
 
 # ==================== ВОДЯНОЙ ЗНАК ====================

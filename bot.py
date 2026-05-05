@@ -72,10 +72,9 @@ def remove_emojis(text):
     return emoji_pattern.sub(r'', text)
 
 def format_caption(title, body):
-    """Форматирует подпись - один перенос между заголовком и текстом"""
+    """Форматирует подпись - ДВА переноса между заголовком и текстом"""
     if body and body.strip():
-        # ОДИН перенос строки, а не два
-        return f"<b>{title}</b>\n{body}"
+        return f"<b>{title}</b>\n\n{body}"
     else:
         return f"<b>{title}</b>"
 
@@ -284,7 +283,7 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
     if len(body) > 600:
         body = body[:597] + "..."
     
-    # Форматируем caption с ОДНИМ переносом
+    # Форматируем caption с ДВУМЯ переносами
     caption = format_caption(title, body) if text else " "
     reply_markup = get_post_publish_keyboard() if has_buttons else None
     
@@ -528,8 +527,8 @@ async def ai_process(update, context, media_type):
         if len(body) > 600:
             body = body[:597] + "..."
         
-        # Формируем текст с ОДНИМ переносом между заголовком и текстом
-        new_text = f"{title}\n{body}"
+        # Формируем текст с ДВУМЯ переносами между заголовком и текстом
+        new_text = f"{title}\n\n{body}"
         
         pending["text"] = new_text
         context.chat_data["pending"] = pending

@@ -22,7 +22,6 @@ DB_PATH = "news.db"
 
 WATERMARK_TEXT = "MINSK NEWS"
 WATERMARK_OPACITY = 38
-MAX_CAPTION_LEN = 1024
 
 deepseek_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
 
@@ -79,7 +78,7 @@ def format_caption(title, body):
         return f"<b>{title}</b>"
 
 def get_post_publish_keyboard(has_buttons=True):
-    """Кнопки как гиперссылки (URL кнопки)"""
+    """Только гиперссылки (URL кнопки), без инлайн кнопок"""
     if has_buttons:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_LINK)],
@@ -188,7 +187,7 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     output.seek(0)
     return output
 
-# ==================== КЛАВИАТУРЫ ====================
+# ==================== КЛАВИАТУРЫ ДЛЯ УПРАВЛЕНИЯ (ТОЛЬКО INLINE КНОПКИ ДЛЯ БОТА) ====================
 def get_main_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("📸 Отправить фото, видео или текст", callback_data="send_media_info")]])
 
@@ -301,7 +300,7 @@ def get_schedule_keyboard(prefix):
 
 # ==================== ОТПРАВКА В КАНАЛ ====================
 async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_buttons=True, is_video=False, is_text=False, is_album=False, album_photos=None, video_file_id=None):
-    # Разделяем заголовок и текст (между ними должна быть пустая строка)
+    # Разделяем заголовок и текст
     lines = text.split('\n')
     title = lines[0] if lines else ""
     
@@ -319,12 +318,13 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
     
     body = '\n'.join(body_lines).strip()
     
-    # Формируем caption с правильным форматированием
+    # Формируем caption
     if body:
         caption = f"<b>{title}</b>\n\n{body}"
     else:
         caption = f"<b>{title}</b>"
     
+    # Кнопки-гиперссылки (только URL)
     reply_markup = get_post_publish_keyboard(has_buttons)
     
     try:
@@ -567,7 +567,6 @@ async def design_post_callback(update, context):
         await query.message.reply_text("❌ Оформить можно только фото")
         return
     
-    # Извлекаем заголовок из текста
     text = pending["text"]
     lines = text.split('\n')
     title = lines[0][:150] if lines else "Пост"
@@ -658,7 +657,6 @@ async def ai_process_with_custom_request(update, context, media_type, custom_req
         pending["text"] = new_text
         context.chat_data["pending"] = pending
         
-        # Отправляем результат с полным текстом (без обрезания)
         await query.message.reply_text(
             f"✅ *Готово!*\n\n"
             f"📰 *{title}*\n\n"
@@ -739,7 +737,6 @@ async def back_to_ai_result_callback(update, context, media_type):
     pending = context.chat_data.get("pending", {})
     text = pending.get("text", "")
     
-    # Разделяем заголовок и текст
     lines = text.split('\n\n', 1)
     title = lines[0].strip() if lines else ""
     body = lines[1].strip() if len(lines) > 1 else ""

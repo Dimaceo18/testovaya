@@ -56,23 +56,24 @@ def init_db():
                 has_watermark BOOLEAN DEFAULT 0,
                 is_designed BOOLEAN DEFAULT 0,
                 is_video BOOLEAN DEFAULT 0,
+                is_text BOOLEAN DEFAULT 0,
                 video_file_id TEXT
             )
         """)
     print("✅ База данных готова")
 
-def save_scheduled_post(text: str, photo_bytes: bytes, schedule_time: datetime, has_buttons: bool = True, has_watermark: bool = False, is_designed: bool = False, is_video: bool = False, video_file_id: str = None):
+def save_scheduled_post(text: str, photo_bytes: bytes, schedule_time: datetime, has_buttons: bool = True, has_watermark: bool = False, is_designed: bool = False, is_video: bool = False, is_text: bool = False, video_file_id: str = None):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            "INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, is_designed, is_video, video_file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark, is_designed, is_video, video_file_id)
+            "INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, is_designed, is_video, is_text, video_file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark, is_designed, is_video, is_text, video_file_id)
         )
 
 def get_pending_scheduled_posts() -> List[Dict]:
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         result = conn.execute(
-            "SELECT id, text, photo_bytes, schedule_time, has_buttons, has_watermark, is_designed, is_video, video_file_id FROM scheduled_posts WHERE schedule_time <= ?",
+            "SELECT id, text, photo_bytes, schedule_time, has_buttons, has_watermark, is_designed, is_video, is_text, video_file_id FROM scheduled_posts WHERE schedule_time <= ?",
             (datetime.now(),)
         ).fetchall()
         return [dict(row) for row in result]
@@ -117,21 +118,16 @@ def get_post_publish_keyboard():
 # ==================== ОБРАБОТКА ФОТО С ВОДЯНЫМ ЗНАКОМ ====================
 def add_watermark_to_image(image: Image.Image) -> Image.Image:
     """Добавляет полупрозрачный водяной знак по центру изображения"""
-    # Создаем копию изображения
     img = image.copy()
     
-    # Конвертируем в RGBA для работы с прозрачностью
     if img.mode != 'RGBA':
         img = img.convert('RGBA')
     
-    # Создаем слой для водяного знака
     watermark = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(watermark)
     
-    # Рассчитываем размер шрифта (8% от меньшей стороны)
     font_size = min(img.width, img.height) // 12
     
-    # Пытаемся загрузить шрифт
     font = None
     font_paths = [
         "Montserrat-Bold.ttf",
@@ -155,38 +151,27 @@ def add_watermark_to_image(image: Image.Image) -> Image.Image:
         font = ImageFont.load_default()
         print("⚠️ Шрифт для водяного знака не найден, использую стандартный")
     
-    # Получаем размер текста
     bbox = draw.textbbox((0, 0), WATERMARK_TEXT, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
     
-    # Позиция по центру
     x = (img.width - text_width) // 2
     y = (img.height - text_height) // 2
     
-    # Рисуем текст с прозрачностью
     draw.text((x, y), WATERMARK_TEXT, font=font, fill=(255, 255, 255, WATERMARK_OPACITY))
     
-    # Объединяем слои
     result = Image.alpha_composite(img, watermark)
-    
-    # Конвертируем обратно в RGB для сохранения
     return result.convert('RGB')
 
 def add_watermark_only(photo_bytes: bytes) -> io.BytesIO:
-    """Только добавляет водяной знак без оформления"""
     if not photo_bytes or len(photo_bytes) == 0:
         raise ValueError("Фото пустое")
     
     print(f"💧 Добавляю водяной знак, размер: {len(photo_bytes) / 1024:.1f}KB")
     
-    # Открываем изображение
     img = Image.open(io.BytesIO(photo_bytes))
-    
-    # Добавляем водяной знак
     img_with_watermark = add_watermark_to_image(img)
     
-    # Сохраняем результат
     output = io.BytesIO()
     img_with_watermark.save(output, format="JPEG", quality=90, optimize=True)
     output.seek(0)
@@ -328,7 +313,18 @@ def process_photo(photo_bytes: bytes, title_text: str, add_watermark_flag: bool 
 
 # ==================== КНОПКИ ДЛЯ ПОСТОВ ====================
 def get_main_keyboard():
-    keyboard = [[InlineKeyboardButton("📸 Отправить фото или видео", callback_data="send_media_info")]]
+    keyboard = [[InlineKeyboardButton("📸 Отправить фото, видео или текст", callback_data="send_media_info")]]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_text_preview_keyboard():
+    """Клавиатура для текстового поста"""
+    keyboard = [
+        [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_text_with_buttons")],
+        [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_text_no_buttons")],
+        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
+        [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process")],
+        [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_text_menu")]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_media_preview_keyboard(media_type: str):
@@ -340,7 +336,7 @@ def get_media_preview_keyboard(media_type: str):
             [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_video")],
             [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_video_menu")]
         ]
-    else:
+    elif media_type == "photo":
         keyboard = [
             [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_raw_with_buttons")],
             [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_raw_no_buttons")],
@@ -350,6 +346,8 @@ def get_media_preview_keyboard(media_type: str):
             [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process")],
             [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_menu")]
         ]
+    else:
+        keyboard = get_text_preview_keyboard()
     return InlineKeyboardMarkup(keyboard)
 
 def get_watermark_preview_keyboard():
@@ -384,6 +382,14 @@ def get_ai_result_keyboard(media_type: str = "photo"):
             [InlineKeyboardButton("✏️ Редактировать вручную", callback_data="edit_video_text")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_video_preview")]
         ]
+    elif media_type == "text":
+        keyboard = [
+            [InlineKeyboardButton("📤 Опубликовать (с кнопками)", callback_data="publish_text_with_buttons")],
+            [InlineKeyboardButton("📤 Опубликовать (без кнопок)", callback_data="publish_text_no_buttons")],
+            [InlineKeyboardButton("📝 Отправить новый запрос ИИ", callback_data="ai_new_request_text")],
+            [InlineKeyboardButton("✏️ Редактировать вручную", callback_data="edit_text")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_text_preview")]
+        ]
     else:
         keyboard = [
             [InlineKeyboardButton("📤 Опубликовать (с кнопками)", callback_data="publish_raw_with_buttons")],
@@ -397,10 +403,17 @@ def get_ai_result_keyboard(media_type: str = "photo"):
     return InlineKeyboardMarkup(keyboard)
 
 def get_ai_request_keyboard(media_type: str = "photo"):
+    if media_type == "video":
+        back_callback = "back_to_video_preview"
+    elif media_type == "text":
+        back_callback = "back_to_text_preview"
+    else:
+        back_callback = "back_to_preview"
+    
     keyboard = [
         [InlineKeyboardButton("📝 Написать свой запрос", callback_data=f"ai_custom_request_{media_type}")],
         [InlineKeyboardButton("🔄 Использовать стандартный", callback_data=f"ai_process_{media_type}")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_preview" if media_type == "photo" else "back_to_video_preview")]
+        [InlineKeyboardButton("◀️ Назад", callback_data=back_callback)]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -423,6 +436,27 @@ def get_schedule_keyboard():
     if row:
         keyboard.append(row)
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_preview")])
+    return InlineKeyboardMarkup(keyboard)
+
+def get_text_schedule_keyboard():
+    schedule_times = [
+        ("Через 30 мин", "30min"),
+        ("9:05", "9:05"), ("10:05", "10:05"), ("11:07", "11:07"),
+        ("12:08", "12:08"), ("13:09", "13:09"), ("14:10", "14:10"),
+        ("15:11", "15:11"), ("16:12", "16:12"), ("17:13", "17:13"),
+        ("18:14", "18:14"), ("19:07", "19:07"), ("20:08", "20:08"),
+        ("21:09", "21:09"), ("22:11", "22:11"), ("22:45", "22:45")
+    ]
+    keyboard = []
+    row = []
+    for i, (label, value) in enumerate(schedule_times):
+        row.append(InlineKeyboardButton(label, callback_data=f"schedule_text:{value}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_text_preview")])
     return InlineKeyboardMarkup(keyboard)
 
 def get_video_schedule_keyboard():
@@ -489,7 +523,7 @@ def get_watermark_schedule_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 # ==================== ПУБЛИКАЦИЯ ====================
-async def send_to_channel(context, photo_bytes: bytes = None, file_id: str = None, text: str = "", has_buttons: bool = True, is_video: bool = False, video_file_id: str = None):
+async def send_to_channel(context, photo_bytes: bytes = None, file_id: str = None, text: str = "", has_buttons: bool = True, is_video: bool = False, is_text: bool = False, video_file_id: str = None):
     if len(text) > 1000:
         text = text[:1000] + "..."
     
@@ -505,6 +539,13 @@ async def send_to_channel(context, photo_bytes: bytes = None, file_id: str = Non
             chat_id=CHANNEL_ID,
             video=video_file_id,
             caption=caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+    elif is_text:
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=caption,
             parse_mode="HTML",
             reply_markup=reply_markup
         )
@@ -530,7 +571,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *Бот для публикации новостей MINSK NEWS*\n\n"
         "📸 *Как работать с ботом:*\n"
-        "1. Отправьте фото или видео с подписью\n"
+        "1. Отправьте текст, фото или видео с подписью\n"
         "2. Выберите действие из меню\n\n"
         "*Доступные действия:*\n"
         "• 📤 Опубликовать с кнопками\n"
@@ -540,15 +581,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• ✏️ Редактировать текст\n"
         "• 🤖 Обработать текст (ИИ)\n"
         "• ⏰ Отложить публикацию\n\n"
-        "👇 Отправьте фото или видео с подписью",
+        "👇 Отправьте текст, фото или видео с подписью",
         parse_mode="Markdown",
         reply_markup=get_main_keyboard()
+    )
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    text = message.text or message.caption
+    
+    if not text or text.startswith('/'):
+        return
+    
+    cleaned_text = remove_emojis(text)
+    
+    print(f"📝 Получен текст: {cleaned_text[:100]}...")
+    
+    context.chat_data["pending_text"] = {
+        "type": "text",
+        "text": cleaned_text
+    }
+    
+    await message.reply_text(
+        f"📝 *Текст для публикации:*\n\n{cleaned_text}\n\nВыберите действие:",
+        parse_mode="Markdown",
+        reply_markup=get_text_preview_keyboard()
     )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message.photo:
-        await message.reply_text("❌ Пожалуйста, отправьте фото")
         return
     
     caption = message.caption or ""
@@ -605,6 +667,109 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption=cleaned_caption if cleaned_caption else " ",
         parse_mode="HTML",
         reply_markup=get_media_preview_keyboard("video")
+    )
+
+# ==================== ПУБЛИКАЦИЯ ТЕКСТА ====================
+async def publish_text_with_buttons_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    pending = context.chat_data.get("pending_text", {})
+    if not pending or pending.get("type") != "text":
+        await query.message.reply_text("❌ Нет текста для публикации")
+        return
+    
+    text = pending.get("text", "")
+    
+    try:
+        await send_to_channel(context, text=text, has_buttons=True, is_text=True)
+        await query.message.reply_text("✅ Текст опубликован в канал (с кнопками)!")
+        context.chat_data.pop("pending_text", None)
+        try:
+            await query.message.delete()
+        except:
+            pass
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await query.message.reply_text(f"❌ Ошибка: {e}")
+
+async def publish_text_no_buttons_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    pending = context.chat_data.get("pending_text", {})
+    if not pending or pending.get("type") != "text":
+        await query.message.reply_text("❌ Нет текста для публикации")
+        return
+    
+    text = pending.get("text", "")
+    
+    try:
+        await send_to_channel(context, text=text, has_buttons=False, is_text=True)
+        await query.message.reply_text("✅ Текст опубликован в канал (без кнопок)!")
+        context.chat_data.pop("pending_text", None)
+        try:
+            await query.message.delete()
+        except:
+            pass
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await query.message.reply_text(f"❌ Ошибка: {e}")
+
+async def schedule_text_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_reply_markup(reply_markup=get_text_schedule_keyboard())
+
+async def schedule_text_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    time_value = query.data.split(":")[1]
+    
+    now = datetime.now()
+    if time_value == "30min":
+        publish_time = now + timedelta(minutes=30)
+        time_str = "через 30 минут"
+    else:
+        hour, minute = map(int, time_value.split(":"))
+        publish_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if publish_time <= now:
+            publish_time += timedelta(days=1)
+        time_str = f"{publish_time.strftime('%H:%M')} ({publish_time.strftime('%d.%m')})"
+    
+    pending = context.chat_data.get("pending_text", {})
+    text = pending.get("text", "")
+    
+    if not text:
+        await query.message.reply_text("❌ Нет данных для отложенной публикации")
+        return
+    
+    save_scheduled_post(text, None, publish_time, has_buttons=True, has_watermark=False, is_designed=False, is_text=True)
+    
+    await query.message.reply_text(
+        f"✅ Текст запланирован на {time_str}\n\n"
+        f"Он будет автоматически опубликован в канал в указанное время (с кнопками)."
+    )
+    
+    context.chat_data.pop("pending_text", None)
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def back_to_text_preview_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    pending = context.chat_data.get("pending_text", {})
+    text = pending.get("text", "")
+    
+    await query.message.edit_text(
+        text=f"📝 *Текст для публикации:*\n\n{text}\n\nВыберите действие:",
+        parse_mode="Markdown",
+        reply_markup=get_text_preview_keyboard()
     )
 
 # ==================== ПУБЛИКАЦИЯ ВИДЕО ====================
@@ -1116,7 +1281,12 @@ async def handle_edited_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pending["text"] = new_text
             context.chat_data["pending_post"] = pending
             await update.message.reply_text("✅ Текст обновлён!", reply_markup=get_media_preview_keyboard("photo"))
-    
+    elif edit_type == "text":
+        pending = context.chat_data.get("pending_text", {})
+        if pending:
+            pending["text"] = new_text
+            context.chat_data["pending_text"] = pending
+            await update.message.reply_text("✅ Текст обновлён!", reply_markup=get_text_preview_keyboard())
     elif edit_type == "designed":
         designed = context.chat_data.get("designed_post", {})
         if designed:
@@ -1138,6 +1308,7 @@ async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_for_edit_video"] = None
     context.user_data["waiting_for_custom_request"] = None
     context.user_data["waiting_for_custom_request_video"] = None
+    context.user_data["waiting_for_custom_request_text"] = None
     await update.message.reply_text("✅ Редактирование отменено.")
 
 # ==================== ОБРАБОТКА ИИ ====================
@@ -1165,6 +1336,9 @@ async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     if source == "video":
         pending = context.chat_data.get("pending_video", {})
         media_type = "video"
+    elif source == "text":
+        pending = context.chat_data.get("pending_text", {})
+        media_type = "text"
     elif source == "designed":
         pending = context.chat_data.get("designed_post", {})
         media_type = "photo"
@@ -1213,12 +1387,13 @@ async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         if source == "video":
             context.chat_data["pending_video"] = pending
+        elif source == "text":
+            context.chat_data["pending_text"] = pending
         elif source == "designed":
             context.chat_data["designed_post"] = pending
         else:
             context.chat_data["pending_post"] = pending
         
-        # Показываем полный текст результата
         await query.message.reply_text(
             f"✅ *Текст обработан!*\n\n"
             f"📰 *Заголовок:* {title}\n\n"
@@ -1237,6 +1412,12 @@ async def ai_process_video_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
     context.user_data["ai_source"] = "video"
     await ai_new_request_video_callback(update, context)
+
+async def ai_process_text_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["ai_source"] = "text"
+    await ai_new_request_text_callback(update, context)
 
 async def ai_process_designed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1266,6 +1447,18 @@ async def ai_new_request_video_callback(update: Update, context: ContextTypes.DE
         "После обработки вы сможете отправить новый запрос снова.",
         parse_mode="Markdown",
         reply_markup=get_ai_request_keyboard("video")
+    )
+
+async def ai_new_request_text_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(
+        "📝 *Выберите вариант обработки текста:*\n\n"
+        "• *Стандартный* - сокращение до 650 символов с абзацами\n"
+        "• *Свой запрос* - напишите, как именно обработать текст\n\n"
+        "После обработки вы сможете отправить новый запрос снова.",
+        parse_mode="Markdown",
+        reply_markup=get_ai_request_keyboard("text")
     )
 
 async def ai_custom_request_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1302,6 +1495,23 @@ async def ai_custom_request_video_callback(update: Update, context: ContextTypes
         parse_mode="Markdown"
     )
 
+async def ai_custom_request_text_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["waiting_for_custom_request_text"] = True
+    context.user_data["ai_source"] = "text"
+    await query.message.reply_text(
+        "📝 *Напишите ваш запрос для обработки текста*\n\n"
+        "Примеры:\n"
+        "• Сделай заголовок броским и коротким\n"
+        "• Сократи до 300 символов\n"
+        "• Сделай более официальным стиль\n"
+        "• Добавь больше фактов и цифр\n\n"
+        "После обработки вы сможете отправить новый запрос снова.\n\n"
+        "Или /cancel для отмены.",
+        parse_mode="Markdown"
+    )
+
 async def ai_process_standard_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1313,6 +1523,13 @@ async def ai_process_standard_video_callback(update: Update, context: ContextTyp
     query = update.callback_query
     await query.answer()
     context.user_data["ai_source"] = "video"
+    context.user_data["custom_ai_request"] = None
+    await ai_process_callback(update, context)
+
+async def ai_process_standard_text_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["ai_source"] = "text"
     context.user_data["custom_ai_request"] = None
     await ai_process_callback(update, context)
 
@@ -1337,6 +1554,22 @@ async def handle_custom_request(update: Update, context: ContextTypes.DEFAULT_TY
         request = update.message.text
         context.user_data["custom_ai_request"] = request
         context.user_data["waiting_for_custom_request_video"] = False
+        await update.message.reply_text(f"✅ Запрос принят: *{request}*\n🤖 Обрабатываю...", parse_mode="Markdown")
+        
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+            async def answer(self):
+                pass
+        
+        fake_query = FakeQuery(update.message)
+        await ai_process_callback(update, context)
+        return
+    
+    if context.user_data.get("waiting_for_custom_request_text"):
+        request = update.message.text
+        context.user_data["custom_ai_request"] = request
+        context.user_data["waiting_for_custom_request_text"] = False
         await update.message.reply_text(f"✅ Запрос принят: *{request}*\n🤖 Обрабатываю...", parse_mode="Markdown")
         
         class FakeQuery:
@@ -1433,6 +1666,44 @@ async def schedule_post_callback(update: Update, context: ContextTypes.DEFAULT_T
     )
     
     context.chat_data.pop("pending_post", None)
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def schedule_text_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    time_value = query.data.split(":")[1]
+    
+    now = datetime.now()
+    if time_value == "30min":
+        publish_time = now + timedelta(minutes=30)
+        time_str = "через 30 минут"
+    else:
+        hour, minute = map(int, time_value.split(":"))
+        publish_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if publish_time <= now:
+            publish_time += timedelta(days=1)
+        time_str = f"{publish_time.strftime('%H:%M')} ({publish_time.strftime('%d.%m')})"
+    
+    pending = context.chat_data.get("pending_text", {})
+    text = pending.get("text", "")
+    
+    if not text:
+        await query.message.reply_text("❌ Нет данных для отложенной публикации")
+        return
+    
+    save_scheduled_post(text, None, publish_time, has_buttons=True, has_watermark=False, is_designed=False, is_text=True)
+    
+    await query.message.reply_text(
+        f"✅ Текст запланирован на {time_str}\n\n"
+        f"Он будет автоматически опубликован в канал в указанное время (с кнопками)."
+    )
+    
+    context.chat_data.pop("pending_text", None)
     
     try:
         await query.message.delete()
@@ -1573,10 +1844,13 @@ async def check_scheduled_posts(app: Application):
                 text = post["text"]
                 has_buttons = post.get("has_buttons", True)
                 is_video = post.get("is_video", False)
+                is_text = post.get("is_text", False)
                 video_file_id = post.get("video_file_id")
                 
                 if is_video and video_file_id:
                     await send_to_channel(app, text=text, has_buttons=has_buttons, is_video=True, video_file_id=video_file_id)
+                elif is_text:
+                    await send_to_channel(app, text=text, has_buttons=has_buttons, is_text=True)
                 elif photo_bytes:
                     await send_to_channel(app, photo_bytes=photo_bytes, text=text, has_buttons=has_buttons)
                 
@@ -1595,7 +1869,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "send_media_info":
         await query.answer()
-        await query.message.reply_text("📸 Отправьте фото или видео с подписью для публикации")
+        await query.message.reply_text("📸 Отправьте текст, фото или видео с подписью для публикации")
+    
+    # Текст
+    elif data == "publish_text_with_buttons":
+        await publish_text_with_buttons_callback(update, context)
+    elif data == "publish_text_no_buttons":
+        await publish_text_no_buttons_callback(update, context)
+    elif data == "schedule_text_menu":
+        await schedule_text_menu_callback(update, context)
+    elif data.startswith("schedule_text:"):
+        await schedule_text_post_callback(update, context)
+    elif data == "back_to_text_preview":
+        await back_to_text_preview_callback(update, context)
+    elif data == "ai_process_text":
+        await ai_process_text_callback(update, context)
+    elif data == "ai_new_request_text":
+        await ai_new_request_text_callback(update, context)
+    elif data == "ai_custom_request_text":
+        await ai_custom_request_text_callback(update, context)
+    elif data == "ai_process_text":
+        await ai_process_standard_text_callback(update, context)
     
     # Видео
     elif data == "publish_video_with_buttons":
@@ -1610,6 +1904,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await schedule_video_menu_callback(update, context)
     elif data == "back_to_video_preview":
         await back_to_video_preview_callback(update, context)
+    elif data == "ai_new_request_video":
+        await ai_new_request_video_callback(update, context)
+    elif data == "ai_custom_request_video":
+        await ai_custom_request_video_callback(update, context)
+    elif data == "ai_process_video":
+        await ai_process_standard_video_callback(update, context)
     
     # Фото - публикация
     elif data == "publish_raw_with_buttons":
@@ -1647,7 +1947,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "edit_designed_text":
         await edit_designed_text_callback(update, context)
     
-    # AI обработка
+    # AI обработка для фото
     elif data == "ai_process":
         context.user_data["ai_source"] = "photo"
         await ai_process_callback(update, context)
@@ -1655,16 +1955,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ai_process_designed_callback(update, context)
     elif data == "ai_new_request":
         await ai_new_request_callback(update, context)
-    elif data == "ai_new_request_video":
-        await ai_new_request_video_callback(update, context)
     elif data == "ai_custom_request_photo":
         await ai_custom_request_photo_callback(update, context)
-    elif data == "ai_custom_request_video":
-        await ai_custom_request_video_callback(update, context)
     elif data == "ai_process_photo":
         await ai_process_standard_photo_callback(update, context)
-    elif data == "ai_process_video":
-        await ai_process_standard_video_callback(update, context)
     
     # Меню отложенной публикации
     elif data == "schedule_menu":
@@ -1719,6 +2013,7 @@ async def run_bot():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel_edit))
     application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.VIDEO, handle_video))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edited_text))
@@ -1731,7 +2026,7 @@ async def run_bot():
     
     await application.updater.start_polling()
     
-    print("✅ Бот запущен с поддержкой отложенных постов, водяных знаков, ИИ и видео!")
+    print("✅ Бот запущен с поддержкой текстов, фото, видео, отложенных постов, водяных знаков и ИИ!")
 
 if __name__ == "__main__":
     import threading

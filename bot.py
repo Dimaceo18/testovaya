@@ -72,8 +72,9 @@ def remove_emojis(text):
     return emoji_pattern.sub(r'', text)
 
 def format_caption(title, body):
+    """Форматирует подпись - ОДИН перенос между заголовком и текстом"""
     if body and body.strip():
-        return f"<b>{title}</b>\n\n{body}"
+        return f"<b>{title}</b>\n{body}"
     else:
         return f"<b>{title}</b>"
 
@@ -210,7 +211,7 @@ def get_preview_keyboard(media_type):
             [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_photo_with_buttons")],
             [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_photo_no_buttons")],
             [InlineKeyboardButton("🎨 Оформить пост", callback_data="design_post")],
-            [InlineKeyboardButton("💧 Добавить водяной знак", callback_data="add_watermark")],
+            [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
             [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
             [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_photo")],
             [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_photo_menu")]
@@ -221,7 +222,7 @@ def get_designed_keyboard():
         [InlineKeyboardButton("✅ Опубликовать (с кнопками)", callback_data="publish_designed_with_buttons")],
         [InlineKeyboardButton("✅ Опубликовать (без кнопок)", callback_data="publish_designed_no_buttons")],
         [InlineKeyboardButton("💧 Добавить водяной знак", callback_data="add_watermark_to_designed")],
-        [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_text")],
+        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_photo_preview")]
     ])
 
@@ -277,7 +278,14 @@ def get_schedule_keyboard(prefix):
 async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_buttons=True, is_video=False, is_text=False, video_file_id=None):
     lines = text.split('\n')
     title = lines[0] if lines else ""
-    body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+    # Убираем пустые строки после заголовка
+    body_lines = []
+    found_text = False
+    for line in lines[1:]:
+        if line.strip() or found_text:
+            body_lines.append(line)
+            found_text = True
+    body = '\n'.join(body_lines)
     
     if len(body) > 600:
         body = body[:597] + "..."
@@ -307,7 +315,6 @@ async def start(update, context):
         parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def handle_text(update, context):
-    # Если ожидаем кастомный запрос для ИИ
     if context.user_data.get("waiting_for_custom_request"):
         return
     
@@ -425,12 +432,13 @@ async def add_watermark_to_designed_callback(update, context):
     await query.answer()
     designed = context.chat_data.get("designed", {})
     if not designed:
-        await query.message.reply_text("❌ Нет поста")
+        await query.message.reply_text("❌ Нет оформленного поста")
         return
-    await query.message.reply_text("💧 Добавляю водяной знак...")
-    photo_io = add_watermark_only(designed["original"])
+    await query.message.reply_text("💧 Добавляю водяной знак на оформленное фото...")
+    # Берем оформленное фото и наносим водяной знак
+    photo_io = add_watermark_only(designed["photo_bytes"])
     context.chat_data["watermarked"] = {"text": designed["text"], "photo_bytes": photo_io.getvalue(), "original": designed["original"]}
-    await query.message.reply_photo(photo=photo_io, caption=f"{designed['text']}\n\n💧 Пост с водяным знаком!", parse_mode="HTML", reply_markup=get_watermark_keyboard())
+    await query.message.reply_photo(photo=photo_io, caption=f"{designed['text']}\n\n💧 Пост с водяным знаком на оформленном фото!", parse_mode="HTML", reply_markup=get_watermark_keyboard())
     try: await query.message.delete()
     except: pass
 
@@ -527,7 +535,8 @@ async def ai_process_with_custom_request(update, context, media_type, custom_req
         if len(body) > 600:
             body = body[:597] + "..."
         
-        new_text = f"{title}\n\n{body}"
+        # ОДИН перенос между заголовком и текстом
+        new_text = f"{title}\n{body}"
         
         pending["text"] = new_text
         context.chat_data["pending"] = pending
@@ -571,22 +580,17 @@ async def handle_custom_request_text(update, context):
     if not media_type:
         return
     
-    # Получаем запрос пользователя
     custom_request = update.message.text
     
-    # Очищаем состояние
     context.user_data["waiting_for_custom_request"] = None
     
-    # Отвечаем пользователю
     await update.message.reply_text(f"✅ Запрос принят: *{custom_request[:100]}*...\n🤖 Обрабатываю...", parse_mode="Markdown")
     
-    # Удаляем сообщение с запросом, чтобы не засорять чат (опционально)
     try:
         await update.message.delete()
     except:
         pass
     
-    # Создаём фейковый callback_query для вызова ai_process_with_custom_request
     class FakeQuery:
         def __init__(self, message, chat_id):
             self.message = message
@@ -594,13 +598,11 @@ async def handle_custom_request_text(update, context):
         async def answer(self):
             pass
     
-    # Находим исходное сообщение с результатом ИИ
     original_chat_id = context.user_data.get("chat_id")
     original_message_id = context.user_data.get("original_message_id")
     
     if original_chat_id and original_message_id:
         try:
-            # Получаем исходное сообщение
             original_message = await context.bot.get_message(chat_id=original_chat_id, message_id=original_message_id)
             fake_query = FakeQuery(original_message, original_chat_id)
             await ai_process_with_custom_request(fake_query, context, media_type, custom_request)
@@ -614,15 +616,12 @@ async def back_to_ai_result_callback(update, context, media_type):
     query = update.callback_query
     await query.answer()
     
-    # Очищаем состояние ожидания
     context.user_data["waiting_for_custom_request"] = None
     
-    # Возвращаемся к результату ИИ
     pending = context.chat_data.get("pending", {})
     text = pending.get("text", "")
     
-    # Парсим заголовок и текст
-    lines = text.split('\n\n', 1)
+    lines = text.split('\n', 1)
     title = lines[0].strip() if lines else ""
     body = lines[1].strip() if len(lines) > 1 else ""
     

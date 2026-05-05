@@ -22,18 +22,19 @@ DB_PATH = "news.db"
 
 WATERMARK_TEXT = "MINSK NEWS"
 WATERMARK_OPACITY = 38
+MAX_CAPTION_LEN = 900
 
 deepseek_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
 
 DEEPSEEK_PROMPT = """Ты редактор новостного сайта. У тебя строгий новостной формат. Без обращений на "вы", "ты". Только новостной формат.
 
-Переделай новость в формат на 500-650 символов. Убери всю воду, сделай интересный заголовок. Без смайликов. Сохраняй главные факты.
+Переделай новость в формат на 500-600 символов. Убери всю воду, сделай интересный заголовок. Без смайликов. Сохраняй главные факты.
 
 Текст должен быть разбит на логические абзацы (2-4 предложения). Между абзацами пустая строка.
 
-Верни в формате:
-ЗАГОЛОВОК: (заголовок новости)
-ТЕКСТ: (текст новости с абзацами на 650 символов)"""
+Верни строго в формате:
+ЗАГОЛОВОК: (заголовок новости до 80 символов)
+ТЕКСТ: (текст новости с абзацами до 550 символов)"""
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
@@ -71,9 +72,17 @@ def remove_emojis(text):
     return emoji_pattern.sub(r'', text)
 
 def format_caption(title, body):
+    """Форматирует подпись - один перенос между заголовком и текстом"""
     if body and body.strip():
-        return f"<b>{title}</b>\n\n{body}"
-    return f"<b>{title}</b>"
+        # ОДИН перенос строки, а не два
+        return f"<b>{title}</b>\n{body}"
+    else:
+        return f"<b>{title}</b>"
+
+def truncate_text(text, max_len=MAX_CAPTION_LEN):
+    if len(text) <= max_len:
+        return text
+    return text[:max_len-3] + "..."
 
 def get_post_publish_keyboard():
     return InlineKeyboardMarkup([
@@ -124,7 +133,6 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.85)
     
-    # Затемнение низа
     w, h = img.size
     gh = int(h * 0.48)
     overlay_alpha = Image.new("L", (w, h), 0)
@@ -135,7 +143,6 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     overlay = Image.composite(Image.new("RGBA", (w, h), (0, 0, 0, 255)), Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     
-    # Добавление текста
     draw = ImageDraw.Draw(img)
     font = None
     for font_path in ["Montserrat-Black.ttf", "Montserrat-Bold.ttf"]:
@@ -148,10 +155,8 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     margin_bottom = int(img.height * 0.08)
     max_width = img.width - 2 * margin_x
     
-    # Обрезка заголовка
     title = title_text.upper()[:200]
     
-    # Рисуем текст
     words = title.split()
     lines = []
     current = []
@@ -195,7 +200,7 @@ def get_preview_keyboard(media_type):
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_video_with_buttons")],
             [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_video_no_buttons")],
-            [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_video_text")],
+            [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
             [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_video")],
             [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_video_menu")]
         ])
@@ -218,18 +223,35 @@ def get_preview_keyboard(media_type):
             [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_photo_menu")]
         ])
 
+def get_designed_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Опубликовать (с кнопками)", callback_data="publish_designed_with_buttons")],
+        [InlineKeyboardButton("✅ Опубликовать (без кнопок)", callback_data="publish_designed_no_buttons")],
+        [InlineKeyboardButton("💧 Добавить водяной знак", callback_data="add_watermark_to_designed")],
+        [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_text")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_photo_preview")]
+    ])
+
+def get_watermark_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_watermarked_with_buttons")],
+        [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_watermarked_no_buttons")],
+        [InlineKeyboardButton("🎨 Оформить", callback_data="design_from_watermark")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_original")]
+    ])
+
 def get_ai_result_keyboard(media_type):
     if media_type == "video":
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Опубликовать видео", callback_data="publish_video_with_buttons")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data="ai_new_request_video")],
-            [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_video_text")],
+            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_new_request_video")],
+            [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_text")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_video_preview")]
         ])
     elif media_type == "text":
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Опубликовать текст", callback_data="publish_text_with_buttons")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data="ai_new_request_text")],
+            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_new_request_text")],
             [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_text")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_text_preview")]
         ])
@@ -238,7 +260,7 @@ def get_ai_result_keyboard(media_type):
             [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_photo_with_buttons")],
             [InlineKeyboardButton("🎨 Оформить", callback_data="design_post")],
             [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data="ai_new_request_photo")],
+            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_new_request_photo")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_photo_preview")]
         ])
 
@@ -253,31 +275,32 @@ def get_schedule_keyboard(prefix):
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data=f"back_to_{prefix.replace('schedule_', '')}_preview")])
     return InlineKeyboardMarkup(keyboard)
 
-def get_watermark_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_watermarked_with_buttons")],
-        [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_watermarked_no_buttons")],
-        [InlineKeyboardButton("🎨 Оформить", callback_data="design_from_watermark")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_original")]
-    ])
-
 # ==================== ОТПРАВКА В КАНАЛ ====================
 async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_buttons=True, is_video=False, is_text=False, video_file_id=None):
-    if len(text) > 1000: text = text[:1000] + "..."
     lines = text.split('\n')
     title = lines[0] if lines else ""
     body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+    
+    if len(body) > 600:
+        body = body[:597] + "..."
+    
+    # Форматируем caption с ОДНИМ переносом
     caption = format_caption(title, body) if text else " "
     reply_markup = get_post_publish_keyboard() if has_buttons else None
     
-    if is_video and video_file_id:
-        await context.bot.send_video(chat_id=CHANNEL_ID, video=video_file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
-    elif is_text:
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode="HTML", reply_markup=reply_markup)
-    elif photo_bytes:
-        await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo_bytes, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
-    elif file_id:
-        await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+    try:
+        if is_video and video_file_id:
+            await context.bot.send_video(chat_id=CHANNEL_ID, video=video_file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+        elif is_text:
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode="HTML", reply_markup=reply_markup)
+        elif photo_bytes:
+            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo_bytes, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+        elif file_id:
+            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+    except Exception as e:
+        print(f"Ошибка отправки: {e}")
+        if "caption is too long" in str(e):
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=text[:MAX_CAPTION_LEN], reply_markup=reply_markup)
 
 # ==================== ОБРАБОТЧИКИ СООБЩЕНИЙ ====================
 async def start(update, context):
@@ -289,6 +312,8 @@ async def start(update, context):
 async def handle_text(update, context):
     text = update.message.text
     if not text or text.startswith('/'): return
+    if len(text) > MAX_CAPTION_LEN:
+        text = text[:MAX_CAPTION_LEN-3] + "..."
     context.chat_data["pending"] = {"type": "text", "text": remove_emojis(text)}
     await update.message.reply_text(f"📝 Текст:\n\n{text[:500]}...\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
 
@@ -297,13 +322,19 @@ async def handle_photo(update, context):
     photo = msg.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     photo_bytes = await file.download_as_bytearray()
-    context.chat_data["pending"] = {"type": "photo", "text": remove_emojis(msg.caption or ""), "file_id": photo.file_id, "photo_bytes": photo_bytes, "original": photo_bytes}
-    await msg.reply_photo(photo=photo.file_id, caption=msg.caption or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
+    text = remove_emojis(msg.caption or "")
+    if len(text) > MAX_CAPTION_LEN:
+        text = text[:MAX_CAPTION_LEN-3] + "..."
+    context.chat_data["pending"] = {"type": "photo", "text": text, "file_id": photo.file_id, "photo_bytes": photo_bytes, "original": photo_bytes}
+    await msg.reply_photo(photo=photo.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
 
 async def handle_video(update, context):
     msg = update.message
-    context.chat_data["pending"] = {"type": "video", "text": remove_emojis(msg.caption or ""), "file_id": msg.video.file_id}
-    await msg.reply_video(video=msg.video.file_id, caption=msg.caption or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("video"))
+    text = remove_emojis(msg.caption or "")
+    if len(text) > MAX_CAPTION_LEN:
+        text = text[:MAX_CAPTION_LEN-3] + "..."
+    context.chat_data["pending"] = {"type": "video", "text": text, "file_id": msg.video.file_id}
+    await msg.reply_video(video=msg.video.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("video"))
 
 # ==================== ПУБЛИКАЦИЯ ====================
 async def publish_photo(update, context, has_buttons):
@@ -314,7 +345,7 @@ async def publish_photo(update, context, has_buttons):
         await query.message.reply_text("❌ Нет фото")
         return
     await send_to_channel(context, file_id=pending["file_id"], text=pending["text"], has_buttons=has_buttons)
-    await query.message.reply_text(f"✅ Опубликовано (с кнопками)" if has_buttons else "✅ Опубликовано (без кнопок)")
+    await query.message.reply_text(f"✅ Опубликовано" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
     context.chat_data.pop("pending", None)
     try: await query.message.delete()
     except: pass
@@ -345,18 +376,17 @@ async def publish_video(update, context, has_buttons):
     try: await query.message.delete()
     except: pass
 
-# ==================== ВОДЯНОЙ ЗНАК ====================
-async def add_watermark_callback(update, context):
+async def publish_designed(update, context, has_buttons):
     query = update.callback_query
     await query.answer()
-    pending = context.chat_data.get("pending", {})
-    if pending.get("type") != "photo":
-        await query.message.reply_text("❌ Только для фото")
+    designed = context.chat_data.get("designed", {})
+    if not designed:
+        await query.message.reply_text("❌ Нет оформленного поста")
         return
-    await query.message.reply_text("💧 Добавляю водяной знак...")
-    photo_io = add_watermark_only(pending["original"])
-    context.chat_data["watermarked"] = {"text": pending["text"], "photo_bytes": photo_io.getvalue(), "original": pending["original"]}
-    await query.message.reply_photo(photo=photo_io, caption=f"{pending['text']}\n\n💧 Пост с водяным знаком!", parse_mode="HTML", reply_markup=get_watermark_keyboard())
+    await send_to_channel(context, photo_bytes=designed["photo_bytes"], text=designed["text"], has_buttons=has_buttons)
+    await query.message.reply_text(f"✅ Оформленный пост опубликован" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
+    context.chat_data.pop("pending", None)
+    context.chat_data.pop("designed", None)
     try: await query.message.delete()
     except: pass
 
@@ -374,6 +404,35 @@ async def publish_watermarked(update, context, has_buttons):
     try: await query.message.delete()
     except: pass
 
+# ==================== ВОДЯНОЙ ЗНАК ====================
+async def add_watermark_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    pending = context.chat_data.get("pending", {})
+    if pending.get("type") != "photo":
+        await query.message.reply_text("❌ Только для фото")
+        return
+    await query.message.reply_text("💧 Добавляю водяной знак...")
+    photo_io = add_watermark_only(pending["original"])
+    context.chat_data["watermarked"] = {"text": pending["text"], "photo_bytes": photo_io.getvalue(), "original": pending["original"]}
+    await query.message.reply_photo(photo=photo_io, caption=f"{pending['text']}\n\n💧 Пост с водяным знаком!", parse_mode="HTML", reply_markup=get_watermark_keyboard())
+    try: await query.message.delete()
+    except: pass
+
+async def add_watermark_to_designed_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    designed = context.chat_data.get("designed", {})
+    if not designed:
+        await query.message.reply_text("❌ Нет поста")
+        return
+    await query.message.reply_text("💧 Добавляю водяной знак...")
+    photo_io = add_watermark_only(designed["original"])
+    context.chat_data["watermarked"] = {"text": designed["text"], "photo_bytes": photo_io.getvalue(), "original": designed["original"]}
+    await query.message.reply_photo(photo=photo_io, caption=f"{designed['text']}\n\n💧 Пост с водяным знаком!", parse_mode="HTML", reply_markup=get_watermark_keyboard())
+    try: await query.message.delete()
+    except: pass
+
 # ==================== ОФОРМЛЕНИЕ ====================
 async def design_post_callback(update, context):
     query = update.callback_query
@@ -387,21 +446,23 @@ async def design_post_callback(update, context):
     await query.message.reply_text("🎨 Оформляю...")
     photo_io = process_photo(pending["photo_bytes"], title, add_watermark_flag=False)
     context.chat_data["designed"] = {"text": pending["text"], "photo_bytes": photo_io.getvalue(), "original": pending["photo_bytes"]}
-    await query.message.reply_photo(photo=photo_io, caption=f"{pending['text']}\n\n✅ Пост оформлен!", parse_mode="HTML", reply_markup=get_preview_keyboard("designed"))
+    await query.message.reply_photo(photo=photo_io, caption=f"{pending['text']}\n\n✅ Пост оформлен!", parse_mode="HTML", reply_markup=get_designed_keyboard())
     try: await query.message.delete()
     except: pass
 
-async def publish_designed(update, context, has_buttons):
+async def design_from_watermark_callback(update, context):
     query = update.callback_query
     await query.answer()
-    designed = context.chat_data.get("designed", {})
-    if not designed:
-        await query.message.reply_text("❌ Нет оформленного поста")
+    watermarked = context.chat_data.get("watermarked", {})
+    if not watermarked:
+        await query.message.reply_text("❌ Нет поста")
         return
-    await send_to_channel(context, photo_bytes=designed["photo_bytes"], text=designed["text"], has_buttons=has_buttons)
-    await query.message.reply_text(f"✅ Оформленный пост опубликован" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
-    context.chat_data.pop("pending", None)
-    context.chat_data.pop("designed", None)
+    lines = watermarked["text"].split('\n')
+    title = lines[0][:150] if lines else "Пост"
+    await query.message.reply_text("🎨 Оформляю...")
+    photo_io = process_photo(watermarked["original"], title, add_watermark_flag=False)
+    context.chat_data["designed"] = {"text": watermarked["text"], "photo_bytes": photo_io.getvalue(), "original": watermarked["original"]}
+    await query.message.reply_photo(photo=photo_io, caption=f"{watermarked['text']}\n\n✅ Пост оформлен!", parse_mode="HTML", reply_markup=get_designed_keyboard())
     try: await query.message.delete()
     except: pass
 
@@ -434,30 +495,26 @@ async def ai_process(update, context, media_type):
             model="deepseek-chat",
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}],
             temperature=0.7,
-            max_tokens=1000
+            max_tokens=800
         )
         
         result = response.choices[0].message.content
         
-        # Парсим результат
         title = ""
         body = ""
         
         if "ЗАГОЛОВОК:" in result.upper() and "ТЕКСТ:" in result.upper():
-            # Ищем заголовок
             title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', result, re.IGNORECASE | re.DOTALL)
             if title_match:
-                title = title_match.group(1).strip()
+                title = title_match.group(1).strip()[:100]
             
-            # Ищем текст
             body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', result, re.IGNORECASE | re.DOTALL)
             if body_match:
                 body = body_match.group(1).strip()
         else:
-            # Если формат другой, используем весь результат как текст
             lines = result.strip().split('\n')
-            if len(lines) > 0 and len(lines[0]) < 100 and (':' in lines[0] or len(lines[0]) < 50):
-                title = lines[0].replace('Заголовок:', '').replace('ЗАГОЛОВОК:', '').strip()
+            if len(lines) > 0 and len(lines[0]) < 100:
+                title = lines[0].replace('Заголовок:', '').replace('ЗАГОЛОВОК:', '').strip()[:100]
                 body = '\n'.join(lines[1:]).strip()
             else:
                 body = result.strip()
@@ -468,8 +525,11 @@ async def ai_process(update, context, media_type):
         if not title and body:
             title = body[:50] + "..."
         
-        # Формируем итоговый текст
-        new_text = f"{title}\n\n{body}" if title else body
+        if len(body) > 600:
+            body = body[:597] + "..."
+        
+        # Формируем текст с ОДНИМ переносом между заголовком и текстом
+        new_text = f"{title}\n{body}"
         
         pending["text"] = new_text
         context.chat_data["pending"] = pending
@@ -510,12 +570,27 @@ async def handle_custom_request(update, context):
         async def answer(self): pass
     
     fake = FakeQuery(update.message)
-    if media_type == "photo":
-        await ai_process(fake, context, "photo")
-    elif media_type == "video":
-        await ai_process(fake, context, "video")
-    else:
-        await ai_process(fake, context, "text")
+    await ai_process(fake, context, media_type)
+
+# ==================== РЕДАКТИРОВАНИЕ ====================
+async def edit_text_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["waiting_edit"] = True
+    await query.message.reply_text("✏️ Отправьте новый текст. /cancel для отмены.")
+
+async def handle_edit_text(update, context):
+    if context.user_data.get("waiting_edit"):
+        pending = context.chat_data.get("pending", {})
+        if pending:
+            new_text = update.message.text
+            if len(new_text) > MAX_CAPTION_LEN:
+                new_text = new_text[:MAX_CAPTION_LEN-3] + "..."
+            pending["text"] = new_text
+            context.chat_data["pending"] = pending
+            media_type = pending.get("type", "photo")
+            await update.message.reply_text("✅ Текст обновлён!", reply_markup=get_preview_keyboard(media_type))
+        context.user_data["waiting_edit"] = None
 
 # ==================== ОТЛОЖЕННАЯ ПУБЛИКАЦИЯ ====================
 async def schedule_post(update, context, media_type):
@@ -549,6 +624,31 @@ async def schedule_post(update, context, media_type):
     try: await query.message.delete()
     except: pass
 
+# ==================== НАЗАД ====================
+async def back_to_preview(update, context, media_type):
+    query = update.callback_query
+    await query.answer()
+    pending = context.chat_data.get("pending", {})
+    
+    if media_type == "photo":
+        await query.message.reply_photo(photo=pending["photo_bytes"], caption=pending["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
+    elif media_type == "video":
+        await query.message.reply_video(video=pending["file_id"], caption=pending["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("video"))
+    elif media_type == "text":
+        await query.message.edit_text(text=f"📝 Текст:\n\n{pending['text']}\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
+    
+    try: await query.message.delete()
+    except: pass
+
+async def back_to_original_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    pending = context.chat_data.get("pending", {})
+    if pending.get("type") == "photo":
+        await query.message.reply_photo(photo=pending["photo_bytes"], caption=pending["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
+        try: await query.message.delete()
+        except: pass
+
 # ==================== ПЛАНИРОВЩИК ====================
 async def check_scheduled_posts(app):
     while True:
@@ -577,26 +677,27 @@ async def button_callback(update, context):
     elif data == "publish_text_no_buttons": await publish_text(update, context, False)
     elif data == "publish_video_with_buttons": await publish_video(update, context, True)
     elif data == "publish_video_no_buttons": await publish_video(update, context, False)
+    elif data == "publish_designed_with_buttons": await publish_designed(update, context, True)
+    elif data == "publish_designed_no_buttons": await publish_designed(update, context, False)
     elif data == "publish_watermarked_with_buttons": await publish_watermarked(update, context, True)
     elif data == "publish_watermarked_no_buttons": await publish_watermarked(update, context, False)
     
     # Оформление
     elif data == "design_post": await design_post_callback(update, context)
+    elif data == "design_from_watermark": await design_from_watermark_callback(update, context)
     elif data == "add_watermark": await add_watermark_callback(update, context)
+    elif data == "add_watermark_to_designed": await add_watermark_to_designed_callback(update, context)
     
     # AI
     elif data == "ai_process_photo": await ai_process(update, context, "photo")
     elif data == "ai_process_video": await ai_process(update, context, "video")
     elif data == "ai_process_text": await ai_process(update, context, "text")
-    elif data == "ai_new_request_photo": await ai_new_request(update, context, "photo")
-    elif data == "ai_new_request_video": await ai_new_request(update, context, "video")
-    elif data == "ai_new_request_text": await ai_new_request(update, context, "text")
+    elif data.startswith("ai_new_request_"):
+        media = data.replace("ai_new_request_", "")
+        await ai_new_request(update, context, media)
     
     # Редактирование
-    elif data == "edit_text":
-        await query.answer()
-        context.user_data["waiting_edit"] = True
-        await query.message.reply_text("✏️ Отправьте новый текст. /cancel для отмены.")
+    elif data == "edit_text": await edit_text_callback(update, context)
     
     # Отложенная публикация
     elif data == "schedule_photo_menu":
@@ -609,44 +710,19 @@ async def button_callback(update, context):
         await query.answer()
         await query.message.edit_reply_markup(reply_markup=get_schedule_keyboard("schedule_video"))
     
-    elif data.startswith("schedule_photo:"):
-        await schedule_post(update, context, "photo")
-    elif data.startswith("schedule_text:"):
-        await schedule_post(update, context, "text")
-    elif data.startswith("schedule_video:"):
-        await schedule_post(update, context, "video")
+    elif data.startswith("schedule_photo:"): await schedule_post(update, context, "photo")
+    elif data.startswith("schedule_text:"): await schedule_post(update, context, "text")
+    elif data.startswith("schedule_video:"): await schedule_post(update, context, "video")
     
     # Назад
-    elif data in ["back_to_photo_preview", "back_to_original"]:
-        await query.answer()
-        pending = context.chat_data.get("pending", {})
-        if pending.get("type") == "photo":
-            await query.message.reply_photo(photo=pending["photo_bytes"], caption=pending["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
-            try: await query.message.delete()
-            except: pass
-    elif data == "back_to_video_preview":
-        await query.answer()
-        pending = context.chat_data.get("pending", {})
-        await query.message.reply_video(video=pending["file_id"], caption=pending["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("video"))
-        try: await query.message.delete()
-        except: pass
-    elif data == "back_to_text_preview":
-        await query.answer()
-        pending = context.chat_data.get("pending", {})
-        await query.message.edit_text(text=f"📝 Текст:\n\n{pending['text']}\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
+    elif data == "back_to_photo_preview": await back_to_preview(update, context, "photo")
+    elif data == "back_to_video_preview": await back_to_preview(update, context, "video")
+    elif data == "back_to_text_preview": await back_to_preview(update, context, "text")
+    elif data == "back_to_original": await back_to_original_callback(update, context)
     
     elif data == "send_media_info":
         await query.answer()
         await query.message.reply_text("📸 Отправьте текст, фото или видео с подписью")
-
-async def handle_edit_text(update, context):
-    if context.user_data.get("waiting_edit"):
-        pending = context.chat_data.get("pending", {})
-        if pending:
-            pending["text"] = update.message.text
-            context.chat_data["pending"] = pending
-            await update.message.reply_text("✅ Текст обновлён!", reply_markup=get_preview_keyboard(pending["type"]))
-        context.user_data["waiting_edit"] = None
 
 async def cancel(update, context):
     context.user_data.clear()

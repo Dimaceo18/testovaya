@@ -77,14 +77,13 @@ def format_caption(title, body):
     else:
         return f"<b>{title}</b>"
 
-def get_post_publish_keyboard(has_buttons=True):
-    """Только гиперссылки (URL кнопки), без инлайн кнопок"""
-    if has_buttons:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_LINK)],
-            [InlineKeyboardButton("📝 Прислать нам новость", url=SUGGEST_LINK)]
-        ])
-    return None
+def add_links_to_text(text, has_buttons=True):
+    """Добавляет гиперссылки в конец текста"""
+    if not has_buttons:
+        return text
+    
+    links = f"\n\n<a href=\"{CHANNEL_LINK}\">📢 Подписаться на канал</a> | <a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
+    return text + links
 
 # ==================== ВОДЯНОЙ ЗНАК ====================
 def add_watermark_to_image(image):
@@ -324,12 +323,12 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
     else:
         caption = f"<b>{title}</b>"
     
-    # Кнопки-гиперссылки (только URL)
-    reply_markup = get_post_publish_keyboard(has_buttons)
+    # Добавляем гиперссылки в конец текста (НЕ инлайн кнопки!)
+    caption = add_links_to_text(caption, has_buttons)
     
     try:
         if is_video and video_file_id:
-            await context.bot.send_video(chat_id=CHANNEL_ID, video=video_file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+            await context.bot.send_video(chat_id=CHANNEL_ID, video=video_file_id, caption=caption, parse_mode="HTML")
         elif is_album and album_photos:
             media_group = []
             for i, photo in enumerate(album_photos[:10]):
@@ -338,14 +337,12 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
                 else:
                     media_group.append({"type": "photo", "media": photo})
             await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media_group)
-            if has_buttons:
-                await context.bot.send_message(chat_id=CHANNEL_ID, text=" ", reply_markup=reply_markup)
         elif is_text:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode="HTML", reply_markup=reply_markup)
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode="HTML")
         elif photo_bytes:
-            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo_bytes, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo_bytes, caption=caption, parse_mode="HTML")
         elif file_id:
-            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption, parse_mode="HTML")
     except Exception as e:
         print(f"Ошибка отправки: {e}")
 

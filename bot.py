@@ -72,16 +72,10 @@ def remove_emojis(text):
     return emoji_pattern.sub(r'', text)
 
 def format_caption(title, body):
-    """Форматирует подпись - ДВА переноса между заголовком и текстом"""
     if body and body.strip():
         return f"<b>{title}</b>\n\n{body}"
     else:
         return f"<b>{title}</b>"
-
-def truncate_text(text, max_len=MAX_CAPTION_LEN):
-    if len(text) <= max_len:
-        return text
-    return text[:max_len-3] + "..."
 
 def get_post_publish_keyboard():
     return InlineKeyboardMarkup([
@@ -243,14 +237,14 @@ def get_ai_result_keyboard(media_type):
     if media_type == "video":
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Опубликовать видео", callback_data="publish_video_with_buttons")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_new_request_video")],
+            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_custom_request_video")],
             [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_text")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_video_preview")]
         ])
     elif media_type == "text":
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Опубликовать текст", callback_data="publish_text_with_buttons")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_new_request_text")],
+            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_custom_request_text")],
             [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_text")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_text_preview")]
         ])
@@ -259,9 +253,14 @@ def get_ai_result_keyboard(media_type):
             [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_photo_with_buttons")],
             [InlineKeyboardButton("🎨 Оформить", callback_data="design_post")],
             [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_new_request_photo")],
+            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_custom_request_photo")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_photo_preview")]
         ])
+
+def get_custom_request_keyboard(media_type):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ Назад", callback_data=f"back_to_ai_result_{media_type}")]
+    ])
 
 def get_schedule_keyboard(prefix):
     times = [("Через 30 мин", "30min"), ("9:05", "9:05"), ("10:05", "10:05"), ("11:07", "11:07"), ("12:08", "12:08"), ("13:09", "13:09"), ("14:10", "14:10"), ("15:11", "15:11"), ("16:12", "16:12"), ("17:13", "17:13"), ("18:14", "18:14"), ("19:07", "19:07"), ("20:08", "20:08"), ("21:09", "21:09"), ("22:11", "22:11"), ("22:45", "22:45")]
@@ -283,7 +282,6 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
     if len(body) > 600:
         body = body[:597] + "..."
     
-    # Форматируем caption с ДВУМЯ переносами
     caption = format_caption(title, body) if text else " "
     reply_markup = get_post_publish_keyboard() if has_buttons else None
     
@@ -309,6 +307,10 @@ async def start(update, context):
         parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def handle_text(update, context):
+    # Если ожидаем кастомный запрос для ИИ
+    if context.user_data.get("waiting_for_custom_request"):
+        return
+    
     text = update.message.text
     if not text or text.startswith('/'): return
     if len(text) > MAX_CAPTION_LEN:
@@ -466,7 +468,7 @@ async def design_from_watermark_callback(update, context):
     except: pass
 
 # ==================== ОБРАБОТКА ИИ ====================
-async def ai_process(update, context, media_type):
+async def ai_process_with_custom_request(update, context, media_type, custom_request=None):
     query = update.callback_query
     await query.answer()
     
@@ -474,11 +476,9 @@ async def ai_process(update, context, media_type):
         await query.message.reply_text("❌ API DeepSeek не настроен")
         return
     
-    custom_request = context.user_data.get("custom_request", "")
     prompt = DEEPSEEK_PROMPT
     if custom_request:
-        prompt = f"{DEEPSEEK_PROMPT}\n\nДополнительные требования: {custom_request}"
-        context.user_data["custom_request"] = None
+        prompt = f"{DEEPSEEK_PROMPT}\n\nДополнительные требования пользователя: {custom_request}\n\nПеределай новость согласно этим требованиям."
     
     pending = context.chat_data.get("pending", {})
     text = pending.get("text", "")
@@ -527,7 +527,6 @@ async def ai_process(update, context, media_type):
         if len(body) > 600:
             body = body[:597] + "..."
         
-        # Формируем текст с ДВУМЯ переносами между заголовком и текстом
         new_text = f"{title}\n\n{body}"
         
         pending["text"] = new_text
@@ -546,30 +545,95 @@ async def ai_process(update, context, media_type):
         print(f"❌ Ошибка: {e}")
         await query.message.reply_text(f"❌ Ошибка: {e}")
 
-async def ai_new_request(update, context, media_type):
+async def ai_custom_request_callback(update, context, media_type):
     query = update.callback_query
     await query.answer()
-    context.user_data["waiting_custom"] = media_type
+    
+    context.user_data["waiting_for_custom_request"] = media_type
+    context.user_data["original_message_id"] = query.message.message_id
+    context.user_data["chat_id"] = query.message.chat_id
+    
     await query.message.reply_text(
-        "📝 *Напишите ваш запрос для ИИ*\n\nПримеры:\n• Сделай заголовок броским\n• Сократи до 400 символов\n• Добавь больше фактов\n\nИли /cancel для отмены.",
-        parse_mode="Markdown"
+        "📝 *Напишите ваш запрос для ИИ*\n\n"
+        "Примеры:\n"
+        "• Сделай заголовок броским и коротким\n"
+        "• Сократи до 300 символов\n"
+        "• Сделай более официальным стиль\n"
+        "• Добавь больше фактов и цифр\n\n"
+        "Отправьте ваш запрос одним сообщением.\n\n"
+        "Или нажмите /cancel для отмены.",
+        parse_mode="Markdown",
+        reply_markup=get_custom_request_keyboard(media_type)
     )
 
-async def handle_custom_request(update, context):
-    media_type = context.user_data.get("waiting_custom")
+async def handle_custom_request_text(update, context):
+    media_type = context.user_data.get("waiting_for_custom_request")
     if not media_type:
         return
-    request = update.message.text
-    context.user_data["custom_request"] = request
-    context.user_data["waiting_custom"] = None
-    await update.message.reply_text(f"✅ Запрос: {request}\n🤖 Обрабатываю...")
     
+    # Получаем запрос пользователя
+    custom_request = update.message.text
+    
+    # Очищаем состояние
+    context.user_data["waiting_for_custom_request"] = None
+    
+    # Отвечаем пользователю
+    await update.message.reply_text(f"✅ Запрос принят: *{custom_request[:100]}*...\n🤖 Обрабатываю...", parse_mode="Markdown")
+    
+    # Удаляем сообщение с запросом, чтобы не засорять чат (опционально)
+    try:
+        await update.message.delete()
+    except:
+        pass
+    
+    # Создаём фейковый callback_query для вызова ai_process_with_custom_request
     class FakeQuery:
-        def __init__(self, message): self.message = message
-        async def answer(self): pass
+        def __init__(self, message, chat_id):
+            self.message = message
+            self.message.chat_id = chat_id
+        async def answer(self):
+            pass
     
-    fake = FakeQuery(update.message)
-    await ai_process(fake, context, media_type)
+    # Находим исходное сообщение с результатом ИИ
+    original_chat_id = context.user_data.get("chat_id")
+    original_message_id = context.user_data.get("original_message_id")
+    
+    if original_chat_id and original_message_id:
+        try:
+            # Получаем исходное сообщение
+            original_message = await context.bot.get_message(chat_id=original_chat_id, message_id=original_message_id)
+            fake_query = FakeQuery(original_message, original_chat_id)
+            await ai_process_with_custom_request(fake_query, context, media_type, custom_request)
+        except Exception as e:
+            print(f"Ошибка при получении исходного сообщения: {e}")
+            await update.message.reply_text("❌ Не удалось обработать запрос. Попробуйте снова.")
+    else:
+        await update.message.reply_text("❌ Не удалось обработать запрос. Попробуйте снова.")
+
+async def back_to_ai_result_callback(update, context, media_type):
+    query = update.callback_query
+    await query.answer()
+    
+    # Очищаем состояние ожидания
+    context.user_data["waiting_for_custom_request"] = None
+    
+    # Возвращаемся к результату ИИ
+    pending = context.chat_data.get("pending", {})
+    text = pending.get("text", "")
+    
+    # Парсим заголовок и текст
+    lines = text.split('\n\n', 1)
+    title = lines[0].strip() if lines else ""
+    body = lines[1].strip() if len(lines) > 1 else ""
+    
+    await query.message.edit_text(
+        f"✅ *Готово!*\n\n"
+        f"📰 *{title}*\n\n"
+        f"📝 {body}\n\n"
+        f"Выберите действие:",
+        parse_mode="Markdown",
+        reply_markup=get_ai_result_keyboard(media_type)
+    )
 
 # ==================== РЕДАКТИРОВАНИЕ ====================
 async def edit_text_callback(update, context):
@@ -687,13 +751,29 @@ async def button_callback(update, context):
     elif data == "add_watermark": await add_watermark_callback(update, context)
     elif data == "add_watermark_to_designed": await add_watermark_to_designed_callback(update, context)
     
-    # AI
-    elif data == "ai_process_photo": await ai_process(update, context, "photo")
-    elif data == "ai_process_video": await ai_process(update, context, "video")
-    elif data == "ai_process_text": await ai_process(update, context, "text")
-    elif data.startswith("ai_new_request_"):
-        media = data.replace("ai_new_request_", "")
-        await ai_new_request(update, context, media)
+    # AI обработка
+    elif data == "ai_process_photo": 
+        await ai_process_with_custom_request(update, context, "photo", None)
+    elif data == "ai_process_video": 
+        await ai_process_with_custom_request(update, context, "video", None)
+    elif data == "ai_process_text": 
+        await ai_process_with_custom_request(update, context, "text", None)
+    
+    # AI кастомные запросы
+    elif data == "ai_custom_request_photo":
+        await ai_custom_request_callback(update, context, "photo")
+    elif data == "ai_custom_request_video":
+        await ai_custom_request_callback(update, context, "video")
+    elif data == "ai_custom_request_text":
+        await ai_custom_request_callback(update, context, "text")
+    
+    # Возврат к результатам AI
+    elif data == "back_to_ai_result_photo":
+        await back_to_ai_result_callback(update, context, "photo")
+    elif data == "back_to_ai_result_video":
+        await back_to_ai_result_callback(update, context, "video")
+    elif data == "back_to_ai_result_text":
+        await back_to_ai_result_callback(update, context, "text")
     
     # Редактирование
     elif data == "edit_text": await edit_text_callback(update, context)
@@ -747,7 +827,7 @@ async def run_bot():
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.VIDEO, handle_video))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_text))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_request))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_request_text))
     
     await application.initialize()
     await application.start()

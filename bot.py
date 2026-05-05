@@ -78,12 +78,11 @@ def format_caption(title, body):
         return f"<b>{title}</b>"
 
 def add_links_to_text(text, has_buttons=True):
-    """Добавляет гиперссылки в конец текста"""
+    """Добавляет гиперссылки в конец текста на разных строках"""
     if not has_buttons:
         return text
     
-    links = f"\n\n<a href=\"{CHANNEL_LINK}\">📢 Подписаться на канал</a>
-    <a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
+    links = f"\n\n<a href=\"{CHANNEL_LINK}\">📢 Подписаться на канал</a>\n<a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
     return text + links
 
 # ==================== ВОДЯНОЙ ЗНАК ====================
@@ -324,7 +323,7 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
     else:
         caption = f"<b>{title}</b>"
     
-    # Добавляем гиперссылки в конец текста (НЕ инлайн кнопки!)
+    # Добавляем гиперссылки в конец текста (на разных строках)
     caption = add_links_to_text(caption, has_buttons)
     
     try:

@@ -39,18 +39,18 @@ DEEPSEEK_PROMPT = """Ты редактор новостного сайта. У �
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS scheduled_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, photo_bytes BLOB, schedule_time TIMESTAMP, created_at TIMESTAMP, has_buttons BOOLEAN DEFAULT 1, has_watermark BOOLEAN DEFAULT 0, is_designed BOOLEAN DEFAULT 0, is_video BOOLEAN DEFAULT 0, is_text BOOLEAN DEFAULT 0, video_file_id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS scheduled_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, photo_bytes BLOB, schedule_time TIMESTAMP, created_at TIMESTAMP, has_buttons BOOLEAN DEFAULT 1, has_watermark BOOLEAN DEFAULT 0, is_designed BOOLEAN DEFAULT 0, is_video BOOLEAN DEFAULT 0, is_text BOOLEAN DEFAULT 0, is_album BOOLEAN DEFAULT 0, video_file_id TEXT)")
     print("✅ База данных готова")
 
-def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, has_watermark=False, is_designed=False, is_video=False, is_text=False, video_file_id=None):
+def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, has_watermark=False, is_designed=False, is_video=False, is_text=False, is_album=False, video_file_id=None):
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, is_designed, is_video, is_text, video_file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark, is_designed, is_video, is_text, video_file_id))
+        conn.execute("INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id))
 
 def get_pending_scheduled_posts():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        return [dict(row) for row in conn.execute("SELECT id, text, photo_bytes, schedule_time, has_buttons, has_watermark, is_designed, is_video, is_text, video_file_id FROM scheduled_posts WHERE schedule_time <= ?", (datetime.now(),)).fetchall()]
+        return [dict(row) for row in conn.execute("SELECT id, text, photo_bytes, schedule_time, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id FROM scheduled_posts WHERE schedule_time <= ?", (datetime.now(),)).fetchall()]
 
 def delete_scheduled_post(post_id):
     with sqlite3.connect(DB_PATH) as conn:
@@ -72,7 +72,6 @@ def remove_emojis(text):
     return emoji_pattern.sub(r'', text)
 
 def format_caption(title, body):
-    """Форматирует подпись - ОДИН перенос между заголовком и текстом"""
     if body and body.strip():
         return f"<b>{title}</b>\n{body}"
     else:
@@ -114,80 +113,18 @@ def add_watermark_only(photo_bytes):
     output.seek(0)
     return output
 
-def process_photo(photo_bytes, title_text, add_watermark_flag=False):
-    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
-    w, h = img.size
-    target_ratio = 4/5
-    if w/h > target_ratio:
-        new_w = int(h * target_ratio)
-        img = img.crop(((w - new_w)//2, 0, (w + new_w)//2, h))
-    else:
-        new_h = int(w / target_ratio)
-        img = img.crop((0, (h - new_h)//2, w, (h + new_h)//2))
-    img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
-    img = ImageEnhance.Brightness(img).enhance(0.85)
-    
-    w, h = img.size
-    gh = int(h * 0.48)
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (1, gh), 0)
-    for y in range(gh): grad.putpixel((0, y), int(220 * (y / max(1, gh - 1))))
-    grad = grad.resize((w, gh))
-    overlay_alpha.paste(grad, (0, h - gh))
-    overlay = Image.composite(Image.new("RGBA", (w, h), (0, 0, 0, 255)), Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-    
-    draw = ImageDraw.Draw(img)
-    font = None
-    for font_path in ["Montserrat-Black.ttf", "Montserrat-Bold.ttf"]:
-        try:
-            if os.path.exists(font_path): font = ImageFont.truetype(font_path, 68); break
-        except: continue
-    if font is None: font = ImageFont.load_default()
-    
-    margin_x = int(img.width * 0.05)
-    margin_bottom = int(img.height * 0.08)
-    max_width = img.width - 2 * margin_x
-    
-    title = title_text.upper()[:200]
-    
-    words = title.split()
-    lines = []
-    current = []
-    for word in words:
-        test = ' '.join(current + [word])
-        try: width = font.getbbox(test)[2] - font.getbbox(test)[0]
-        except: width = len(test) * 20
-        if width <= max_width: current.append(word)
-        else:
-            if current: lines.append(' '.join(current)); current = [word]
-            else: lines.append(word)
-        if len(lines) >= 6: break
-    if current and len(lines) < 6: lines.append(' '.join(current))
-    
-    line_height = font.getbbox("Ag")[3] - font.getbbox("Ag")[1] if font != ImageFont.load_default() else 35
-    spacing = int(line_height * 0.25)
-    total_h = len(lines) * line_height + (len(lines) - 1) * spacing
-    y = img.height - margin_bottom - total_h
-    
-    for line in lines:
-        try: line_width = font.getbbox(line)[2] - font.getbbox(line)[0]
-        except: line_width = len(line) * 20
-        x = (img.width - line_width) // 2
-        for dx, dy in [(-2,-2),(-2,2),(2,-2),(2,2)]: draw.text((x+dx, y+dy), line, font=font, fill=(0,0,0))
-        draw.text((x, y), line, font=font, fill=(255,255,255))
-        y += line_height + spacing
-    
-    if add_watermark_flag: img = add_watermark_to_image(img)
-    
-    output = io.BytesIO()
-    img.save(output, format="JPEG", quality=85)
-    output.seek(0)
-    return output
-
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("📸 Отправить фото, видео или текст", callback_data="send_media_info")]])
+
+def get_album_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📤 Опубликовать альбом с кнопками", callback_data="publish_album_with_buttons")],
+        [InlineKeyboardButton("📤 Опубликовать альбом без кнопок", callback_data="publish_album_no_buttons")],
+        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_album_text")],
+        [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_album")],
+        [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_album_menu")]
+    ])
 
 def get_preview_keyboard(media_type):
     if media_type == "video":
@@ -206,6 +143,8 @@ def get_preview_keyboard(media_type):
             [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_text")],
             [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_text_menu")]
         ])
+    elif media_type == "album":
+        return get_album_keyboard()
     else:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_photo_with_buttons")],
@@ -249,6 +188,13 @@ def get_ai_result_keyboard(media_type):
             [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_text")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_text_preview")]
         ])
+    elif media_type == "album":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📤 Опубликовать альбом", callback_data="publish_album_with_buttons")],
+            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_custom_request_album")],
+            [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_album_text")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_album_preview")]
+        ])
     else:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_photo_with_buttons")],
@@ -275,10 +221,9 @@ def get_schedule_keyboard(prefix):
     return InlineKeyboardMarkup(keyboard)
 
 # ==================== ОТПРАВКА В КАНАЛ ====================
-async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_buttons=True, is_video=False, is_text=False, video_file_id=None):
+async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_buttons=True, is_video=False, is_text=False, is_album=False, album_photos=None, video_file_id=None):
     lines = text.split('\n')
     title = lines[0] if lines else ""
-    # Убираем пустые строки после заголовка
     body_lines = []
     found_text = False
     for line in lines[1:]:
@@ -296,6 +241,18 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
     try:
         if is_video and video_file_id:
             await context.bot.send_video(chat_id=CHANNEL_ID, video=video_file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+        elif is_album and album_photos:
+            # Отправляем медиагруппу (до 10 фото)
+            media_group = []
+            for i, photo in enumerate(album_photos[:10]):
+                if i == 0:
+                    media_group.append({"type": "photo", "media": photo, "caption": caption, "parse_mode": "HTML"})
+                else:
+                    media_group.append({"type": "photo", "media": photo})
+            await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media_group)
+            # Отдельно отправляем кнопки если нужно
+            if has_buttons:
+                await context.bot.send_message(chat_id=CHANNEL_ID, text=" ", reply_markup=reply_markup)
         elif is_text:
             await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode="HTML", reply_markup=reply_markup)
         elif photo_bytes:
@@ -310,9 +267,95 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
 # ==================== ОБРАБОТЧИКИ СООБЩЕНИЙ ====================
 async def start(update, context):
     await update.message.reply_text(
-        "🤖 *Бот MINSK NEWS*\n\nОтправьте текст, фото или видео с подписью.\n\n"
+        "🤖 *Бот MINSK NEWS*\n\nОтправьте текст, фото, альбом фото или видео с подписью.\n\n"
         "• 📤 Опубликовать с/без кнопок\n• 🎨 Оформить пост (фото)\n• 💧 Водяной знак (фото)\n• 🤖 Обработка ИИ\n• ⏰ Отложить публикацию",
         parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+async def handle_album(update, context):
+    """Обработка альбома (несколько фото)"""
+    message = update.message
+    if not message.media_group_id:
+        return
+    
+    # Если уже обрабатываем этот альбом, пропускаем
+    if context.chat_data.get("processing_album") == message.media_group_id:
+        return
+    
+    context.chat_data["processing_album"] = message.media_group_id
+    
+    # Ждём немного, чтобы собрать все фото альбома
+    await asyncio.sleep(0.5)
+    
+    # Получаем все фото из альбома из chat_data
+    album_photos = context.chat_data.get(f"album_{message.media_group_id}", [])
+    
+    # Если фото не накопились, пробуем получить из сообщения
+    if not album_photos and message.photo:
+        album_photos.append(message.photo[-1].file_id)
+    
+    if not album_photos:
+        context.chat_data["processing_album"] = None
+        return
+    
+    caption = remove_emojis(message.caption or "")
+    if len(caption) > MAX_CAPTION_LEN:
+        caption = caption[:MAX_CAPTION_LEN-3] + "..."
+    
+    # Сохраняем байты фото
+    photo_bytes_list = []
+    for file_id in album_photos[:10]:
+        try:
+            file = await context.bot.get_file(file_id)
+            photo_bytes = await file.download_as_bytearray()
+            photo_bytes_list.append(photo_bytes)
+        except Exception as e:
+            print(f"Ошибка загрузки фото: {e}")
+    
+    context.chat_data["pending"] = {
+        "type": "album",
+        "text": caption,
+        "album_photos": album_photos[:10],
+        "album_photos_bytes": photo_bytes_list
+    }
+    
+    # Отправляем превью первого фото с текстом
+    first_photo = album_photos[0]
+    await message.reply_photo(
+        photo=first_photo,
+        caption=f"📸 *Альбом из {len(album_photos)} фото*\n\nТекст: {caption[:200]}...\n\nВыберите действие:",
+        parse_mode="Markdown",
+        reply_markup=get_album_keyboard()
+    )
+    
+    context.chat_data["processing_album"] = None
+
+async def handle_photo(update, context):
+    msg = update.message
+    
+    # Проверка на альбом (медиагруппа)
+    if msg.media_group_id:
+        # Сохраняем фото в временное хранилище
+        album_key = f"album_{msg.media_group_id}"
+        if album_key not in context.chat_data:
+            context.chat_data[album_key] = []
+        
+        photo = msg.photo[-1]
+        context.chat_data[album_key].append(photo.file_id)
+        
+        # Запускаем обработку альбома с небольшой задержкой
+        if not context.chat_data.get("processing_album"):
+            asyncio.create_task(handle_album(update, context))
+        return
+    
+    # Одиночное фото
+    photo = msg.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    photo_bytes = await file.download_as_bytearray()
+    text = remove_emojis(msg.caption or "")
+    if len(text) > MAX_CAPTION_LEN:
+        text = text[:MAX_CAPTION_LEN-3] + "..."
+    context.chat_data["pending"] = {"type": "photo", "text": text, "file_id": photo.file_id, "photo_bytes": photo_bytes, "original": photo_bytes}
+    await msg.reply_photo(photo=photo.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
 
 async def handle_text(update, context):
     if context.user_data.get("waiting_for_custom_request"):
@@ -324,17 +367,6 @@ async def handle_text(update, context):
         text = text[:MAX_CAPTION_LEN-3] + "..."
     context.chat_data["pending"] = {"type": "text", "text": remove_emojis(text)}
     await update.message.reply_text(f"📝 Текст:\n\n{text[:500]}...\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
-
-async def handle_photo(update, context):
-    msg = update.message
-    photo = msg.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    photo_bytes = await file.download_as_bytearray()
-    text = remove_emojis(msg.caption or "")
-    if len(text) > MAX_CAPTION_LEN:
-        text = text[:MAX_CAPTION_LEN-3] + "..."
-    context.chat_data["pending"] = {"type": "photo", "text": text, "file_id": photo.file_id, "photo_bytes": photo_bytes, "original": photo_bytes}
-    await msg.reply_photo(photo=photo.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
 
 async def handle_video(update, context):
     msg = update.message
@@ -354,6 +386,26 @@ async def publish_photo(update, context, has_buttons):
         return
     await send_to_channel(context, file_id=pending["file_id"], text=pending["text"], has_buttons=has_buttons)
     await query.message.reply_text(f"✅ Опубликовано" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
+    context.chat_data.pop("pending", None)
+    try: await query.message.delete()
+    except: pass
+
+async def publish_album(update, context, has_buttons):
+    query = update.callback_query
+    await query.answer()
+    pending = context.chat_data.get("pending", {})
+    if pending.get("type") != "album":
+        await query.message.reply_text("❌ Нет альбома")
+        return
+    
+    # Отправляем альбом
+    album_photos = pending.get("album_photos_bytes", [])
+    if not album_photos:
+        await query.message.reply_text("❌ Не удалось загрузить фото")
+        return
+    
+    await send_to_channel(context, text=pending["text"], has_buttons=has_buttons, is_album=True, album_photos=album_photos)
+    await query.message.reply_text(f"✅ Альбом опубликован" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
     context.chat_data.pop("pending", None)
     try: await query.message.delete()
     except: pass
@@ -435,7 +487,6 @@ async def add_watermark_to_designed_callback(update, context):
         await query.message.reply_text("❌ Нет оформленного поста")
         return
     await query.message.reply_text("💧 Добавляю водяной знак на оформленное фото...")
-    # Берем оформленное фото и наносим водяной знак
     photo_io = add_watermark_only(designed["photo_bytes"])
     context.chat_data["watermarked"] = {"text": designed["text"], "photo_bytes": photo_io.getvalue(), "original": designed["original"]}
     await query.message.reply_photo(photo=photo_io, caption=f"{designed['text']}\n\n💧 Пост с водяным знаком на оформленном фото!", parse_mode="HTML", reply_markup=get_watermark_keyboard())
@@ -535,7 +586,6 @@ async def ai_process_with_custom_request(update, context, media_type, custom_req
         if len(body) > 600:
             body = body[:597] + "..."
         
-        # ОДИН перенос между заголовком и текстом
         new_text = f"{title}\n{body}"
         
         pending["text"] = new_text
@@ -641,7 +691,25 @@ async def edit_text_callback(update, context):
     context.user_data["waiting_edit"] = True
     await query.message.reply_text("✏️ Отправьте новый текст. /cancel для отмены.")
 
+async def edit_album_text_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["waiting_edit_album"] = True
+    await query.message.reply_text("✏️ Отправьте новый текст для альбома. /cancel для отмены.")
+
 async def handle_edit_text(update, context):
+    if context.user_data.get("waiting_edit_album"):
+        pending = context.chat_data.get("pending", {})
+        if pending and pending.get("type") == "album":
+            new_text = update.message.text
+            if len(new_text) > MAX_CAPTION_LEN:
+                new_text = new_text[:MAX_CAPTION_LEN-3] + "..."
+            pending["text"] = new_text
+            context.chat_data["pending"] = pending
+            await update.message.reply_text("✅ Текст альбома обновлён!", reply_markup=get_album_keyboard())
+        context.user_data["waiting_edit_album"] = None
+        return
+    
     if context.user_data.get("waiting_edit"):
         pending = context.chat_data.get("pending", {})
         if pending:
@@ -676,6 +744,12 @@ async def schedule_post(update, context, media_type):
     
     if media_type == "photo":
         save_scheduled_post(pending["text"], pending["photo_bytes"], publish_time, has_buttons=True)
+    elif media_type == "album":
+        # Для альбома сохраняем байты фото
+        album_photos_bytes = pending.get("album_photos_bytes", [])
+        if album_photos_bytes:
+            # Сохраняем только первое фото для базы, остальные отдельно не сохраняем
+            save_scheduled_post(pending["text"], album_photos_bytes[0] if album_photos_bytes else None, publish_time, has_buttons=True, is_album=True)
     elif media_type == "video":
         save_scheduled_post(pending["text"], None, publish_time, has_buttons=True, is_video=True, video_file_id=pending["file_id"])
     else:
@@ -698,6 +772,15 @@ async def back_to_preview(update, context, media_type):
         await query.message.reply_video(video=pending["file_id"], caption=pending["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("video"))
     elif media_type == "text":
         await query.message.edit_text(text=f"📝 Текст:\n\n{pending['text']}\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
+    elif media_type == "album":
+        first_photo = pending.get("album_photos", [None])[0]
+        if first_photo:
+            await query.message.reply_photo(
+                photo=first_photo,
+                caption=f"📸 *Альбом*\n\nТекст: {pending['text'][:200]}...\n\nВыберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_album_keyboard()
+            )
     
     try: await query.message.delete()
     except: pass
@@ -720,6 +803,10 @@ async def check_scheduled_posts(app):
                     await send_to_channel(app, text=post["text"], has_buttons=post["has_buttons"], is_video=True, video_file_id=post["video_file_id"])
                 elif post.get("is_text"):
                     await send_to_channel(app, text=post["text"], has_buttons=post["has_buttons"], is_text=True)
+                elif post.get("is_album"):
+                    # Для альбома нужны все фото, но мы сохраняли только одно. Отправляем как обычное фото
+                    if post.get("photo_bytes"):
+                        await send_to_channel(app, photo_bytes=post["photo_bytes"], text=post["text"], has_buttons=post["has_buttons"])
                 elif post.get("photo_bytes"):
                     await send_to_channel(app, photo_bytes=post["photo_bytes"], text=post["text"], has_buttons=post["has_buttons"])
                 delete_scheduled_post(post["id"])
@@ -735,6 +822,8 @@ async def button_callback(update, context):
     # Публикация
     if data == "publish_photo_with_buttons": await publish_photo(update, context, True)
     elif data == "publish_photo_no_buttons": await publish_photo(update, context, False)
+    elif data == "publish_album_with_buttons": await publish_album(update, context, True)
+    elif data == "publish_album_no_buttons": await publish_album(update, context, False)
     elif data == "publish_text_with_buttons": await publish_text(update, context, True)
     elif data == "publish_text_no_buttons": await publish_text(update, context, False)
     elif data == "publish_video_with_buttons": await publish_video(update, context, True)
@@ -757,6 +846,8 @@ async def button_callback(update, context):
         await ai_process_with_custom_request(update, context, "video", None)
     elif data == "ai_process_text": 
         await ai_process_with_custom_request(update, context, "text", None)
+    elif data == "ai_process_album":
+        await ai_process_with_custom_request(update, context, "album", None)
     
     # AI кастомные запросы
     elif data == "ai_custom_request_photo":
@@ -765,6 +856,8 @@ async def button_callback(update, context):
         await ai_custom_request_callback(update, context, "video")
     elif data == "ai_custom_request_text":
         await ai_custom_request_callback(update, context, "text")
+    elif data == "ai_custom_request_album":
+        await ai_custom_request_callback(update, context, "album")
     
     # Возврат к результатам AI
     elif data == "back_to_ai_result_photo":
@@ -773,9 +866,12 @@ async def button_callback(update, context):
         await back_to_ai_result_callback(update, context, "video")
     elif data == "back_to_ai_result_text":
         await back_to_ai_result_callback(update, context, "text")
+    elif data == "back_to_ai_result_album":
+        await back_to_ai_result_callback(update, context, "album")
     
     # Редактирование
     elif data == "edit_text": await edit_text_callback(update, context)
+    elif data == "edit_album_text": await edit_album_text_callback(update, context)
     
     # Отложенная публикация
     elif data == "schedule_photo_menu":
@@ -787,20 +883,25 @@ async def button_callback(update, context):
     elif data == "schedule_video_menu":
         await query.answer()
         await query.message.edit_reply_markup(reply_markup=get_schedule_keyboard("schedule_video"))
+    elif data == "schedule_album_menu":
+        await query.answer()
+        await query.message.edit_reply_markup(reply_markup=get_schedule_keyboard("schedule_album"))
     
     elif data.startswith("schedule_photo:"): await schedule_post(update, context, "photo")
     elif data.startswith("schedule_text:"): await schedule_post(update, context, "text")
     elif data.startswith("schedule_video:"): await schedule_post(update, context, "video")
+    elif data.startswith("schedule_album:"): await schedule_post(update, context, "album")
     
     # Назад
     elif data == "back_to_photo_preview": await back_to_preview(update, context, "photo")
     elif data == "back_to_video_preview": await back_to_preview(update, context, "video")
     elif data == "back_to_text_preview": await back_to_preview(update, context, "text")
+    elif data == "back_to_album_preview": await back_to_preview(update, context, "album")
     elif data == "back_to_original": await back_to_original_callback(update, context)
     
     elif data == "send_media_info":
         await query.answer()
-        await query.message.reply_text("📸 Отправьте текст, фото или видео с подписью")
+        await query.message.reply_text("📸 Отправьте текст, фото, видео или альбом фото с подписью")
 
 async def cancel(update, context):
     context.user_data.clear()
@@ -822,9 +923,9 @@ async def run_bot():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_text))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_request_text))
     
@@ -832,7 +933,79 @@ async def run_bot():
     await application.start()
     asyncio.create_task(check_scheduled_posts(application))
     await application.updater.start_polling()
-    print("✅ Бот запущен!")
+    print("✅ Бот запущен с поддержкой альбомов!")
+
+# ==================== ДОБАВЛЯЕМ ФУНКЦИЮ process_photo (была удалена) ====================
+def process_photo(photo_bytes, title_text, add_watermark_flag=False):
+    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
+    w, h = img.size
+    target_ratio = 4/5
+    if w/h > target_ratio:
+        new_w = int(h * target_ratio)
+        img = img.crop(((w - new_w)//2, 0, (w + new_w)//2, h))
+    else:
+        new_h = int(w / target_ratio)
+        img = img.crop((0, (h - new_h)//2, w, (h + new_h)//2))
+    img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.85)
+    
+    w, h = img.size
+    gh = int(h * 0.48)
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh): grad.putpixel((0, y), int(220 * (y / max(1, gh - 1))))
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, h - gh))
+    overlay = Image.composite(Image.new("RGBA", (w, h), (0, 0, 0, 255)), Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    
+    draw = ImageDraw.Draw(img)
+    font = None
+    for font_path in ["Montserrat-Black.ttf", "Montserrat-Bold.ttf"]:
+        try:
+            if os.path.exists(font_path): font = ImageFont.truetype(font_path, 68); break
+        except: continue
+    if font is None: font = ImageFont.load_default()
+    
+    margin_x = int(img.width * 0.05)
+    margin_bottom = int(img.height * 0.08)
+    max_width = img.width - 2 * margin_x
+    
+    title = title_text.upper()[:200]
+    
+    words = title.split()
+    lines = []
+    current = []
+    for word in words:
+        test = ' '.join(current + [word])
+        try: width = font.getbbox(test)[2] - font.getbbox(test)[0]
+        except: width = len(test) * 20
+        if width <= max_width: current.append(word)
+        else:
+            if current: lines.append(' '.join(current)); current = [word]
+            else: lines.append(word)
+        if len(lines) >= 6: break
+    if current and len(lines) < 6: lines.append(' '.join(current))
+    
+    line_height = font.getbbox("Ag")[3] - font.getbbox("Ag")[1] if font != ImageFont.load_default() else 35
+    spacing = int(line_height * 0.25)
+    total_h = len(lines) * line_height + (len(lines) - 1) * spacing
+    y = img.height - margin_bottom - total_h
+    
+    for line in lines:
+        try: line_width = font.getbbox(line)[2] - font.getbbox(line)[0]
+        except: line_width = len(line) * 20
+        x = (img.width - line_width) // 2
+        for dx, dy in [(-2,-2),(-2,2),(2,-2),(2,2)]: draw.text((x+dx, y+dy), line, font=font, fill=(0,0,0))
+        draw.text((x, y), line, font=font, fill=(255,255,255))
+        y += line_height + spacing
+    
+    if add_watermark_flag: img = add_watermark_to_image(img)
+    
+    output = io.BytesIO()
+    img.save(output, format="JPEG", quality=85)
+    output.seek(0)
+    return output
 
 if __name__ == "__main__":
     import threading, uvicorn

@@ -2,6 +2,6 @@ python-telegram-bot>=20.7
 httpx>=0.25.0
 beautifulsoup4>=4.12.0
 Pillow>=10.0.0
-openai>=1.0.0
+openai>=1.54.0 
 fastapi>=0.100.0
 uvicorn>=0.30.0

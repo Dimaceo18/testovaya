@@ -3,19 +3,25 @@ import sqlite3
 import os
 import re
 import io
+import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 from fastapi import FastAPI
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.error import Conflict
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from openai import AsyncOpenAI
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ==================== НАСТРОЙКИ ====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Каналы для публикации (настраиваются через переменные окружения)
+# Каналы для публикации
 CHANNELS = {
     "news": {
         "name": "📰 Новости Минска",
@@ -95,7 +101,6 @@ def format_caption(title, body):
         return f"<b>{title}</b>"
 
 def add_links_to_text(text, channel_link, has_buttons=True):
-    """Добавляет гиперссылки в конец текста на разных строках с ссылкой на конкретный канал"""
     if not has_buttons:
         return text
     
@@ -203,12 +208,11 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     output.seek(0)
     return output
 
-# ==================== КЛАВИАТУРЫ ДЛЯ УПРАВЛЕНИЯ ====================
+# ==================== КЛАВИАТУРЫ ====================
 def get_main_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("📸 Отправить фото, видео или текст", callback_data="send_media_info")]])
 
 def get_channel_selection_keyboard(original_callback, has_buttons):
-    """Клавиатура выбора канала для публикации"""
     keyboard = []
     for key, channel in CHANNELS.items():
         if channel["chat_id"]:
@@ -327,11 +331,9 @@ def get_schedule_keyboard(prefix):
 
 # ==================== ОТПРАВКА В КАНАЛ ====================
 async def send_to_channel(context, channel_id, channel_link, photo_bytes=None, file_id=None, text="", has_buttons=True, is_video=False, is_text=False, is_album=False, album_photos=None, video_file_id=None):
-    # Разделяем заголовок и текст
     lines = text.split('\n')
     title = lines[0] if lines else ""
     
-    # Находим начало текста после пустой строки
     body_lines = []
     found_empty = False
     for line in lines[1:]:
@@ -345,13 +347,11 @@ async def send_to_channel(context, channel_id, channel_link, photo_bytes=None, f
     
     body = '\n'.join(body_lines).strip()
     
-    # Формируем caption
     if body:
         caption = f"<b>{title}</b>\n\n{body}"
     else:
         caption = f"<b>{title}</b>"
     
-    # Добавляем гиперссылки в конец текста
     caption = add_links_to_text(caption, channel_link, has_buttons)
     
     try:
@@ -401,10 +401,10 @@ async def send_to_channel(context, channel_id, channel_link, photo_bytes=None, f
             )
         return True
     except Exception as e:
-        print(f"Ошибка отправки в канал {channel_id}: {e}")
+        logger.error(f"Ошибка отправки в канал {channel_id}: {e}")
         return False
 
-# ==================== ОБРАБОТЧИКИ СООБЩЕНИЙ ====================
+# ==================== ОБРАБОТЧИКИ ====================
 async def start(update, context):
     await update.message.reply_text(
         "🤖 *Бот MINSK NEWS*\n\nОтправьте текст, фото, альбом фото или видео с подписью.\n\n"
@@ -441,7 +441,7 @@ async def handle_album(update, context):
             photo_bytes = await file.download_as_bytearray()
             photo_bytes_list.append(photo_bytes)
         except Exception as e:
-            print(f"Ошибка загрузки фото: {e}")
+            logger.error(f"Ошибка загрузки фото: {e}")
     
     context.chat_data["pending"] = {
         "type": "album",
@@ -499,17 +499,14 @@ async def handle_video(update, context):
 
 # ==================== ПУБЛИКАЦИЯ С ВЫБОРОМ КАНАЛА ====================
 async def publish_with_channel_selection(update, context, media_type, has_buttons):
-    """Показывает выбор канала перед публикацией"""
     query = update.callback_query
     await query.answer()
     
-    # Сохраняем в user_data информацию о том, что нужно опубликовать
     context.user_data["pending_publish"] = {
         "media_type": media_type,
         "has_buttons": has_buttons
     }
     
-    # Показываем выбор канала
     await query.message.reply_text(
         "📢 *Куда публикуем?*\n\nВыберите канал для публикации:",
         parse_mode="Markdown",
@@ -517,7 +514,6 @@ async def publish_with_channel_selection(update, context, media_type, has_button
     )
 
 async def execute_publish(update, context, channel_key, media_type, has_buttons):
-    """Выполняет публикацию в выбранный канал"""
     query = update.callback_query
     await query.answer()
     
@@ -614,7 +610,6 @@ async def execute_publish(update, context, channel_key, media_type, has_buttons)
     
     if success:
         await query.message.reply_text(f"✅ Опубликовано в {channel['name']}" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
-        # Очищаем данные после успешной публикации
         if media_type in ["photo", "album", "text", "video"]:
             context.chat_data.pop("pending", None)
         elif media_type == "designed":
@@ -631,7 +626,7 @@ async def execute_publish(update, context, channel_key, media_type, has_buttons)
     except:
         pass
 
-# ==================== ПУБЛИКАЦИЯ ДЛЯ РАЗНЫХ ТИПОВ (ОБЁРТКИ) ====================
+# ==================== ПУБЛИКАЦИЯ ДЛЯ РАЗНЫХ ТИПОВ ====================
 async def publish_photo_with_buttons(update, context):
     await publish_with_channel_selection(update, context, "photo", True)
 
@@ -805,7 +800,7 @@ async def ai_process_with_custom_request(update, context, media_type, custom_req
         )
         
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        logger.error(f"Ошибка DeepSeek: {e}")
         await query.message.reply_text(f"❌ Ошибка: {e}")
 
 async def ai_custom_request_callback(update, context, media_type):
@@ -861,7 +856,7 @@ async def handle_custom_request_text(update, context):
             fake_query = FakeQuery(original_message, original_chat_id)
             await ai_process_with_custom_request(fake_query, context, media_type, custom_request)
         except Exception as e:
-            print(f"Ошибка при получении исходного сообщения: {e}")
+            logger.error(f"Ошибка при получении исходного сообщения: {e}")
             await update.message.reply_text("❌ Не удалось обработать запрос. Попробуйте снова.")
     else:
         await update.message.reply_text("❌ Не удалось обработать запрос. Попробуйте снова.")
@@ -967,27 +962,30 @@ async def schedule_post(update, context, media_type):
     designed = context.chat_data.get("designed", {})
     watermarked = context.chat_data.get("watermarked", {})
     
+    # Для отложенной публикации пока используем канал по умолчанию
+    default_channel_id = CHANNELS.get("news", {}).get("chat_id", "")
+    
     if media_type == "photo":
-        save_scheduled_post(pending["text"], pending["photo_bytes"], publish_time, has_buttons=True)
+        save_scheduled_post(pending["text"], pending["photo_bytes"], publish_time, has_buttons=True, channel_id=default_channel_id)
         context.chat_data.pop("pending", None)
     elif media_type == "designed":
-        save_scheduled_post(designed["text"], designed["photo_bytes"], publish_time, has_buttons=True, is_designed=True)
+        save_scheduled_post(designed["text"], designed["photo_bytes"], publish_time, has_buttons=True, is_designed=True, channel_id=default_channel_id)
         context.chat_data.pop("designed", None)
         context.chat_data.pop("pending", None)
     elif media_type == "watermarked":
-        save_scheduled_post(watermarked["text"], watermarked["photo_bytes"], publish_time, has_buttons=True, has_watermark=True)
+        save_scheduled_post(watermarked["text"], watermarked["photo_bytes"], publish_time, has_buttons=True, has_watermark=True, channel_id=default_channel_id)
         context.chat_data.pop("watermarked", None)
         context.chat_data.pop("pending", None)
     elif media_type == "album":
         album_photos_bytes = pending.get("album_photos_bytes", [])
         if album_photos_bytes:
-            save_scheduled_post(pending["text"], album_photos_bytes[0] if album_photos_bytes else None, publish_time, has_buttons=True, is_album=True)
+            save_scheduled_post(pending["text"], album_photos_bytes[0] if album_photos_bytes else None, publish_time, has_buttons=True, is_album=True, channel_id=default_channel_id)
         context.chat_data.pop("pending", None)
     elif media_type == "video":
-        save_scheduled_post(pending["text"], None, publish_time, has_buttons=True, is_video=True, video_file_id=pending["file_id"])
+        save_scheduled_post(pending["text"], None, publish_time, has_buttons=True, is_video=True, video_file_id=pending["file_id"], channel_id=default_channel_id)
         context.chat_data.pop("pending", None)
     else:
-        save_scheduled_post(pending["text"], None, publish_time, has_buttons=True, is_text=True)
+        save_scheduled_post(pending["text"], None, publish_time, has_buttons=True, is_text=True, channel_id=default_channel_id)
         context.chat_data.pop("pending", None)
     
     await query.message.reply_text(f"✅ Пост запланирован на {time_str}")
@@ -1040,7 +1038,6 @@ async def check_scheduled_posts(app):
                 if not channel_id:
                     continue
                 
-                # Ищем канал по ID
                 channel_link = None
                 for key, ch in CHANNELS.items():
                     if ch["chat_id"] == channel_id:
@@ -1060,11 +1057,12 @@ async def check_scheduled_posts(app):
                 elif post.get("photo_bytes"):
                     await send_to_channel(app, channel_id, channel_link, photo_bytes=post["photo_bytes"], text=post["text"], has_buttons=post["has_buttons"])
                 delete_scheduled_post(post["id"])
-                print("✅ Опубликован отложенный пост")
-        except Exception as e: print(f"❌ Ошибка планировщика: {e}")
+                logger.info("✅ Опубликован отложенный пост")
+        except Exception as e:
+            logger.error(f"Ошибка планировщика: {e}")
         await asyncio.sleep(60)
 
-# ==================== ОСНОВНОЙ ОБРАБОТЧИК ====================
+# ==================== ОСНОВНОЙ КОЛБЭК ====================
 async def button_callback(update, context):
     query = update.callback_query
     data = query.data
@@ -1077,7 +1075,6 @@ async def button_callback(update, context):
             original_callback = parts[2]
             has_buttons = parts[3] == "True"
             
-            # Выполняем публикацию в выбранный канал
             await execute_publish(update, context, channel_key, original_callback, has_buttons)
         return
     
@@ -1193,25 +1190,30 @@ async def cancel(update, context):
 
 # ==================== ЗАПУСК ====================
 app = FastAPI()
+
 @app.get("/")
-async def root(): return {"status": "ok"}
+async def root():
+    return {"status": "ok", "bot": "MINSK NEWS Bot"}
+
 @app.get("/health")
-async def health(): return {"status": "alive"}
+async def health():
+    return {"status": "alive"}
 
 async def run_bot():
     init_db()
-    await Bot(token=BOT_TOKEN).delete_webhook()
-    print("✅ Webhook удалён")
     
     # Проверка настроек каналов
-    print("📢 Настройка каналов:")
+    logger.info("📢 Настройка каналов:")
     for key, channel in CHANNELS.items():
         if channel["chat_id"]:
-            print(f"  ✅ {channel['name']}: {channel['chat_id']}")
+            logger.info(f"  ✅ {channel['name']}: {channel['chat_id']}")
         else:
-            print(f"  ⚠️ {channel['name']}: не настроен")
+            logger.info(f"  ⚠️ {channel['name']}: не настроен")
     
+    # Создаём приложение
     application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -1221,17 +1223,49 @@ async def run_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_text))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_request_text))
     
+    # Запускаем polling с обработкой конфликта
     await application.initialize()
     await application.start()
+    
+    # Запускаем планировщик
     asyncio.create_task(check_scheduled_posts(application))
-    await application.updater.start_polling()
-    print("✅ Бот запущен!")
+    
+    # Запускаем polling с повторными попытками при конфликте
+    while True:
+        try:
+            logger.info("🚀 Запуск polling...")
+            await application.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                timeout=30,
+                read_timeout=30,
+                write_timeout=30,
+                connect_timeout=30,
+                pool_timeout=30
+            )
+            logger.info("✅ Бот успешно запущен!")
+            break
+        except Conflict as e:
+            logger.error(f"❌ Конфликт: {e}")
+            logger.info("🔄 Повторная попытка через 5 секунд...")
+            await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
+            logger.info("🔄 Повторная попытка через 10 секунд...")
+            await asyncio.sleep(10)
+    
+    # Держим бота запущенным
+    while True:
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    import threading, uvicorn
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(run_bot())
+    import threading
+    import uvicorn
+    
+    # Запускаем FastAPI в отдельном потоке
     port = int(os.getenv("PORT", 10000))
-    threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=port)).start()
-    loop.run_forever()
+    server_thread = threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=port))
+    server_thread.start()
+    
+    # Запускаем бота
+    asyncio.run(run_bot())

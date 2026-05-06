@@ -15,7 +15,6 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from openai import AsyncOpenAI
 import httpx
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,11 +27,6 @@ CHANNELS = {
         "chat_id": os.getenv("CHANNEL_NEWS_ID", ""),
         "link": os.getenv("CHANNEL_NEWS_LINK", "https://t.me/minsk_news")
     },
-    "incident": {
-        "name": "🚨 ЧП И ДТП Минска",
-        "chat_id": os.getenv("CHANNEL_INCIDENT_ID", ""),
-        "link": os.getenv("CHANNEL_INCIDENT_LINK", "https://t.me/minsk_chp")
-    },
     "afisha": {
         "name": "🎭 Афиша Минска",
         "chat_id": os.getenv("CHANNEL_AFISHA_ID", ""),
@@ -41,58 +35,48 @@ CHANNELS = {
 }
 
 SUGGEST_LINK = os.getenv("SUGGEST_LINK", "https://t.me/minsk_news_bot?start=suggest")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")  # Обязательно добавьте!
 DB_PATH = "news.db"
 
-WATERMARK_TEXT = "MINSK NEWS"
-WATERMARK_OPACITY = 38
-
-# Инициализация клиентов
-deepseek_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# Ваш промпт для стилизации
-AFISHA_STYLE_PROMPT = """
-Создай вертикальный Instagram-пост 4:5 в стиле premium city media для аккаунта «Афиша Минска».
+# ==================== ПРОМПТ ДЛЯ GPT-IMAGE-1 ====================
+AFISHA_IMAGE_PROMPT = """Создай современный Instagram-пост 4:5 в стиле premium city media.
 
 Используй присланную фотографию как основу.
-Не меняй смысл фотографии, но улучши её: cinematic color grading, контраст, мягкий свет, аккуратная резкость.
 
 Стиль:
-- современный городской медиа-дизайн
-- минимализм
-- dark green / emerald overlay
-- cream white typography
-- warm yellow accent
-- Apple-style clean layout
-- premium editorial look
-- rounded corners
-- много воздуха
-- без дешёвого баннерного эффекта
+- cinematic
+- minimalistic
+- urban editorial
+- Apple-style
+- realistic lighting
+- premium magazine aesthetic
+- dark emerald overlay
+- warm yellow accents
+- soft cream typography
+- realistic shadows
+- modern Belarus media style 2026
 
 Композиция:
-- фото занимает весь фон
-- слева тёмный зелёный полупрозрачный градиент
-- справа фото видно чище
-- сверху слева тонкие декоративные линии
-- крупный заголовок слева
-- ключевую фразу выделить жёлтым или светло-зелёным
-- внизу можно добавить 1–2 минималистичные плашки с деталями, если они есть в тексте
+- слева темный зелёный градиент
+- справа атмосферная фотография города
+- clean typography
+- много воздуха
+- rounded corners
+- тонкие декоративные линии сверху
 
 Важно:
-- не добавлять fider.by
-- не добавлять лишние логотипы
-- не использовать силуэты города
-- текст должен быть чётким, крупным и читаемым
-- сохранить стиль как у современного городского медиа 2026 года
+- не делать дешёвый баннер
+- не делать overly AI style
+- сохранить realism
+- стиль дорогого городского медиа
 
-Текст для афиши:
-{user_text}
-"""
+НЕ ДОБАВЛЯЙ ТЕКСТ на изображение. Только фон, стиль, атмосферу.
 
-# Промпты для AI
+Тема: {user_text}"""
+
+# Промпты для текстовых функций
 DEEPSEEK_PROMPT = """Ты редактор новостного сайта. Переделай новость в формат на 500-600 символов. Убери воду, сделай интересный заголовок. Без смайликов.
 
 Верни строго в формате:
@@ -114,24 +98,18 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
             text TEXT, photo_bytes BLOB, schedule_time TIMESTAMP, 
             created_at TIMESTAMP, has_buttons BOOLEAN DEFAULT 1, 
-            has_watermark BOOLEAN DEFAULT 0, is_designed BOOLEAN DEFAULT 0, 
-            is_video BOOLEAN DEFAULT 0, is_text BOOLEAN DEFAULT 0, 
-            is_album BOOLEAN DEFAULT 0, video_file_id TEXT, channel_id TEXT)""")
+            channel_id TEXT)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS chat_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
             user_id INTEGER, role TEXT, content TEXT, created_at TIMESTAMP)""")
     print("✅ База данных готова")
 
-def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, has_watermark=False, 
-                        is_designed=False, is_video=False, is_text=False, is_album=False, 
-                        video_file_id=None, channel_id=None):
+def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, channel_id=None):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""INSERT INTO scheduled_posts 
-            (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, 
-             is_designed, is_video, is_text, is_album, video_file_id, channel_id) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark,
-             is_designed, is_video, is_text, is_album, video_file_id, channel_id))
+            (text, photo_bytes, schedule_time, created_at, has_buttons, channel_id) 
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, channel_id))
 
 def get_pending_scheduled_posts():
     with sqlite3.connect(DB_PATH) as conn:
@@ -181,39 +159,16 @@ def add_links_to_text(text, channel_link, has_buttons=True):
     if not has_buttons: return text
     return text + f"\n\n<a href=\"{channel_link}\">📢 Подписаться на канал</a>\n<a href=\"{SUGGEST_LINK}\">📝 Прислать новость</a>"
 
-# ==================== ВОДЯНОЙ ЗНАК ====================
-def add_watermark_to_image(image):
-    img = image.copy()
-    if img.mode != 'RGBA': img = img.convert('RGBA')
-    watermark = Image.new('RGBA', img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(watermark)
-    font_size = min(img.width, img.height) // 12
-    font = None
-    for font_path in ["Montserrat-Bold.ttf", "arial.ttf"]:
-        try:
-            if os.path.exists(font_path): font = ImageFont.truetype(font_path, font_size); break
-        except: continue
-    if font is None: font = ImageFont.load_default()
-    bbox = draw.textbbox((0, 0), WATERMARK_TEXT, font=font)
-    x = (img.width - (bbox[2] - bbox[0])) // 2
-    y = (img.height - (bbox[3] - bbox[1])) // 2
-    draw.text((x, y), WATERMARK_TEXT, font=font, fill=(255, 255, 255, WATERMARK_OPACITY))
-    return Image.alpha_composite(img, watermark).convert('RGB')
-
-def add_watermark_only(photo_bytes):
-    img = Image.open(io.BytesIO(photo_bytes))
-    output = io.BytesIO()
-    add_watermark_to_image(img).save(output, format="JPEG", quality=90)
-    output.seek(0)
-    return output
-
-# ==================== НАЛОЖЕНИЕ ТЕКСТА ====================
-def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
+# ==================== НАЛОЖЕНИЕ ТЕКСТА PILLOW ====================
+def add_text_with_pillow(photo_bytes, title, description, call_to_action, hashtags):
+    """Накладывает текст на изображение через Pillow (стабильно, красиво, с русским текстом)"""
     if not photo_bytes:
         raise ValueError("Фото пустое")
     
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
     w, h = img.size
+    
+    # Обрезка до 4:5
     target_ratio = 4/5
     if w/h > target_ratio:
         new_w = int(h * target_ratio)
@@ -223,87 +178,94 @@ def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
         img = img.crop((0, (h - new_h)//2, w, (h + new_h)//2))
     img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
     w, h = img.size
-    img = ImageEnhance.Brightness(img).enhance(0.7)
     
-    gradient_width = int(w * 0.45)
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (gradient_width, 1), 0)
-    for x in range(gradient_width):
-        a = int(200 * (1 - x / gradient_width))
-        grad.putpixel((x, 0), a)
-    grad = grad.resize((gradient_width, h))
-    overlay_alpha.paste(grad, (0, 0))
-    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    base = img.convert("RGBA")
-    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    img = Image.alpha_composite(base, overlay).convert("RGB")
     draw = ImageDraw.Draw(img)
     
+    # Загрузка шрифтов
     try:
         font_title = ImageFont.truetype("Montserrat-Bold.ttf", 72)
-        font_text = ImageFont.truetype("Montserrat-Regular.ttf", 32)
+        font_text = ImageFont.truetype("Montserrat-Regular.ttf", 36)
         font_small = ImageFont.truetype("Montserrat-Light.ttf", 28)
     except:
-        font_title = font_text = font_small = ImageFont.load_default()
+        # Если шрифтов нет, используем стандартные
+        font_title = ImageFont.load_default()
+        font_text = ImageFont.load_default()
+        font_small = ImageFont.load_default()
     
+    # Декоративные линии сверху
     for i in range(3):
         draw.line([(60 + i*80, 80), (60 + i*80 + 50, 80)], fill=(218, 165, 32), width=3)
     
+    # Заголовок
     title_y = 140
     title_lines = []
     current_line = ""
     for word in title.split():
         test_line = current_line + " " + word if current_line else word
         try:
-            width = font_title.getbbox(test_line)[2] - font_title.getbbox(test_line)[0]
+            bbox = font_title.getbbox(test_line)
+            width = bbox[2] - bbox[0]
         except:
             width = len(test_line) * 40
         if width <= w - 120:
             current_line = test_line
         else:
-            if current_line: title_lines.append(current_line)
+            if current_line:
+                title_lines.append(current_line)
             current_line = word
-    if current_line: title_lines.append(current_line)
+    if current_line:
+        title_lines.append(current_line)
     
     for i, line in enumerate(title_lines[:3]):
+        # Тень
         for offset in [(2,2)]:
             draw.text((60 + offset[0], title_y + i*85 + offset[1]), line, font=font_title, fill=(0,0,0))
-        draw.text((60, title_y + i*85), line, font=font_title, fill=(255, 215, 0) if i == 0 else (255,255,255))
+        # Основной текст - первая строка золотом
+        if i == 0:
+            draw.text((60, title_y + i*85), line, font=font_title, fill=(255, 215, 0))
+        else:
+            draw.text((60, title_y + i*85), line, font=font_title, fill=(255, 255, 255))
     
-    if text:
-        text_y = title_y + len(title_lines)*85 + 60
-        words = text.split()[:60]
+    # Описание
+    if description:
+        desc_y = title_y + len(title_lines)*85 + 60
+        # Разбиваем на строки
         lines = []
         current = ""
-        for word in words:
+        for word in description.split():
             test = current + " " + word if current else word
             if len(test) * 25 < w - 120:
                 current = test
             else:
-                if current: lines.append(current)
+                if current:
+                    lines.append(current)
                 current = word
-        if current: lines.append(current)
-        for i, line in enumerate(lines[:8]):
-            for offset in [(1,1)]:
-                draw.text((60 + offset[0], text_y + i*45 + offset[1]), line, font=font_text, fill=(0,0,0))
-            draw.text((60, text_y + i*45), line, font=font_text, fill=(240,240,240))
-        call_y = text_y + len(lines)*45 + 40
+        if current:
+            lines.append(current)
+        
+        for i, line in enumerate(lines[:6]):
+            # Тень
+            draw.text((61, desc_y + i*50 + 1), line, font=font_text, fill=(0,0,0))
+            draw.text((60, desc_y + i*50), line, font=font_text, fill=(255, 255, 255))
+        
+        call_y = desc_y + len(lines)*50 + 50
     else:
         call_y = 350
     
+    # Призыв
     if call_to_action:
-        for offset in [(1,1)]:
-            draw.text((60 + offset[0], call_y + offset[1]), f"✨ {call_to_action}", font=font_small, fill=(0,0,0))
+        draw.text((61, call_y + 1), f"✨ {call_to_action}", font=font_small, fill=(0,0,0))
         draw.text((60, call_y), f"✨ {call_to_action}", font=font_small, fill=(255, 215, 0))
-        hash_y = call_y + 50
+        hash_y = call_y + 60
     else:
         hash_y = call_y
     
+    # Хэштеги
     if hashtags:
-        for offset in [(1,1)]:
-            draw.text((60 + offset[0], hash_y + offset[1]), hashtags, font=font_small, fill=(0,0,0))
-        draw.text((60, hash_y), hashtags, font=font_small, fill=(180,180,180))
+        draw.text((61, hash_y + 1), hashtags, font=font_small, fill=(0,0,0))
+        draw.text((60, hash_y), hashtags, font=font_small, fill=(180, 180, 180))
     
+    # Нижние линии
     for i in range(3):
         draw.line([(60 + i*80, h - 60), (60 + i*80 + 50, h - 60)], fill=(218, 165, 32), width=2)
     
@@ -312,132 +274,66 @@ def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
     output.seek(0)
     return output
 
-def process_photo(photo_bytes, title_text, add_watermark_flag=False):
-    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
-    w, h = img.size
-    target_ratio = 4/5
-    if w/h > target_ratio:
-        new_w = int(h * target_ratio)
-        img = img.crop(((w - new_w)//2, 0, (w + new_w)//2, h))
-    else:
-        new_h = int(w / target_ratio)
-        img = img.crop((0, (h - new_h)//2, w, (h + new_h)//2))
-    img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
-    img = ImageEnhance.Brightness(img).enhance(0.85)
+# ==================== ГЕНЕРАЦИЯ ФОНА ЧЕРЕЗ GPT-IMAGE-1 ====================
+async def generate_background_with_gpt(photo_bytes, user_text):
+    """Генерирует фон/стиль через gpt-image-1"""
+    if not openai_client:
+        return None, "❌ OpenAI API не настроен"
     
-    w, h = img.size
-    gh = int(h * 0.48)
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (1, gh), 0)
-    for y in range(gh): grad.putpixel((0, y), int(220 * (y / max(1, gh - 1))))
-    grad = grad.resize((w, gh))
-    overlay_alpha.paste(grad, (0, h - gh))
-    overlay = Image.composite(Image.new("RGBA", (w, h), (0, 0, 0, 255)), Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-    draw = ImageDraw.Draw(img)
+    prompt = AFISHA_IMAGE_PROMPT.format(user_text=user_text)
     
-    font = None
-    for font_path in ["Montserrat-Black.ttf", "Montserrat-Bold.ttf"]:
-        try:
-            if os.path.exists(font_path): font = ImageFont.truetype(font_path, 68); break
-        except: continue
-    if font is None: font = ImageFont.load_default()
-    
-    margin_x = int(img.width * 0.05)
-    margin_bottom = int(img.height * 0.08)
-    max_width = img.width - 2 * margin_x
-    title = title_text.upper()[:200]
-    words = title.split()
-    lines = []
-    current = []
-    for word in words:
-        test = ' '.join(current + [word])
-        try: width = font.getbbox(test)[2] - font.getbbox(test)[0]
-        except: width = len(test) * 20
-        if width <= max_width: current.append(word)
+    try:
+        # Конвертируем фото в base64
+        img_base64 = base64.b64encode(photo_bytes).decode('utf-8')
+        
+        response = await openai_client.images.edit(
+            model="gpt-image-1",
+            image=photo_bytes,
+            prompt=prompt,
+            size="1024x1536",
+            n=1
+        )
+        
+        # Получаем результат
+        if response.data[0].b64_json:
+            image_data = base64.b64decode(response.data[0].b64_json)
+            return io.BytesIO(image_data), None
+        elif response.data[0].url:
+            async with httpx.AsyncClient() as client:
+                img_response = await client.get(response.data[0].url)
+                return io.BytesIO(img_response.content), None
         else:
-            if current: lines.append(' '.join(current)); current = [word]
-            else: lines.append(word)
-        if len(lines) >= 6: break
-    if current and len(lines) < 6: lines.append(' '.join(current))
-    
-    line_height = font.getbbox("Ag")[3] - font.getbbox("Ag")[1] if font != ImageFont.load_default() else 35
-    spacing = int(line_height * 0.25)
-    total_h = len(lines) * line_height + (len(lines) - 1) * spacing
-    y = img.height - margin_bottom - total_h
-    
-    for line in lines:
-        try: line_width = font.getbbox(line)[2] - font.getbbox(line)[0]
-        except: line_width = len(line) * 20
-        x = (img.width - line_width) // 2
-        for dx, dy in [(-2,-2),(-2,2),(2,-2),(2,2)]:
-            draw.text((x+dx, y+dy), line, font=font, fill=(0,0,0))
-        draw.text((x, y), line, font=font, fill=(255,255,255))
-        y += line_height + spacing
-    
-    if add_watermark_flag:
-        img = add_watermark_to_image(img)
-    
-    output = io.BytesIO()
-    img.save(output, format="JPEG", quality=85)
-    output.seek(0)
-    return output
+            return None, "Не удалось получить изображение"
+            
+    except Exception as e:
+        logger.error(f"GPT-image-1 ошибка: {e}")
+        return None, f"Ошибка: {e}"
 
-# ==================== ГЕНЕРАЦИЯ АФИШИ ЧЕРЕЗ REPLICATE ====================
-async def create_afisha_with_replicate(photo_bytes, user_text):
-    """Стилизует фото через Replicate API (img2img) с сохранением композиции"""
-    if not REPLICATE_API_KEY:
-        return None, "❌ Replicate API не настроен. Добавьте переменную REPLICATE_API_KEY"
+# ==================== ПОЛНЫЙ ПРОЦЕСС СОЗДАНИЯ АФИШИ ====================
+async def create_afisha_full(photo_bytes, user_text):
+    """Полный процесс: GPT генерирует фон, Pillow накладывает текст"""
     
-    # Формируем промпт
-    prompt = AFISHA_STYLE_PROMPT.format(user_text=user_text)
+    # Шаг 1: Генерируем фон через GPT
+    background, error = await generate_background_with_gpt(photo_bytes, user_text)
+    if error:
+        return None, error
     
-    # Кодируем фото в base64
-    img_base64 = base64.b64encode(photo_bytes).decode('utf-8')
+    # Шаг 2: Парсим текст для наложения
+    # Разбиваем user_text на заголовок и описание
+    lines = user_text.split('\n')
+    title = lines[0][:60] if lines else user_text[:60]
+    description = '\n'.join(lines[1:]) if len(lines) > 1 else ""
     
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        try:
-            # Запускаем предсказание
-            response = await client.post(
-                "https://api.replicate.com/v1/predictions",
-                headers={
-                    "Authorization": f"Token {REPLICATE_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "version": "8beff3369e81422112d93b89ca01426147de542cd4684c244b673b105188fe5f",  # SDXL img2img
-                    "input": {
-                        "image": f"data:image/jpeg;base64,{img_base64}",
-                        "prompt": prompt,
-                        "negative_prompt": "text, watermark, logo, low quality, blurry, ugly, bad anatomy",
-                        "strength": 0.65,
-                        "guidance_scale": 7.5,
-                        "num_inference_steps": 30,
-                        "num_outputs": 1
-                    }
-                }
-            )
-            
-            result = response.json()
-            prediction_url = result["urls"]["get"]
-            
-            # Ждём результат
-            while True:
-                status_resp = await client.get(prediction_url, headers={"Authorization": f"Token {REPLICATE_API_KEY}"})
-                status = status_resp.json()
-                
-                if status["status"] == "succeeded":
-                    image_url = status["output"][0]
-                    img_response = await client.get(image_url)
-                    return io.BytesIO(img_response.content), None
-                elif status["status"] == "failed":
-                    return None, f"Ошибка: {status.get('error', 'Unknown error')}"
-                
-                await asyncio.sleep(2)
-                
-        except Exception as e:
-            logger.error(f"Replicate ошибка: {e}")
-            return None, f"Ошибка Replicate: {e}"
+    # Шаг 3: Накладываем текст через Pillow
+    call_to_action = "Подпишитесь на канал"
+    hashtags = "#Minsk #Афиша"
+    
+    final_image = add_text_with_pillow(background.getvalue(), title, description, call_to_action, hashtags)
+    
+    # Формируем финальный текст для caption
+    final_text = f"{title}\n\n{description}\n\n✨ {call_to_action}\n\n{hashtags}"
+    
+    return final_image, final_text
 
 # ==================== AI ФУНКЦИИ ====================
 async def chat_with_gpt(user_id, message):
@@ -461,29 +357,6 @@ async def chat_with_gpt(user_id, message):
         return reply
     except Exception as e:
         return f"❌ Ошибка: {e}"
-
-async def ai_process_deepseek(text):
-    if not deepseek_client:
-        return None, "❌ DeepSeek не настроен"
-    try:
-        response = await deepseek_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "system", "content": DEEPSEEK_PROMPT}, {"role": "user", "content": text}],
-            temperature=0.7,
-            max_tokens=1000
-        )
-        result = response.choices[0].message.content
-        title = ""; body = ""
-        for line in result.split('\n'):
-            if line.startswith("ЗАГОЛОВОК:"):
-                title = line.replace("ЗАГОЛОВОК:", "").strip()
-            elif line.startswith("ТЕКСТ:"):
-                body = line.replace("ТЕКСТ:", "").strip()
-        if not body: body = result
-        if not title and body: title = body[:50]
-        return f"{title}\n\n{body}", None
-    except Exception as e:
-        return None, str(e)
 
 async def generate_gpt_post(text):
     if not openai_client:
@@ -512,22 +385,10 @@ async def generate_gpt_post(text):
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎨 Создать афишу (фото+текст)", callback_data="create_afisha")],
+        [InlineKeyboardButton("🎨 Создать афишу", callback_data="create_afisha")],
         [InlineKeyboardButton("✨ Стильный пост (GPT)", callback_data="create_style_post")],
         [InlineKeyboardButton("🤖 Чат с GPT", callback_data="start_gpt_chat")],
         [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_menu")]
-    ])
-
-def get_preview_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_with_buttons")],
-        [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_no_buttons")],
-        [InlineKeyboardButton("🎨 Оформить", callback_data="design_post")],
-        [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
-        [InlineKeyboardButton("🤖 DeepSeek", callback_data="ai_process")],
-        [InlineKeyboardButton("✨ GPT стиль", callback_data="gpt_style")],
-        [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_menu")],
-        [InlineKeyboardButton("🏠 Меню", callback_data="back_to_menu")]
     ])
 
 def get_afisha_keyboard():
@@ -535,7 +396,14 @@ def get_afisha_keyboard():
         [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_with_buttons")],
         [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_no_buttons")],
         [InlineKeyboardButton("🔄 Новая афиша", callback_data="create_afisha")],
-        [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_afisha_text")],
+        [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_menu")],
+        [InlineKeyboardButton("🏠 Меню", callback_data="back_to_menu")]
+    ])
+
+def get_preview_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_with_buttons")],
+        [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_no_buttons")],
         [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_menu")],
         [InlineKeyboardButton("🏠 Меню", callback_data="back_to_menu")]
     ])
@@ -582,11 +450,11 @@ async def send_to_channel(context, channel_id, channel_link, photo_bytes, text, 
 async def start(update, context):
     await update.message.reply_text(
         "🤖 *MINSK NEWS BOT*\n\n"
-        "🎨 *Афиша* - фото + текст → стильная афиша (через Replicate AI)\n"
-        "✨ *Стильный пост* - текст → пост с дизайном\n"
+        "🎨 *Афиша* - фото → стильный фон от GPT + ваш текст от Pillow\n"
+        "✨ *Стильный пост* - текст → готовый пост\n"
         "🤖 *Чат с GPT* - общение с ИИ\n"
         "📤 *Опубликовать* - выбрать канал\n\n"
-        "Также доступны: оформление, водяной знак, обработка DeepSeek, отложенная публикация",
+        "Все афиши создаются в едином стиле premium city media!",
         parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 # === АФИША ===
@@ -614,17 +482,22 @@ async def handle_afisha_text(update, context):
     if not photo_bytes:
         await update.message.reply_text("❌ Ошибка, начните заново", reply_markup=get_main_keyboard())
         return
-    await update.message.reply_text("🎨 Создаю афишу через Replicate AI... 20-30 секунд")
     
-    # Создаём афишу через Replicate
-    result, error = await create_afisha_with_replicate(photo_bytes, text)
+    await update.message.reply_text("🎨 Создаю афишу...\n\nШаг 1/2: GPT генерирует фон и стиль (10-20 сек)")
     
-    if result:
-        context.user_data["pending"] = {"type": "photo", "text": text, "photo_bytes": result.getvalue()}
+    # Создаём афишу (GPT фон + Pillow текст)
+    result_image, final_text = await create_afisha_full(photo_bytes, text)
+    
+    if result_image:
+        context.user_data["pending"] = {"type": "photo", "text": final_text, "photo_bytes": result_image.getvalue()}
         context.user_data["state"] = None
-        await update.message.reply_photo(photo=result, caption=f"✨ Афиша готова!\n\n📝 {text}", reply_markup=get_afisha_keyboard())
+        await update.message.reply_photo(
+            photo=result_image, 
+            caption=f"✨ *Афиша готова!*\n\n{final_text}\n\n👇 Выберите действие:", 
+            parse_mode="Markdown",
+            reply_markup=get_afisha_keyboard())
     else:
-        await update.message.reply_text(f"❌ {error}\n\nПопробуйте ещё раз или используйте другой текст.", reply_markup=get_main_keyboard())
+        await update.message.reply_text(f"❌ {final_text}", reply_markup=get_main_keyboard())
 
 # === СТИЛЬНЫЙ ПОСТ ===
 async def create_style_post(update, context):
@@ -640,8 +513,8 @@ async def handle_style_text(update, context):
     await update.message.reply_text("✨ Генерирую...")
     result, error = await generate_gpt_post(text)
     if result:
-        context.user_data["pending"] = {"type": "photo", "text": result, "photo_bytes": None}
-        await update.message.reply_text(f"✨ *Сгенерированный пост:*\n\n{result}\n\nОтправьте фото для оформления или нажмите «Опубликовать»", parse_mode="Markdown", reply_markup=get_preview_keyboard())
+        context.user_data["pending"] = {"type": "text", "text": result, "photo_bytes": None}
+        await update.message.reply_text(f"✨ *Сгенерированный пост:*\n\n{result}\n\nВыберите действие:", parse_mode="Markdown", reply_markup=get_preview_keyboard())
     else:
         await update.message.reply_text(f"❌ {error}")
 
@@ -669,9 +542,19 @@ async def publish_with_selection(update, context, has_buttons):
     query = update.callback_query
     await query.answer()
     pending = context.user_data.get("pending") or context.chat_data.get("pending")
-    if not pending or not pending.get("photo_bytes"):
+    if not pending:
         await query.message.reply_text("❌ Нет готового поста. Сначала создайте афишу или стильный пост.")
         return
+    
+    # Для текстового поста нет фото
+    if pending.get("type") == "text":
+        await query.message.reply_text("ℹ️ Текстовый пост нельзя опубликовать в канал как сообщение с фото.\nСначала добавьте фото через 'Создать афишу'.")
+        return
+    
+    if not pending.get("photo_bytes"):
+        await query.message.reply_text("❌ Нет фото для публикации")
+        return
+    
     context.user_data["publish_data"] = {"photo": pending["photo_bytes"], "text": pending["text"], "has_buttons": has_buttons}
     await query.message.reply_text("📢 Выберите канал:", reply_markup=get_channel_keyboard("publish"))
 
@@ -690,59 +573,6 @@ async def execute_publish(update, context):
         context.user_data.pop("publish_data", None)
     elif data == "back_to_menu":
         await back_to_menu(update, context)
-
-async def design_post(update, context):
-    query = update.callback_query
-    await query.answer()
-    pending = context.user_data.get("pending") or context.chat_data.get("pending")
-    if not pending or not pending.get("photo_bytes"):
-        await query.message.reply_text("❌ Нет фото")
-        return
-    title = pending["text"].split('\n')[0][:150]
-    styled = process_photo(pending["photo_bytes"], title, False)
-    pending["photo_bytes"] = styled.getvalue()
-    await query.message.reply_photo(photo=styled, caption=f"{pending['text']}\n\n✅ Оформлено!", reply_markup=get_preview_keyboard())
-
-async def add_watermark(update, context):
-    query = update.callback_query
-    await query.answer()
-    pending = context.user_data.get("pending") or context.chat_data.get("pending")
-    if not pending or not pending.get("photo_bytes"):
-        await query.message.reply_text("❌ Нет фото")
-        return
-    watermarked = add_watermark_only(pending["photo_bytes"])
-    pending["photo_bytes"] = watermarked.getvalue()
-    await query.message.reply_photo(photo=watermarked, caption=f"{pending['text']}\n\n💧 Водяной знак добавлен!", reply_markup=get_preview_keyboard())
-
-async def ai_process_deepseek_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-    pending = context.user_data.get("pending") or context.chat_data.get("pending")
-    if not pending:
-        await query.message.reply_text("❌ Нет текста")
-        return
-    await query.message.reply_text("🤖 Обрабатываю через DeepSeek...")
-    result, error = await ai_process_deepseek(pending["text"])
-    if result:
-        pending["text"] = result
-        await query.message.reply_text(f"✅ Готово!\n\n{result}", reply_markup=get_preview_keyboard())
-    else:
-        await query.message.reply_text(f"❌ {error}")
-
-async def gpt_style_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-    pending = context.user_data.get("pending") or context.chat_data.get("pending")
-    if not pending:
-        await query.message.reply_text("❌ Нет текста")
-        return
-    await query.message.reply_text("✨ Обрабатываю через GPT...")
-    result, error = await generate_gpt_post(pending["text"])
-    if result:
-        pending["text"] = result
-        await query.message.reply_text(f"✅ Готово!\n\n{result}", reply_markup=get_preview_keyboard())
-    else:
-        await query.message.reply_text(f"❌ {error}")
 
 async def schedule_menu(update, context):
     query = update.callback_query
@@ -763,10 +593,12 @@ async def schedule_post_callback(update, context):
         if publish_time <= now:
             publish_time += timedelta(days=1)
         time_str = publish_time.strftime("%H:%M")
+    
     pending = context.user_data.get("pending") or context.chat_data.get("pending")
-    if not pending:
-        await query.message.reply_text("❌ Нет поста")
+    if not pending or not pending.get("photo_bytes"):
+        await query.message.reply_text("❌ Нет поста для отложенной публикации")
         return
+    
     default_channel = CHANNELS.get("news", {}).get("chat_id", "")
     save_scheduled_post(pending["text"], pending["photo_bytes"], publish_time, has_buttons=True, channel_id=default_channel)
     await query.message.reply_text(f"✅ Пост запланирован на {time_str}")
@@ -783,29 +615,8 @@ async def back_to_preview(update, context):
     pending = context.user_data.get("pending") or context.chat_data.get("pending")
     if pending and pending.get("photo_bytes"):
         await query.message.reply_photo(photo=pending["photo_bytes"], caption=pending["text"], reply_markup=get_preview_keyboard())
-
-async def edit_afisha_text(update, context):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["state"] = "edit_afisha"
-    await query.message.reply_text("📝 Отправьте новый текст для афиши:")
-
-async def handle_edit_afisha(update, context):
-    if context.user_data.get("state") != "edit_afisha":
-        return
-    new_text = update.message.text
-    photo_bytes = context.user_data.get("afisha_photo_bytes")
-    if not photo_bytes:
-        await update.message.reply_text("❌ Ошибка, фото не найдено")
-        return
-    await update.message.reply_text("🎨 Обновляю афишу через Replicate AI...")
-    result, error = await create_afisha_with_replicate(photo_bytes, new_text)
-    if result:
-        context.user_data["pending"] = {"type": "photo", "text": new_text, "photo_bytes": result.getvalue()}
-        context.user_data["state"] = None
-        await update.message.reply_photo(photo=result, caption=f"✨ Афиша обновлена!\n\n{new_text}", reply_markup=get_afisha_keyboard())
-    else:
-        await update.message.reply_text(f"❌ {error}")
+    elif pending:
+        await query.message.reply_text(pending["text"], reply_markup=get_preview_keyboard())
 
 async def exit_chat(update, context):
     query = update.callback_query
@@ -823,15 +634,12 @@ async def handle_message(update, context):
         await handle_afisha_text(update, context)
     elif context.user_data.get("state") == "style_text":
         await handle_style_text(update, context)
-    elif context.user_data.get("state") == "edit_afisha":
-        await handle_edit_afisha(update, context)
 
 # === КОЛБЭК ===
 async def button_callback(update, context):
     query = update.callback_query
     data = query.data
     
-    # Обработчики
     if data == "create_afisha":
         await create_afisha(update, context)
     elif data == "create_style_post":
@@ -844,22 +652,12 @@ async def button_callback(update, context):
         await publish_with_selection(update, context, True)
     elif data == "publish_no_buttons":
         await publish_with_selection(update, context, False)
-    elif data == "design_post":
-        await design_post(update, context)
-    elif data == "add_watermark":
-        await add_watermark(update, context)
-    elif data == "ai_process":
-        await ai_process_deepseek_callback(update, context)
-    elif data == "gpt_style":
-        await gpt_style_callback(update, context)
     elif data == "schedule_menu":
         await schedule_menu(update, context)
     elif data == "back_to_menu":
         await back_to_menu(update, context)
     elif data == "back_to_preview":
         await back_to_preview(update, context)
-    elif data == "edit_afisha_text":
-        await edit_afisha_text(update, context)
     elif data == "exit_chat":
         await exit_chat(update, context)
     elif data.startswith("publish:"):

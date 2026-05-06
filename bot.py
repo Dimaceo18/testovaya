@@ -319,7 +319,6 @@ async def create_afisha_full(photo_bytes, user_text):
         return None, error
     
     # Шаг 2: Парсим текст для наложения
-    # Разбиваем user_text на заголовок и описание
     lines = user_text.split('\n')
     title = lines[0][:60] if lines else user_text[:60]
     description = '\n'.join(lines[1:]) if len(lines) > 1 else ""

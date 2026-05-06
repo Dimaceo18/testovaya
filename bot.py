@@ -15,10 +15,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from openai import AsyncOpenAI
 import httpx
 
-# Настройка логирования - убираем лишние логи
-logging.basicConfig(level=logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==================== НАСТРОЙКИ ====================
@@ -45,6 +43,7 @@ CHANNELS = {
 SUGGEST_LINK = os.getenv("SUGGEST_LINK", "https://t.me/minsk_news_bot?start=suggest")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")  # Обязательно добавьте!
 DB_PATH = "news.db"
 
 WATERMARK_TEXT = "MINSK NEWS"
@@ -54,7 +53,46 @@ WATERMARK_OPACITY = 38
 deepseek_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# Промпты
+# Ваш промпт для стилизации
+AFISHA_STYLE_PROMPT = """
+Создай вертикальный Instagram-пост 4:5 в стиле premium city media для аккаунта «Афиша Минска».
+
+Используй присланную фотографию как основу.
+Не меняй смысл фотографии, но улучши её: cinematic color grading, контраст, мягкий свет, аккуратная резкость.
+
+Стиль:
+- современный городской медиа-дизайн
+- минимализм
+- dark green / emerald overlay
+- cream white typography
+- warm yellow accent
+- Apple-style clean layout
+- premium editorial look
+- rounded corners
+- много воздуха
+- без дешёвого баннерного эффекта
+
+Композиция:
+- фото занимает весь фон
+- слева тёмный зелёный полупрозрачный градиент
+- справа фото видно чище
+- сверху слева тонкие декоративные линии
+- крупный заголовок слева
+- ключевую фразу выделить жёлтым или светло-зелёным
+- внизу можно добавить 1–2 минималистичные плашки с деталями, если они есть в тексте
+
+Важно:
+- не добавлять fider.by
+- не добавлять лишние логотипы
+- не использовать силуэты города
+- текст должен быть чётким, крупным и читаемым
+- сохранить стиль как у современного городского медиа 2026 года
+
+Текст для афиши:
+{user_text}
+"""
+
+# Промпты для AI
 DEEPSEEK_PROMPT = """Ты редактор новостного сайта. Переделай новость в формат на 500-600 символов. Убери воду, сделай интересный заголовок. Без смайликов.
 
 Верни строго в формате:
@@ -68,19 +106,6 @@ CHATGPT_POST_PROMPT = """Создай современный Instagram-пост 
 ТЕКСТ: (2-3 предложения)
 ПРИЗЫВ: (призыв к действию)
 ХЭШТЕГИ: (2-3 хэштега)"""
-
-AFISHA_STYLE_PROMPT = """Создай вертикальный Instagram-пост 4:5 в стиле premium city media.
-
-Используй присланную фотографию как основу. Улучши её: cinematic color grading, контраст, мягкий свет.
-
-Стиль: минимализм, dark green overlay, cream white typography, warm yellow accent, Apple-style clean layout.
-
-Композиция: фото на весь фон, слева тёмный градиент, справа фото видно чище, крупный заголовок слева, ключевую фразу выделить жёлтым.
-
-Не добавляй логотипы. Не используй силуэты города.
-
-Текст для афиши:
-{user_text}"""
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
@@ -358,28 +383,61 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     output.seek(0)
     return output
 
-# ==================== ГЕНЕРАЦИЯ АФИШИ ====================
-async def create_afisha_with_openai(photo_bytes, user_text):
-    if not openai_client:
-        return None, "❌ OpenAI API не настроен"
+# ==================== ГЕНЕРАЦИЯ АФИШИ ЧЕРЕЗ REPLICATE ====================
+async def create_afisha_with_replicate(photo_bytes, user_text):
+    """Стилизует фото через Replicate API (img2img) с сохранением композиции"""
+    if not REPLICATE_API_KEY:
+        return None, "❌ Replicate API не настроен. Добавьте переменную REPLICATE_API_KEY"
     
+    # Формируем промпт
     prompt = AFISHA_STYLE_PROMPT.format(user_text=user_text)
     
-    try:
-        response = await openai_client.images.edit(
-            model="dall-e-2",
-            image=photo_bytes,
-            prompt=prompt[:1000],
-            size="512x512",
-            n=1
-        )
-        image_url = response.data[0].url
-        async with httpx.AsyncClient() as client:
-            img_response = await client.get(image_url)
-            return io.BytesIO(img_response.content), None
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        return None, f"❌ Ошибка: {e}"
+    # Кодируем фото в base64
+    img_base64 = base64.b64encode(photo_bytes).decode('utf-8')
+    
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        try:
+            # Запускаем предсказание
+            response = await client.post(
+                "https://api.replicate.com/v1/predictions",
+                headers={
+                    "Authorization": f"Token {REPLICATE_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "version": "8beff3369e81422112d93b89ca01426147de542cd4684c244b673b105188fe5f",  # SDXL img2img
+                    "input": {
+                        "image": f"data:image/jpeg;base64,{img_base64}",
+                        "prompt": prompt,
+                        "negative_prompt": "text, watermark, logo, low quality, blurry, ugly, bad anatomy",
+                        "strength": 0.65,
+                        "guidance_scale": 7.5,
+                        "num_inference_steps": 30,
+                        "num_outputs": 1
+                    }
+                }
+            )
+            
+            result = response.json()
+            prediction_url = result["urls"]["get"]
+            
+            # Ждём результат
+            while True:
+                status_resp = await client.get(prediction_url, headers={"Authorization": f"Token {REPLICATE_API_KEY}"})
+                status = status_resp.json()
+                
+                if status["status"] == "succeeded":
+                    image_url = status["output"][0]
+                    img_response = await client.get(image_url)
+                    return io.BytesIO(img_response.content), None
+                elif status["status"] == "failed":
+                    return None, f"Ошибка: {status.get('error', 'Unknown error')}"
+                
+                await asyncio.sleep(2)
+                
+        except Exception as e:
+            logger.error(f"Replicate ошибка: {e}")
+            return None, f"Ошибка Replicate: {e}"
 
 # ==================== AI ФУНКЦИИ ====================
 async def chat_with_gpt(user_id, message):
@@ -454,7 +512,7 @@ async def generate_gpt_post(text):
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎨 Афиша (фото+текст)", callback_data="create_afisha")],
+        [InlineKeyboardButton("🎨 Создать афишу (фото+текст)", callback_data="create_afisha")],
         [InlineKeyboardButton("✨ Стильный пост (GPT)", callback_data="create_style_post")],
         [InlineKeyboardButton("🤖 Чат с GPT", callback_data="start_gpt_chat")],
         [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_menu")]
@@ -524,7 +582,7 @@ async def send_to_channel(context, channel_id, channel_link, photo_bytes, text, 
 async def start(update, context):
     await update.message.reply_text(
         "🤖 *MINSK NEWS BOT*\n\n"
-        "🎨 *Афиша* - фото + текст → стильная афиша\n"
+        "🎨 *Афиша* - фото + текст → стильная афиша (через Replicate AI)\n"
         "✨ *Стильный пост* - текст → пост с дизайном\n"
         "🤖 *Чат с GPT* - общение с ИИ\n"
         "📤 *Опубликовать* - выбрать канал\n\n"
@@ -556,14 +614,17 @@ async def handle_afisha_text(update, context):
     if not photo_bytes:
         await update.message.reply_text("❌ Ошибка, начните заново", reply_markup=get_main_keyboard())
         return
-    await update.message.reply_text("🎨 Создаю афишу... 10-20 секунд")
-    result, error = await create_afisha_with_openai(photo_bytes, text)
+    await update.message.reply_text("🎨 Создаю афишу через Replicate AI... 20-30 секунд")
+    
+    # Создаём афишу через Replicate
+    result, error = await create_afisha_with_replicate(photo_bytes, text)
+    
     if result:
         context.user_data["pending"] = {"type": "photo", "text": text, "photo_bytes": result.getvalue()}
         context.user_data["state"] = None
-        await update.message.reply_photo(photo=result, caption=f"✨ Афиша готова!\n\n{text}", reply_markup=get_afisha_keyboard())
+        await update.message.reply_photo(photo=result, caption=f"✨ Афиша готова!\n\n📝 {text}", reply_markup=get_afisha_keyboard())
     else:
-        await update.message.reply_text(f"❌ {error}", reply_markup=get_main_keyboard())
+        await update.message.reply_text(f"❌ {error}\n\nПопробуйте ещё раз или используйте другой текст.", reply_markup=get_main_keyboard())
 
 # === СТИЛЬНЫЙ ПОСТ ===
 async def create_style_post(update, context):
@@ -733,12 +794,12 @@ async def handle_edit_afisha(update, context):
     if context.user_data.get("state") != "edit_afisha":
         return
     new_text = update.message.text
-    photo_bytes = context.user_data.get("afisha_photo_bytes") or (context.user_data.get("pending", {}).get("photo_bytes"))
+    photo_bytes = context.user_data.get("afisha_photo_bytes")
     if not photo_bytes:
-        await update.message.reply_text("❌ Ошибка")
+        await update.message.reply_text("❌ Ошибка, фото не найдено")
         return
-    await update.message.reply_text("🎨 Обновляю афишу...")
-    result, error = await create_afisha_with_openai(photo_bytes, new_text)
+    await update.message.reply_text("🎨 Обновляю афишу через Replicate AI...")
+    result, error = await create_afisha_with_replicate(photo_bytes, new_text)
     if result:
         context.user_data["pending"] = {"type": "photo", "text": new_text, "photo_bytes": result.getvalue()}
         context.user_data["state"] = None
@@ -770,7 +831,7 @@ async def button_callback(update, context):
     query = update.callback_query
     data = query.data
     
-    # Обработчики для разных callback_data
+    # Обработчики
     if data == "create_afisha":
         await create_afisha(update, context)
     elif data == "create_style_post":

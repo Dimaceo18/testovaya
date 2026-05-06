@@ -145,189 +145,6 @@ def add_links_to_text(text, channel_link, has_buttons=True):
     links = f"\n\n<a href=\"{channel_link}\">📢 Подписаться на канал</a>\n<a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
     return text + links
 
-# ==================== СОЗДАНИЕ СТИЛЬНОГО ПОСТА (С НАЛОЖЕНИЕМ ТЕКСТА) ====================
-def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
-    """Создаёт стильный пост с наложением текста на фото"""
-    if not photo_bytes or len(photo_bytes) == 0:
-        raise ValueError("Фото пустое")
-    
-    print(f"🎨 Создаю стильный пост, размер: {len(photo_bytes) / 1024:.1f}KB")
-    
-    # Открываем изображение
-    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
-    w, h = img.size
-    
-    # Обрезаем до соотношения 4:5
-    target_ratio = 4/5
-    cur_ratio = w / h
-    if cur_ratio > target_ratio:
-        new_w = int(h * target_ratio)
-        left = (w - new_w) // 2
-        img = img.crop((left, 0, left + new_w, h))
-    else:
-        new_h = int(w / target_ratio)
-        top = (h - new_h) // 2
-        img = img.crop((0, top, w, top + new_h))
-    
-    # Ресайз
-    img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
-    w, h = img.size
-    
-    # Затемняем изображение
-    img = ImageEnhance.Brightness(img).enhance(0.7)
-    
-    # Добавляем градиент слева
-    gradient_width = int(w * 0.45)  # 45% ширины
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (gradient_width, 1), 0)
-    for x in range(gradient_width):
-        # Плавный переход от чёрного к прозрачному
-        a = int(200 * (1 - x / gradient_width))
-        grad.putpixel((x, 0), a)
-    grad = grad.resize((gradient_width, h))
-    overlay_alpha.paste(grad, (0, 0))
-    
-    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    base = img.convert("RGBA")
-    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    img = Image.alpha_composite(base, overlay).convert("RGB")
-    
-    draw = ImageDraw.Draw(img)
-    
-    # Загрузка шрифтов
-    try:
-        font_title = ImageFont.truetype("Montserrat-Bold.ttf", 72)
-        font_text = ImageFont.truetype("Montserrat-Regular.ttf", 32)
-        font_small = ImageFont.truetype("Montserrat-Light.ttf", 28)
-    except:
-        font_title = ImageFont.load_default()
-        font_text = ImageFont.load_default()
-        font_small = ImageFont.load_default()
-    
-    # Декоративная линия сверху
-    line_x = 60
-    line_y = 80
-    for i in range(3):
-        draw.line([(line_x + i*80, line_y), (line_x + i*80 + 50, line_y)], fill=(218, 165, 32), width=3)  # золотой цвет
-    
-    # Заголовок (слева, крупный)
-    title_y = 140
-    title_lines = []
-    current_line = ""
-    for word in title.split():
-        test_line = current_line + " " + word if current_line else word
-        try:
-            bbox = font_title.getbbox(test_line)
-            width = bbox[2] - bbox[0]
-        except:
-            width = len(test_line) * 40
-        if width <= w - 120:
-            current_line = test_line
-        else:
-            if current_line:
-                title_lines.append(current_line)
-            current_line = word
-    if current_line:
-        title_lines.append(current_line)
-    
-    for i, line in enumerate(title_lines):
-        # Тень
-        for offset in [(2,2), (2,-2), (-2,2), (-2,-2)]:
-            draw.text((60 + offset[0], title_y + i*85 + offset[1]), line, font=font_title, fill=(0,0,0))
-        # Основной текст
-        if i == 0:
-            draw.text((60, title_y + i*85), line, font=font_title, fill=(255, 215, 0))  # золотой для первой строки
-        else:
-            draw.text((60, title_y + i*85), line, font=font_title, fill=(255,255,255))
-    
-    # Основной текст
-    text_y = title_y + len(title_lines)*85 + 60
-    text_lines = []
-    for paragraph in text.split('\n'):
-        words = paragraph.split()
-        current_line = ""
-        for word in words:
-            test_line = current_line + " " + word if current_line else word
-            try:
-                bbox = font_text.getbbox(test_line)
-                width = bbox[2] - bbox[0]
-            except:
-                width = len(test_line) * 20
-            if width <= w - 120:
-                current_line = test_line
-            else:
-                if current_line:
-                    text_lines.append(current_line)
-                current_line = word
-        if current_line:
-            text_lines.append(current_line)
-        text_lines.append("")  # пустая строка между абзацами
-    
-    for i, line in enumerate(text_lines):
-        if line:
-            # Тень
-            for offset in [(1,1)]:
-                draw.text((60 + offset[0], text_y + i*40 + offset[1]), line, font=font_text, fill=(0,0,0))
-            draw.text((60, text_y + i*40), line, font=font_text, fill=(240,240,240))
-    
-    # Призыв к действию
-    call_y = text_y + len(text_lines)*40 + 40
-    for offset in [(1,1)]:
-        draw.text((60 + offset[0], call_y + offset[1]), f"✨ {call_to_action}", font=font_small, fill=(0,0,0))
-    draw.text((60, call_y), f"✨ {call_to_action}", font=font_small, fill=(255, 215, 0))
-    
-    # Хэштеги
-    hash_y = call_y + 50
-    for offset in [(1,1)]:
-        draw.text((60 + offset[0], hash_y + offset[1]), hashtags, font=font_small, fill=(0,0,0))
-    draw.text((60, hash_y), hashtags, font=font_small, fill=(180,180,180))
-    
-    # Нижняя декоративная линия
-    line_y_bottom = h - 60
-    for i in range(3):
-        draw.line([(60 + i*80, line_y_bottom), (60 + i*80 + 50, line_y_bottom)], fill=(218, 165, 32), width=2)
-    
-    # Сохраняем
-    output = io.BytesIO()
-    img.save(output, format="JPEG", quality=90)
-    output.seek(0)
-    
-    print(f"✅ Стильный пост создан! Размер: {output.getbuffer().nbytes / (1024 * 1024):.2f}MB")
-    return output
-
-# ==================== AI ЧАТ ====================
-async def chat_with_gpt(user_id, message):
-    """Общение с ChatGPT с сохранением истории"""
-    if not chatgpt_client:
-        return "❌ ChatGPT API не настроен. Добавьте переменную окружения CHATGPT_API_KEY"
-    
-    # Сохраняем сообщение пользователя
-    save_chat_message(user_id, "user", message)
-    
-    # Получаем историю
-    history = get_chat_history(user_id, 10)
-    
-    # Формируем сообщения
-    messages = [{"role": "system", "content": "Ты дружелюбный и полезный ассистент. Отвечай кратко, по делу, но дружелюбно."}]
-    for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": message})
-    
-    try:
-        response = await chatgpt_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=1000
-        )
-        
-        reply = response.choices[0].message.content
-        save_chat_message(user_id, "assistant", reply)
-        return reply
-    except Exception as e:
-        logger.error(f"Ошибка ChatGPT: {e}")
-        return f"❌ Ошибка: {e}"
-
 # ==================== ВОДЯНОЙ ЗНАК ====================
 def add_watermark_to_image(image):
     img = image.copy()
@@ -358,7 +175,149 @@ def add_watermark_only(photo_bytes):
     output.seek(0)
     return output
 
-# ==================== ПРОЦЕССИНГ ФОТО ====================
+# ==================== СОЗДАНИЕ СТИЛЬНОГО ПОСТА ====================
+def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
+    """Создаёт стильный пост с наложением текста на фото"""
+    if not photo_bytes or len(photo_bytes) == 0:
+        raise ValueError("Фото пустое")
+    
+    print(f"🎨 Создаю стильный пост, размер: {len(photo_bytes) / 1024:.1f}KB")
+    
+    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
+    w, h = img.size
+    
+    # Обрезаем до соотношения 4:5
+    target_ratio = 4/5
+    cur_ratio = w / h
+    if cur_ratio > target_ratio:
+        new_w = int(h * target_ratio)
+        left = (w - new_w) // 2
+        img = img.crop((left, 0, left + new_w, h))
+    else:
+        new_h = int(w / target_ratio)
+        top = (h - new_h) // 2
+        img = img.crop((0, top, w, top + new_h))
+    
+    img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
+    w, h = img.size
+    
+    # Затемняем изображение
+    img = ImageEnhance.Brightness(img).enhance(0.7)
+    
+    # Добавляем градиент слева
+    gradient_width = int(w * 0.45)
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (gradient_width, 1), 0)
+    for x in range(gradient_width):
+        a = int(200 * (1 - x / gradient_width))
+        grad.putpixel((x, 0), a)
+    grad = grad.resize((gradient_width, h))
+    overlay_alpha.paste(grad, (0, 0))
+    
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    img = Image.alpha_composite(base, overlay).convert("RGB")
+    
+    draw = ImageDraw.Draw(img)
+    
+    # Загрузка шрифтов
+    try:
+        font_title = ImageFont.truetype("Montserrat-Bold.ttf", 72)
+        font_text = ImageFont.truetype("Montserrat-Regular.ttf", 32)
+        font_small = ImageFont.truetype("Montserrat-Light.ttf", 28)
+    except:
+        font_title = ImageFont.load_default()
+        font_text = ImageFont.load_default()
+        font_small = ImageFont.load_default()
+    
+    # Декоративная линия сверху
+    line_x = 60
+    line_y = 80
+    for i in range(3):
+        draw.line([(line_x + i*80, line_y), (line_x + i*80 + 50, line_y)], fill=(218, 165, 32), width=3)
+    
+    # Заголовок
+    title_y = 140
+    title_lines = []
+    current_line = ""
+    for word in title.split():
+        test_line = current_line + " " + word if current_line else word
+        try:
+            bbox = font_title.getbbox(test_line)
+            width = bbox[2] - bbox[0]
+        except:
+            width = len(test_line) * 40
+        if width <= w - 120:
+            current_line = test_line
+        else:
+            if current_line:
+                title_lines.append(current_line)
+            current_line = word
+    if current_line:
+        title_lines.append(current_line)
+    
+    for i, line in enumerate(title_lines):
+        for offset in [(2,2), (2,-2), (-2,2), (-2,-2)]:
+            draw.text((60 + offset[0], title_y + i*85 + offset[1]), line, font=font_title, fill=(0,0,0))
+        if i == 0:
+            draw.text((60, title_y + i*85), line, font=font_title, fill=(255, 215, 0))
+        else:
+            draw.text((60, title_y + i*85), line, font=font_title, fill=(255,255,255))
+    
+    # Основной текст
+    text_y = title_y + len(title_lines)*85 + 60
+    text_lines = []
+    for paragraph in text.split('\n'):
+        words = paragraph.split()
+        current_line = ""
+        for word in words:
+            test_line = current_line + " " + word if current_line else word
+            try:
+                bbox = font_text.getbbox(test_line)
+                width = bbox[2] - bbox[0]
+            except:
+                width = len(test_line) * 20
+            if width <= w - 120:
+                current_line = test_line
+            else:
+                if current_line:
+                    text_lines.append(current_line)
+                current_line = word
+        if current_line:
+            text_lines.append(current_line)
+        text_lines.append("")
+    
+    for i, line in enumerate(text_lines):
+        if line:
+            for offset in [(1,1)]:
+                draw.text((60 + offset[0], text_y + i*40 + offset[1]), line, font=font_text, fill=(0,0,0))
+            draw.text((60, text_y + i*40), line, font=font_text, fill=(240,240,240))
+    
+    # Призыв к действию
+    call_y = text_y + len(text_lines)*40 + 40
+    for offset in [(1,1)]:
+        draw.text((60 + offset[0], call_y + offset[1]), f"✨ {call_to_action}", font=font_small, fill=(0,0,0))
+    draw.text((60, call_y), f"✨ {call_to_action}", font=font_small, fill=(255, 215, 0))
+    
+    # Хэштеги
+    hash_y = call_y + 50
+    for offset in [(1,1)]:
+        draw.text((60 + offset[0], hash_y + offset[1]), hashtags, font=font_small, fill=(0,0,0))
+    draw.text((60, hash_y), hashtags, font=font_small, fill=(180,180,180))
+    
+    # Нижняя декоративная линия
+    line_y_bottom = h - 60
+    for i in range(3):
+        draw.line([(60 + i*80, line_y_bottom), (60 + i*80 + 50, line_y_bottom)], fill=(218, 165, 32), width=2)
+    
+    output = io.BytesIO()
+    img.save(output, format="JPEG", quality=90)
+    output.seek(0)
+    
+    print(f"✅ Стильный пост создан! Размер: {output.getbuffer().nbytes / (1024 * 1024):.2f}MB")
+    return output
+
 def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
     w, h = img.size
@@ -429,6 +388,33 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     img.save(output, format="JPEG", quality=85)
     output.seek(0)
     return output
+
+# ==================== AI ЧАТ ====================
+async def chat_with_gpt(user_id, message):
+    if not chatgpt_client:
+        return "❌ ChatGPT API не настроен. Добавьте переменную окружения CHATGPT_API_KEY"
+    
+    save_chat_message(user_id, "user", message)
+    history = get_chat_history(user_id, 10)
+    
+    messages = [{"role": "system", "content": "Ты дружелюбный и полезный ассистент. Отвечай кратко, по делу, но дружелюбно."}]
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": message})
+    
+    try:
+        response = await chatgpt_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1000
+        )
+        reply = response.choices[0].message.content
+        save_chat_message(user_id, "assistant", reply)
+        return reply
+    except Exception as e:
+        logger.error(f"Ошибка ChatGPT: {e}")
+        return f"❌ Ошибка: {e}"
 
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_keyboard():
@@ -512,40 +498,15 @@ def get_preview_keyboard(media_type):
         ])
 
 def get_ai_result_keyboard(media_type):
-    if media_type == "video":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Опубликовать видео", callback_data="publish_video_with_buttons")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_custom_request_video")],
-            [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_text")],
-            [InlineKeyboardButton("⏰ Отложить", callback_data=f"schedule_video_menu")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_video_preview")]
-        ])
-    elif media_type == "text":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Опубликовать текст", callback_data="publish_text_with_buttons")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_custom_request_text")],
-            [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_text")],
-            [InlineKeyboardButton("⏰ Отложить", callback_data=f"schedule_text_menu")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_text_preview")]
-        ])
-    elif media_type == "album":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Опубликовать альбом", callback_data="publish_album_with_buttons")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_custom_request_album")],
-            [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_album_text")],
-            [InlineKeyboardButton("⏰ Отложить", callback_data=f"schedule_album_menu")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_album_preview")]
-        ])
-    else:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_photo_with_buttons")],
-            [InlineKeyboardButton("🎨 Оформить", callback_data="design_post")],
-            [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
-            [InlineKeyboardButton("📝 Новый запрос DeepSeek", callback_data=f"ai_custom_request_photo")],
-            [InlineKeyboardButton("✨ Сделать стильный пост (GPT)", callback_data="create_style_post_from_photo")],
-            [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_photo_menu")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_photo_preview")]
-        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_photo_with_buttons")],
+        [InlineKeyboardButton("🎨 Оформить", callback_data="design_post")],
+        [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
+        [InlineKeyboardButton("📝 Новый запрос DeepSeek", callback_data=f"ai_custom_request_photo")],
+        [InlineKeyboardButton("✨ Сделать стильный пост (GPT)", callback_data="create_style_post_from_photo")],
+        [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_photo_menu")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_photo_preview")]
+    ])
 
 def get_custom_request_keyboard(media_type):
     return InlineKeyboardMarkup([
@@ -648,35 +609,9 @@ async def start(update, context):
         "👇 Выберите действие:",
         parse_mode="Markdown", reply_markup=get_main_keyboard())
 
-async def handle_text(update, context):
-    # Если в режиме чата с GPT
-    if context.user_data.get("gpt_chat_mode"):
-        user_id = update.effective_user.id
-        message = update.message.text
-        
-        if message.lower() == "/exit":
-            context.user_data["gpt_chat_mode"] = False
-            await update.message.reply_text("👋 Выход из чата с GPT. Используйте /start для возврата в меню.")
-            return
-        
-        await update.message.reply_text("🤔 Думаю...")
-        response = await chat_with_gpt(user_id, message)
-        await update.message.reply_text(response, parse_mode="Markdown", reply_markup=get_gpt_chat_keyboard())
-        return
-    
-    # Обычная обработка текста для поста
-    if context.user_data.get("waiting_for_custom_request"):
-        return
-    
-    text = update.message.text
-    if not text or text.startswith('/'): return
-    context.chat_data["pending"] = {"type": "text", "text": remove_emojis(text)}
-    await update.message.reply_text(f"📝 Текст:\n\n{text[:500]}...\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
-
 async def handle_photo(update, context):
     msg = update.message
     
-    # Проверка на альбом
     if msg.media_group_id:
         album_key = f"album_{msg.media_group_id}"
         if album_key not in context.chat_data:
@@ -689,7 +624,6 @@ async def handle_photo(update, context):
             asyncio.create_task(handle_album(update, context))
         return
     
-    # Одиночное фото
     photo = msg.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     photo_bytes = await file.download_as_bytearray()
@@ -752,6 +686,29 @@ async def handle_album(update, context):
     
     context.chat_data["processing_album"] = None
 
+async def handle_text(update, context):
+    if context.user_data.get("gpt_chat_mode"):
+        user_id = update.effective_user.id
+        message = update.message.text
+        
+        if message.lower() == "/exit":
+            context.user_data["gpt_chat_mode"] = False
+            await update.message.reply_text("👋 Выход из чата с GPT. Используйте /start для возврата в меню.")
+            return
+        
+        await update.message.reply_text("🤔 Думаю...")
+        response = await chat_with_gpt(user_id, message)
+        await update.message.reply_text(response, parse_mode="Markdown", reply_markup=get_gpt_chat_keyboard())
+        return
+    
+    if context.user_data.get("waiting_for_custom_request"):
+        return
+    
+    text = update.message.text
+    if not text or text.startswith('/'): return
+    context.chat_data["pending"] = {"type": "text", "text": remove_emojis(text)}
+    await update.message.reply_text(f"📝 Текст:\n\n{text[:500]}...\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
+
 async def handle_video(update, context):
     msg = update.message
     text = remove_emojis(msg.caption or "")
@@ -772,8 +729,7 @@ async def start_gpt_chat(update, context):
         "Просто отправляйте мне сообщения, и я буду отвечать.\n"
         "История диалога сохраняется.\n\n"
         "Команды:\n"
-        "• /exit - выйти из чата\n"
-        "• /clear - очистить историю\n\n"
+        "• /exit - выйти из чата\n\n"
         "👇 Начните общение!",
         parse_mode="Markdown",
         reply_markup=get_gpt_chat_keyboard()
@@ -788,9 +744,8 @@ async def clear_chat_history_callback(update, context):
     
     await query.message.reply_text("🗑 История диалога очищена!")
 
-# ==================== СОЗДАНИЕ СТИЛЬНОГО ПОСТА ЧЕРЕЗ GPT ====================
+# ==================== СТИЛЬНЫЙ ПОСТ ====================
 async def create_style_post(update, context, photo_bytes=None):
-    """Создаёт стильный пост через GPT и накладывает текст на фото"""
     query = update.callback_query
     await query.answer()
     
@@ -798,7 +753,6 @@ async def create_style_post(update, context, photo_bytes=None):
         await query.message.reply_text("❌ ChatGPT API не настроен. Добавьте переменную CHATGPT_API_KEY")
         return
     
-    # Получаем текст для обработки
     pending = context.chat_data.get("pending", {})
     text = pending.get("text", "")
     
@@ -806,14 +760,12 @@ async def create_style_post(update, context, photo_bytes=None):
         await query.message.reply_text("❌ Нет текста для обработки. Сначала отправьте текст или фото с подписью.")
         return
     
-    # Если нет фото, просим отправить
     if not photo_bytes and pending.get("type") == "photo":
         photo_bytes = pending.get("original")
     
     await query.message.reply_text("✨ Генерирую стильный пост через ChatGPT...")
     
     try:
-        # Генерируем текст через GPT
         response = await chatgpt_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
@@ -826,7 +778,6 @@ async def create_style_post(update, context, photo_bytes=None):
         
         result = response.choices[0].message.content
         
-        # Парсим результат
         title = ""
         body = ""
         call_to_action = ""
@@ -849,15 +800,11 @@ async def create_style_post(update, context, photo_bytes=None):
         if not hashtags:
             hashtags = "#Minsk #MinskNews #MinskCity"
         
-        # Создаём стильный пост с наложением текста
         if photo_bytes:
             await query.message.reply_text("🎨 Создаю визуальное оформление...")
             styled_photo = create_city_post(photo_bytes, title, body, call_to_action, hashtags)
-            
-            # Формируем финальный текст
             final_text = f"{title}\n\n{body}\n\n✨ {call_to_action}\n\n{hashtags}"
             
-            # Сохраняем в pending
             context.chat_data["pending"]["text"] = final_text
             context.chat_data["pending"]["photo_bytes"] = styled_photo.getvalue()
             
@@ -895,15 +842,10 @@ async def create_style_post_from_photo(update, context):
     
     await create_style_post(update, context, pending.get("original"))
 
-# ==================== ПУБЛИКАЦИЯ С ВЫБОРОМ КАНАЛА ====================
+# ==================== ПУБЛИКАЦИЯ ====================
 async def publish_with_channel_selection(update, context, media_type, has_buttons):
     query = update.callback_query
     await query.answer()
-    
-    context.user_data["pending_publish"] = {
-        "media_type": media_type,
-        "has_buttons": has_buttons
-    }
     
     await query.message.reply_text(
         "📢 *Куда публикуем?*\n\nВыберите канал для публикации:",
@@ -1024,7 +966,6 @@ async def execute_publish(update, context, channel_key, media_type, has_buttons)
     except:
         pass
 
-# ==================== ПУБЛИКАЦИЯ ДЛЯ РАЗНЫХ ТИПОВ ====================
 async def publish_photo_with_buttons(update, context):
     await publish_with_channel_selection(update, context, "photo", True)
 
@@ -1126,16 +1067,13 @@ async def design_from_watermark_callback(update, context):
     try: await query.message.delete()
     except: pass
 
-# ==================== ОБРАБОТКА AI ====================
-async def ai_process_with_custom_request(update, context, media_type, custom_request=None, use_chatgpt=False):
+# ==================== AI ОБРАБОТКА ====================
+async def ai_process_with_custom_request(update, context, media_type, custom_request=None):
     query = update.callback_query
     await query.answer()
     
-    client = chatgpt_client if use_chatgpt else deepseek_client
-    model = "gpt-3.5-turbo" if use_chatgpt else "deepseek-chat"
-    
-    if not client:
-        await query.message.reply_text(f"❌ API {'ChatGPT' if use_chatgpt else 'DeepSeek'} не настроен")
+    if not deepseek_client:
+        await query.message.reply_text("❌ API DeepSeek не настроен")
         return
     
     prompt = DEEPSEEK_PROMPT
@@ -1149,11 +1087,11 @@ async def ai_process_with_custom_request(update, context, media_type, custom_req
         await query.message.reply_text("❌ Нет текста")
         return
     
-    await query.message.reply_text(f"🤖 Обрабатываю через {'ChatGPT' if use_chatgpt else 'DeepSeek'}...")
+    await query.message.reply_text("🤖 Обрабатываю через DeepSeek...")
     
     try:
-        response = await client.chat.completions.create(
-            model=model,
+        response = await deepseek_client.chat.completions.create(
+            model="deepseek-chat",
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}],
             temperature=0.7,
             max_tokens=1000
@@ -1201,14 +1139,11 @@ async def ai_process_with_custom_request(update, context, media_type, custom_req
         )
         
     except Exception as e:
-        logger.error(f"Ошибка AI: {e}")
+        logger.error(f"Ошибка DeepSeek: {e}")
         await query.message.reply_text(f"❌ Ошибка: {e}")
 
 async def ai_process_photo_deepseek(update, context):
-    await ai_process_with_custom_request(update, context, "photo", None, False)
-
-async def ai_process_photo_chatgpt(update, context):
-    await ai_process_with_custom_request(update, context, "photo", None, True)
+    await ai_process_with_custom_request(update, context, "photo", None)
 
 async def ai_custom_request_callback(update, context, media_type):
     query = update.callback_query
@@ -1237,7 +1172,6 @@ async def handle_custom_request_text(update, context):
         return
     
     custom_request = update.message.text
-    
     context.user_data["waiting_for_custom_request"] = None
     
     await update.message.reply_text(f"✅ Запрос принят: *{custom_request[:100]}*...\n🤖 Обрабатываю...", parse_mode="Markdown")
@@ -1261,7 +1195,7 @@ async def handle_custom_request_text(update, context):
         try:
             original_message = await context.bot.get_message(chat_id=original_chat_id, message_id=original_message_id)
             fake_query = FakeQuery(original_message, original_chat_id)
-            await ai_process_with_custom_request(fake_query, context, media_type, custom_request, False)
+            await ai_process_with_custom_request(fake_query, context, media_type, custom_request)
         except Exception as e:
             logger.error(f"Ошибка при получении исходного сообщения: {e}")
             await update.message.reply_text("❌ Не удалось обработать запрос. Попробуйте снова.")
@@ -1504,7 +1438,7 @@ async def button_callback(update, context):
     elif data == "create_style_post_from_photo":
         await create_style_post_from_photo(update, context)
     
-    # Публикация (показываем выбор канала)
+    # Публикация
     elif data == "publish_photo_with_buttons": 
         await publish_photo_with_buttons(update, context)
     elif data == "publish_photo_no_buttons": 
@@ -1539,16 +1473,12 @@ async def button_callback(update, context):
     # AI обработка
     elif data == "ai_process_photo": 
         await ai_process_photo_deepseek(update, context)
-    elif data == "ai_process_chatgpt":
-        await ai_process_photo_chatgpt(update, context)
     elif data == "ai_process_video": 
-        await ai_process_with_custom_request(update, context, "video", None, False)
+        await ai_process_with_custom_request(update, context, "video", None)
     elif data == "ai_process_text": 
-        await ai_process_with_custom_request(update, context, "text", None, False)
+        await ai_process_with_custom_request(update, context, "text", None)
     elif data == "ai_process_album":
-        await ai_process_with_custom_request(update, context, "album", None, False)
-    
-    # AI кастомные запросы
+        await ai_process_with_custom_request(update, context, "album", None)
     elif data == "ai_custom_request_photo":
         await ai_custom_request_callback(update, context, "photo")
     elif data == "ai_custom_request_video":
@@ -1557,16 +1487,6 @@ async def button_callback(update, context):
         await ai_custom_request_callback(update, context, "text")
     elif data == "ai_custom_request_album":
         await ai_custom_request_callback(update, context, "album")
-    
-    # Возврат к результатам AI
-    elif data == "back_to_ai_result_photo":
-        await back_to_ai_result_callback(update, context, "photo")
-    elif data == "back_to_ai_result_video":
-        await back_to_ai_result_callback(update, context, "video")
-    elif data == "back_to_ai_result_text":
-        await back_to_ai_result_callback(update, context, "text")
-    elif data == "back_to_ai_result_album":
-        await back_to_ai_result_callback(update, context, "album")
     
     # Редактирование
     elif data == "edit_text": await edit_text_callback(update, context)
@@ -1630,7 +1550,6 @@ async def health():
 async def run_bot():
     init_db()
     
-    # Проверка настроек каналов
     logger.info("📢 Настройка каналов:")
     for key, channel in CHANNELS.items():
         if channel["chat_id"]:
@@ -1641,10 +1560,8 @@ async def run_bot():
     logger.info(f"🤖 DeepSeek API: {'✅' if deepseek_client else '❌'}")
     logger.info(f"🤖 ChatGPT API: {'✅' if chatgpt_client else '❌'}")
     
-    # Создаём приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -1657,21 +1574,15 @@ async def run_bot():
     await application.initialize()
     await application.start()
     
-    # Запускаем планировщик
     asyncio.create_task(check_scheduled_posts(application))
     
-    # Запускаем polling с повторными попытками при конфликте
+    # Запускаем polling
     while True:
         try:
             logger.info("🚀 Запуск polling...")
             await application.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,
-                timeout=30,
-                read_timeout=30,
-                write_timeout=30,
-                connect_timeout=30,
-                pool_timeout=30
+                allowed_updates=Update.ALL_TYPES
             )
             logger.info("✅ Бот успешно запущен!")
             break
@@ -1684,7 +1595,6 @@ async def run_bot():
             logger.info("🔄 Повторная попытка через 10 секунд...")
             await asyncio.sleep(10)
     
-    # Держим бота запущенным
     while True:
         await asyncio.sleep(60)
 
@@ -1692,10 +1602,8 @@ if __name__ == "__main__":
     import threading
     import uvicorn
     
-    # Запускаем FastAPI в отдельном потоке
     port = int(os.getenv("PORT", 10000))
     server_thread = threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=port))
     server_thread.start()
     
-    # Запускаем бота
     asyncio.run(run_bot())

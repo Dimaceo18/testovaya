@@ -328,21 +328,49 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
     
     try:
         if is_video and video_file_id:
-            await context.bot.send_video(chat_id=CHANNEL_ID, video=video_file_id, caption=caption, parse_mode="HTML")
+            await context.bot.send_video(
+                chat_id=CHANNEL_ID, 
+                video=video_file_id, 
+                caption=caption, 
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
         elif is_album and album_photos:
             media_group = []
             for i, photo in enumerate(album_photos[:10]):
                 if i == 0:
-                    media_group.append({"type": "photo", "media": photo, "caption": caption, "parse_mode": "HTML"})
+                    media_group.append({
+                        "type": "photo", 
+                        "media": photo, 
+                        "caption": caption, 
+                        "parse_mode": "HTML"
+                    })
                 else:
                     media_group.append({"type": "photo", "media": photo})
             await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media_group)
         elif is_text:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode="HTML")
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID, 
+                text=caption, 
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
         elif photo_bytes:
-            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo_bytes, caption=caption, parse_mode="HTML")
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID, 
+                photo=photo_bytes, 
+                caption=caption, 
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
         elif file_id:
-            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption, parse_mode="HTML")
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID, 
+                photo=file_id, 
+                caption=caption, 
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
     except Exception as e:
         print(f"Ошибка отправки: {e}")
 

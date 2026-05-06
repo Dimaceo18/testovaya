@@ -4,8 +4,8 @@ import os
 import re
 import io
 import logging
+import base64
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
 
 from fastapi import FastAPI
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -15,14 +15,12 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from openai import AsyncOpenAI
 import httpx
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==================== НАСТРОЙКИ ====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Каналы для публикации
 CHANNELS = {
     "news": {
         "name": "📰 Новости Минска",
@@ -43,89 +41,75 @@ CHANNELS = {
 
 SUGGEST_LINK = os.getenv("SUGGEST_LINK", "https://t.me/minsk_news_bot?start=suggest")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-CHATGPT_API_KEY = os.getenv("CHATGPT_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_PATH = "news.db"
 
 WATERMARK_TEXT = "MINSK NEWS"
 WATERMARK_OPACITY = 38
 
-# Инициализация клиентов AI
+# Инициализация клиентов
 deepseek_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
-chatgpt_client = AsyncOpenAI(api_key=CHATGPT_API_KEY, base_url="https://api.openai.com/v1") if CHATGPT_API_KEY else None
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# Промпт для DeepSeek
-DEEPSEEK_PROMPT = """Ты редактор новостного сайта. У тебя строгий новостной формат. Без обращений на "вы", "ты". Только новостной формат.
-
-Переделай новость в формат на 500-600 символов. Убери всю воду, сделай интересный заголовок. Без смайликов. Сохраняй главные факты.
-
-Текст должен быть разбит на логические абзацы (2-4 предложения). Между абзацами пустая строка.
-
-Верни строго в формате:
-ЗАГОЛОВОК: (заголовок новости до 80 символов)
-ТЕКСТ: (текст новости с абзацами)"""
-
-# Промпт для ChatGPT для создания стильного поста
-CHATGPT_POST_PROMPT = """Ты креативный копирайтер premium city media. Создай современный Instagram-пост в стиле Minsk City Magazine.
-
-Формат: короткий, ёмкий, вовлекающий текст для социальных сетей.
-
-Требования к посту:
-- Заголовок (крупный, цепляющий)
-- Основной текст (3-4 предложения, атмосферно)
-- Вовлекающий вопрос или призыв к действию в конце
-- 2-3 хэштега (#Minsk #MinskCity #MinskNews)
-
-Стиль: минималистичный, кинематографичный, эстетичный, премиальный.
+# Промпты
+DEEPSEEK_PROMPT = """Ты редактор новостного сайта. Переделай новость в формат на 500-600 символов. Убери воду, сделай интересный заголовок. Без смайликов.
 
 Верни строго в формате:
 ЗАГОЛОВОК: (заголовок)
-ТЕКСТ: (основной текст)
+ТЕКСТ: (текст с абзацами)"""
+
+CHATGPT_POST_PROMPT = """Создай современный Instagram-пост в стиле Minsk City Magazine.
+
+Формат:
+ЗАГОЛОВОК: (цепляющий заголовок до 60 символов)
+ТЕКСТ: (2-3 предложения)
 ПРИЗЫВ: (призыв к действию)
-ХЭШТЕГИ: (хэштеги через пробел)"""
+ХЭШТЕГИ: (2-3 хэштега)"""
 
-# ==================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ DALL-E 2 ====================
-async def generate_afisha_image(prompt_text):
-    """Генерация афиши через DALL-E 2"""
-    if not chatgpt_client:
-        return None
-    
-    full_prompt = f"""Создай современный городской постер в стиле премиального медиа. Тема: {prompt_text}
+AFISHA_STYLE_PROMPT = """Создай вертикальный Instagram-пост 4:5 в стиле premium city media.
 
-Стиль: кинематографичный, эстетичный, минималистичный, вечернее освещение, изумрудные и золотые тона.
-Формат вертикальный 4:5. Композиция: слева место для текста (тёмный градиент), справа атмосферная городская фотография.
-Качество: высокое, детализированное. Не добавляй текст на изображение."""
-    
-    try:
-        response = await chatgpt_client.images.generate(
-            model="dall-e-2",
-            prompt=full_prompt,
-            size="512x512",
-            n=1
-        )
-        image_url = response.data[0].url
-        async with httpx.AsyncClient() as client:
-            img_response = await client.get(image_url)
-            return io.BytesIO(img_response.content)
-    except Exception as e:
-        logger.error(f"DALL-E ошибка: {e}")
-        return None
+Используй присланную фотографию как основу. Улучши её: cinematic color grading, контраст, мягкий свет.
+
+Стиль: минимализм, dark green overlay, cream white typography, warm yellow accent, Apple-style clean layout.
+
+Композиция: фото на весь фон, слева тёмный градиент, справа фото видно чище, крупный заголовок слева, ключевую фразу выделить жёлтым.
+
+Не добавляй логотипы. Не используй силуэты города.
+
+Текст для афиши:
+{user_text}"""
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS scheduled_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, photo_bytes BLOB, schedule_time TIMESTAMP, created_at TIMESTAMP, has_buttons BOOLEAN DEFAULT 1, has_watermark BOOLEAN DEFAULT 0, is_designed BOOLEAN DEFAULT 0, is_video BOOLEAN DEFAULT 0, is_text BOOLEAN DEFAULT 0, is_album BOOLEAN DEFAULT 0, video_file_id TEXT, channel_id TEXT, is_ai_generated BOOLEAN DEFAULT 0, ai_model TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, role TEXT, content TEXT, created_at TIMESTAMP)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS scheduled_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            text TEXT, photo_bytes BLOB, schedule_time TIMESTAMP, 
+            created_at TIMESTAMP, has_buttons BOOLEAN DEFAULT 1, 
+            has_watermark BOOLEAN DEFAULT 0, is_designed BOOLEAN DEFAULT 0, 
+            is_video BOOLEAN DEFAULT 0, is_text BOOLEAN DEFAULT 0, 
+            is_album BOOLEAN DEFAULT 0, video_file_id TEXT, channel_id TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS chat_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            user_id INTEGER, role TEXT, content TEXT, created_at TIMESTAMP)""")
     print("✅ База данных готова")
 
-def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, has_watermark=False, is_designed=False, is_video=False, is_text=False, is_album=False, video_file_id=None, channel_id=None, is_ai_generated=False, ai_model=None):
+def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, has_watermark=False, 
+                        is_designed=False, is_video=False, is_text=False, is_album=False, 
+                        video_file_id=None, channel_id=None):
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id, is_ai_generated, ai_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id, is_ai_generated, ai_model))
+        conn.execute("""INSERT INTO scheduled_posts 
+            (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, 
+             is_designed, is_video, is_text, is_album, video_file_id, channel_id) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark,
+             is_designed, is_video, is_text, is_album, video_file_id, channel_id))
 
 def get_pending_scheduled_posts():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        return [dict(row) for row in conn.execute("SELECT id, text, photo_bytes, schedule_time, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id, is_ai_generated, ai_model FROM scheduled_posts WHERE schedule_time <= ?", (datetime.now(),)).fetchall()]
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM scheduled_posts WHERE schedule_time <= ?", (datetime.now(),)).fetchall()]
 
 def delete_scheduled_post(post_id):
     with sqlite3.connect(DB_PATH) as conn:
@@ -133,12 +117,15 @@ def delete_scheduled_post(post_id):
 
 def save_chat_message(user_id, role, content):
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("INSERT INTO chat_history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)", (user_id, role, content, datetime.now()))
+        conn.execute("INSERT INTO chat_history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                    (user_id, role, content, datetime.now()))
 
 def get_chat_history(user_id, limit=10):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        return [dict(row) for row in conn.execute("SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", (user_id, limit)).fetchall()][::-1]
+        return [dict(row) for row in conn.execute(
+            "SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", 
+            (user_id, limit)).fetchall()][::-1]
 
 def clear_chat_history(user_id):
     with sqlite3.connect(DB_PATH) as conn:
@@ -154,44 +141,35 @@ def remove_emojis(text):
         "\U0001F1E0-\U0001F1FF"
         "\U00002702-\U000027B0"
         "\U000024C2-\U0001F251"
-        "\U0001F900-\U0001F9FF"
-        "\U0001FA70-\U0001FAFF"
         "]+", flags=re.UNICODE)
     return emoji_pattern.sub(r'', text)
 
 def format_caption(title, body):
     if body and body.strip():
         return f"<b>{title}</b>\n\n{body}"
-    else:
-        return f"<b>{title}</b>"
+    return f"<b>{title}</b>"
 
 def add_links_to_text(text, channel_link, has_buttons=True):
-    if not has_buttons:
-        return text
-    links = f"\n\n<a href=\"{channel_link}\">📢 Подписаться на канал</a>\n<a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
-    return text + links
+    if not has_buttons: return text
+    return text + f"\n\n<a href=\"{channel_link}\">📢 Подписаться на канал</a>\n<a href=\"{SUGGEST_LINK}\">📝 Прислать новость</a>"
 
 # ==================== ВОДЯНОЙ ЗНАК ====================
 def add_watermark_to_image(image):
     img = image.copy()
     if img.mode != 'RGBA': img = img.convert('RGBA')
-    
     watermark = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(watermark)
     font_size = min(img.width, img.height) // 12
-    
     font = None
-    for font_path in ["Montserrat-Bold.ttf", "arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]:
+    for font_path in ["Montserrat-Bold.ttf", "arial.ttf"]:
         try:
             if os.path.exists(font_path): font = ImageFont.truetype(font_path, font_size); break
         except: continue
     if font is None: font = ImageFont.load_default()
-    
     bbox = draw.textbbox((0, 0), WATERMARK_TEXT, font=font)
     x = (img.width - (bbox[2] - bbox[0])) // 2
     y = (img.height - (bbox[3] - bbox[1])) // 2
     draw.text((x, y), WATERMARK_TEXT, font=font, fill=(255, 255, 255, WATERMARK_OPACITY))
-    
     return Image.alpha_composite(img, watermark).convert('RGB')
 
 def add_watermark_only(photo_bytes):
@@ -201,25 +179,20 @@ def add_watermark_only(photo_bytes):
     output.seek(0)
     return output
 
-# ==================== СОЗДАНИЕ СТИЛЬНОГО ПОСТА ====================
+# ==================== НАЛОЖЕНИЕ ТЕКСТА ====================
 def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
-    if not photo_bytes or len(photo_bytes) == 0:
+    if not photo_bytes:
         raise ValueError("Фото пустое")
     
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
     w, h = img.size
-    
     target_ratio = 4/5
-    cur_ratio = w / h
-    if cur_ratio > target_ratio:
+    if w/h > target_ratio:
         new_w = int(h * target_ratio)
-        left = (w - new_w) // 2
-        img = img.crop((left, 0, left + new_w, h))
+        img = img.crop(((w - new_w)//2, 0, (w + new_w)//2, h))
     else:
         new_h = int(w / target_ratio)
-        top = (h - new_h) // 2
-        img = img.crop((0, top, w, top + new_h))
-    
+        img = img.crop((0, (h - new_h)//2, w, (h + new_h)//2))
     img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
     w, h = img.size
     img = ImageEnhance.Brightness(img).enhance(0.7)
@@ -232,12 +205,10 @@ def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
         grad.putpixel((x, 0), a)
     grad = grad.resize((gradient_width, h))
     overlay_alpha.paste(grad, (0, 0))
-    
     black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
     base = img.convert("RGBA")
     overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
     img = Image.alpha_composite(base, overlay).convert("RGB")
-    
     draw = ImageDraw.Draw(img)
     
     try:
@@ -247,10 +218,8 @@ def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
     except:
         font_title = font_text = font_small = ImageFont.load_default()
     
-    line_x = 60
-    line_y = 80
     for i in range(3):
-        draw.line([(line_x + i*80, line_y), (line_x + i*80 + 50, line_y)], fill=(218, 165, 32), width=3)
+        draw.line([(60 + i*80, 80), (60 + i*80 + 50, 80)], fill=(218, 165, 32), width=3)
     
     title_y = 140
     title_lines = []
@@ -258,68 +227,57 @@ def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
     for word in title.split():
         test_line = current_line + " " + word if current_line else word
         try:
-            bbox = font_title.getbbox(test_line)
-            width = bbox[2] - bbox[0]
+            width = font_title.getbbox(test_line)[2] - font_title.getbbox(test_line)[0]
         except:
             width = len(test_line) * 40
         if width <= w - 120:
             current_line = test_line
         else:
-            if current_line:
-                title_lines.append(current_line)
+            if current_line: title_lines.append(current_line)
             current_line = word
-    if current_line:
-        title_lines.append(current_line)
+    if current_line: title_lines.append(current_line)
     
-    for i, line in enumerate(title_lines):
-        for offset in [(2,2), (2,-2), (-2,2), (-2,-2)]:
+    for i, line in enumerate(title_lines[:3]):
+        for offset in [(2,2)]:
             draw.text((60 + offset[0], title_y + i*85 + offset[1]), line, font=font_title, fill=(0,0,0))
-        if i == 0:
-            draw.text((60, title_y + i*85), line, font=font_title, fill=(255, 215, 0))
-        else:
-            draw.text((60, title_y + i*85), line, font=font_title, fill=(255,255,255))
+        draw.text((60, title_y + i*85), line, font=font_title, fill=(255, 215, 0) if i == 0 else (255,255,255))
     
-    text_y = title_y + len(title_lines)*85 + 60
-    text_lines = []
-    for paragraph in text.split('\n'):
-        words = paragraph.split()
-        current_line = ""
+    if text:
+        text_y = title_y + len(title_lines)*85 + 60
+        words = text.split()[:60]
+        lines = []
+        current = ""
         for word in words:
-            test_line = current_line + " " + word if current_line else word
-            try:
-                bbox = font_text.getbbox(test_line)
-                width = bbox[2] - bbox[0]
-            except:
-                width = len(test_line) * 20
-            if width <= w - 120:
-                current_line = test_line
+            test = current + " " + word if current else word
+            if len(test) * 25 < w - 120:
+                current = test
             else:
-                if current_line:
-                    text_lines.append(current_line)
-                current_line = word
-        if current_line:
-            text_lines.append(current_line)
-        text_lines.append("")
-    
-    for i, line in enumerate(text_lines):
-        if line:
+                if current: lines.append(current)
+                current = word
+        if current: lines.append(current)
+        for i, line in enumerate(lines[:8]):
             for offset in [(1,1)]:
-                draw.text((60 + offset[0], text_y + i*40 + offset[1]), line, font=font_text, fill=(0,0,0))
-            draw.text((60, text_y + i*40), line, font=font_text, fill=(240,240,240))
+                draw.text((60 + offset[0], text_y + i*45 + offset[1]), line, font=font_text, fill=(0,0,0))
+            draw.text((60, text_y + i*45), line, font=font_text, fill=(240,240,240))
+        call_y = text_y + len(lines)*45 + 40
+    else:
+        call_y = 350
     
-    call_y = text_y + len(text_lines)*40 + 40
-    for offset in [(1,1)]:
-        draw.text((60 + offset[0], call_y + offset[1]), f"✨ {call_to_action}", font=font_small, fill=(0,0,0))
-    draw.text((60, call_y), f"✨ {call_to_action}", font=font_small, fill=(255, 215, 0))
+    if call_to_action:
+        for offset in [(1,1)]:
+            draw.text((60 + offset[0], call_y + offset[1]), f"✨ {call_to_action}", font=font_small, fill=(0,0,0))
+        draw.text((60, call_y), f"✨ {call_to_action}", font=font_small, fill=(255, 215, 0))
+        hash_y = call_y + 50
+    else:
+        hash_y = call_y
     
-    hash_y = call_y + 50
-    for offset in [(1,1)]:
-        draw.text((60 + offset[0], hash_y + offset[1]), hashtags, font=font_small, fill=(0,0,0))
-    draw.text((60, hash_y), hashtags, font=font_small, fill=(180,180,180))
+    if hashtags:
+        for offset in [(1,1)]:
+            draw.text((60 + offset[0], hash_y + offset[1]), hashtags, font=font_small, fill=(0,0,0))
+        draw.text((60, hash_y), hashtags, font=font_small, fill=(180,180,180))
     
-    line_y_bottom = h - 60
     for i in range(3):
-        draw.line([(60 + i*80, line_y_bottom), (60 + i*80 + 50, line_y_bottom)], fill=(218, 165, 32), width=2)
+        draw.line([(60 + i*80, h - 60), (60 + i*80 + 50, h - 60)], fill=(218, 165, 32), width=2)
     
     output = io.BytesIO()
     img.save(output, format="JPEG", quality=90)
@@ -348,8 +306,8 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     overlay_alpha.paste(grad, (0, h - gh))
     overlay = Image.composite(Image.new("RGBA", (w, h), (0, 0, 0, 255)), Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-    
     draw = ImageDraw.Draw(img)
+    
     font = None
     for font_path in ["Montserrat-Black.ttf", "Montserrat-Bold.ttf"]:
         try:
@@ -360,7 +318,6 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     margin_x = int(img.width * 0.05)
     margin_bottom = int(img.height * 0.08)
     max_width = img.width - 2 * margin_x
-    
     title = title_text.upper()[:200]
     words = title.split()
     lines = []
@@ -390,28 +347,50 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
         draw.text((x, y), line, font=font, fill=(255,255,255))
         y += line_height + spacing
     
-    if add_watermark_flag: img = add_watermark_to_image(img)
+    if add_watermark_flag:
+        img = add_watermark_to_image(img)
     
     output = io.BytesIO()
     img.save(output, format="JPEG", quality=85)
     output.seek(0)
     return output
 
-# ==================== AI ЧАТ ====================
-async def chat_with_gpt(user_id, message):
-    if not chatgpt_client:
-        return "❌ ChatGPT API не настроен"
+# ==================== ГЕНЕРАЦИЯ АФИШИ ====================
+async def create_afisha_with_openai(photo_bytes, user_text):
+    if not openai_client:
+        return None, "❌ OpenAI API не настроен"
     
+    prompt = AFISHA_STYLE_PROMPT.format(user_text=user_text)
+    
+    try:
+        # Пытаемся редактировать изображение
+        response = await openai_client.images.edit(
+            model="dall-e-2",
+            image=photo_bytes,
+            prompt=prompt[:1000],
+            size="512x512",
+            n=1
+        )
+        image_url = response.data[0].url
+        async with httpx.AsyncClient() as client:
+            img_response = await client.get(image_url)
+            return io.BytesIO(img_response.content), None
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        return None, f"❌ Ошибка: {e}"
+
+# ==================== AI ФУНКЦИИ ====================
+async def chat_with_gpt(user_id, message):
+    if not openai_client:
+        return "❌ OpenAI API не настроен"
     save_chat_message(user_id, "user", message)
     history = get_chat_history(user_id, 10)
-    
-    messages = [{"role": "system", "content": "Ты дружелюбный и полезный ассистент. Отвечай кратко, по делу."}]
+    messages = [{"role": "system", "content": "Ты дружелюбный помощник. Отвечай кратко."}]
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": message})
-    
     try:
-        response = await chatgpt_client.chat.completions.create(
+        response = await openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=messages,
             temperature=0.7,
@@ -421,922 +400,427 @@ async def chat_with_gpt(user_id, message):
         save_chat_message(user_id, "assistant", reply)
         return reply
     except Exception as e:
-        logger.error(f"Ошибка ChatGPT: {e}")
         return f"❌ Ошибка: {e}"
+
+async def ai_process_deepseek(text):
+    if not deepseek_client:
+        return None, "❌ DeepSeek не настроен"
+    try:
+        response = await deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "system", "content": DEEPSEEK_PROMPT}, {"role": "user", "content": text}],
+            temperature=0.7,
+            max_tokens=1000
+        )
+        result = response.choices[0].message.content
+        title = ""; body = ""
+        for line in result.split('\n'):
+            if line.startswith("ЗАГОЛОВОК:"):
+                title = line.replace("ЗАГОЛОВОК:", "").strip()
+            elif line.startswith("ТЕКСТ:"):
+                body = line.replace("ТЕКСТ:", "").strip()
+        if not body: body = result
+        if not title and body: title = body[:50]
+        return f"{title}\n\n{body}", None
+    except Exception as e:
+        return None, str(e)
+
+async def generate_gpt_post(text):
+    if not openai_client:
+        return None, "❌ OpenAI не настроен"
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "system", "content": CHATGPT_POST_PROMPT}, {"role": "user", "content": text}],
+            temperature=0.8,
+            max_tokens=500
+        )
+        result = response.choices[0].message.content
+        title = ""; body = ""; call = ""; hashtags = ""
+        for line in result.split('\n'):
+            if line.startswith("ЗАГОЛОВОК:"): title = line.replace("ЗАГОЛОВОК:", "").strip()
+            elif line.startswith("ТЕКСТ:"): body = line.replace("ТЕКСТ:", "").strip()
+            elif line.startswith("ПРИЗЫВ:"): call = line.replace("ПРИЗЫВ:", "").strip()
+            elif line.startswith("ХЭШТЕГИ:"): hashtags = line.replace("ХЭШТЕГИ:", "").strip()
+        if not title: title = text[:50]
+        if not call: call = "Подпишитесь"
+        if not hashtags: hashtags = "#Minsk"
+        return f"{title}\n\n{body}\n\n✨ {call}\n\n{hashtags}", None
+    except Exception as e:
+        return None, str(e)
 
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📸 Отправить фото для поста", callback_data="send_media_info")],
+        [InlineKeyboardButton("🎨 Афиша (фото+текст)", callback_data="create_afisha")],
+        [InlineKeyboardButton("✨ Стильный пост (GPT)", callback_data="create_style_post")],
         [InlineKeyboardButton("🤖 Чат с GPT", callback_data="start_gpt_chat")],
-        [InlineKeyboardButton("✨ Сделать стильный пост (GPT)", callback_data="create_style_post")],
-        [InlineKeyboardButton("🎨 Сгенерировать афишу (DALL-E)", callback_data="generate_afisha")]
+        [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_menu")]
     ])
 
-def get_gpt_chat_keyboard():
+def get_preview_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗑 Очистить историю", callback_data="clear_chat_history")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_with_buttons")],
+        [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_no_buttons")],
+        [InlineKeyboardButton("🎨 Оформить", callback_data="design_post")],
+        [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
+        [InlineKeyboardButton("🤖 DeepSeek", callback_data="ai_process")],
+        [InlineKeyboardButton("✨ GPT стиль", callback_data="gpt_style")],
+        [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_menu")],
+        [InlineKeyboardButton("🏠 Меню", callback_data="back_to_menu")]
     ])
 
 def get_afisha_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_photo_with_buttons")],
-        [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_photo_no_buttons")],
-        [InlineKeyboardButton("🔄 Новая афиша", callback_data="generate_afisha")],
-        [InlineKeyboardButton("🎨 Оформить", callback_data="design_post")],
-        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
-        [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_photo_menu")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
+        [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_with_buttons")],
+        [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_no_buttons")],
+        [InlineKeyboardButton("🔄 Новая афиша", callback_data="create_afisha")],
+        [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_afisha_text")],
+        [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_menu")],
+        [InlineKeyboardButton("🏠 Меню", callback_data="back_to_menu")]
     ])
 
-def get_channel_selection_keyboard(original_callback, has_buttons):
+def get_chat_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Выйти", callback_data="exit_chat")]])
+
+def get_channel_keyboard(action):
     keyboard = []
     for key, channel in CHANNELS.items():
         if channel["chat_id"]:
-            keyboard.append([InlineKeyboardButton(channel["name"], callback_data=f"select_channel:{key}:{original_callback}:{has_buttons}")])
+            keyboard.append([InlineKeyboardButton(channel["name"], callback_data=f"{action}:{key}")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(keyboard)
 
-def get_album_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Опубликовать альбом с кнопками", callback_data="publish_album_with_buttons")],
-        [InlineKeyboardButton("📤 Опубликовать альбом без кнопок", callback_data="publish_album_no_buttons")],
-        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_album_text")],
-        [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_album")],
-        [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_album_menu")]
-    ])
-
-def get_preview_keyboard(media_type):
-    if media_type == "video":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_video_with_buttons")],
-            [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_video_no_buttons")],
-            [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
-            [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_video")],
-            [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_video_menu")]
-        ])
-    elif media_type == "text":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_text_with_buttons")],
-            [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_text_no_buttons")],
-            [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
-            [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_text")],
-            [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_text_menu")]
-        ])
-    elif media_type == "album":
-        return get_album_keyboard()
-    elif media_type == "designed":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Опубликовать (с кнопками)", callback_data="publish_designed_with_buttons")],
-            [InlineKeyboardButton("✅ Опубликовать (без кнопок)", callback_data="publish_designed_no_buttons")],
-            [InlineKeyboardButton("💧 Добавить водяной знак", callback_data="add_watermark_to_designed")],
-            [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_designed_text")],
-            [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_designed_menu")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_photo_preview")]
-        ])
-    elif media_type == "watermarked":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Опубликовать (с кнопками)", callback_data="publish_watermarked_with_buttons")],
-            [InlineKeyboardButton("📤 Опубликовать (без кнопок)", callback_data="publish_watermarked_no_buttons")],
-            [InlineKeyboardButton("🎨 Оформить", callback_data="design_from_watermark")],
-            [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_watermarked_menu")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_original")]
-        ])
-    else:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Опубликовать с кнопками", callback_data="publish_photo_with_buttons")],
-            [InlineKeyboardButton("📤 Опубликовать без кнопок", callback_data="publish_photo_no_buttons")],
-            [InlineKeyboardButton("🎨 Оформить пост", callback_data="design_post")],
-            [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
-            [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
-            [InlineKeyboardButton("🤖 Обработать текст (DeepSeek)", callback_data="ai_process_photo")],
-            [InlineKeyboardButton("✨ Сделать стильный пост (GPT)", callback_data="create_style_post_from_photo")],
-            [InlineKeyboardButton("🎨 Сгенерировать афишу (DALL-E)", callback_data="generate_afisha_from_photo")],
-            [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_photo_menu")]
-        ])
-
-def get_ai_result_keyboard(media_type):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_photo_with_buttons")],
-        [InlineKeyboardButton("🎨 Оформить", callback_data="design_post")],
-        [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
-        [InlineKeyboardButton("📝 Новый запрос DeepSeek", callback_data="ai_custom_request_photo")],
-        [InlineKeyboardButton("✨ Сделать стильный пост (GPT)", callback_data="create_style_post_from_photo")],
-        [InlineKeyboardButton("🎨 Сгенерировать афишу (DALL-E)", callback_data="generate_afisha_from_photo")],
-        [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_photo_menu")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_photo_preview")]
-    ])
-
-def get_custom_request_keyboard(media_type):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"back_to_ai_result_{media_type}")]])
-
-def get_schedule_keyboard(prefix):
-    times = [("Через 30 мин", "30min"), ("9:05", "9:05"), ("10:05", "10:05"), ("11:07", "11:07"), ("12:08", "12:08"), ("13:09", "13:09"), ("14:10", "14:10"), ("15:11", "15:11"), ("16:12", "16:12"), ("17:13", "17:13"), ("18:14", "18:14"), ("19:07", "19:07"), ("20:08", "20:08"), ("21:09", "21:09"), ("22:11", "22:11"), ("22:45", "22:45")]
+def get_schedule_keyboard():
+    times = [("30 мин", "30"), ("9:05", "9:05"), ("10:05", "10:05"), ("11:07", "11:07"),
+             ("12:08", "12:08"), ("13:09", "13:09"), ("14:10", "14:10"), ("15:11", "15:11"),
+             ("16:12", "16:12"), ("17:13", "17:13"), ("18:14", "18:14"), ("19:07", "19:07"),
+             ("20:08", "20:08"), ("21:09", "21:09"), ("22:11", "22:11"), ("22:45", "22:45")]
     keyboard = []
     row = []
-    for label, value in times:
-        row.append(InlineKeyboardButton(label, callback_data=f"{prefix}:{value}"))
+    for label, val in times:
+        row.append(InlineKeyboardButton(label, callback_data=f"schedule:{val}"))
         if len(row) == 2: keyboard.append(row); row = []
     if row: keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data=f"back_to_{prefix.replace('schedule_', '').replace('_menu', '')}_preview")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_preview")])
     return InlineKeyboardMarkup(keyboard)
 
 # ==================== ОТПРАВКА В КАНАЛ ====================
-async def send_to_channel(context, channel_id, channel_link, photo_bytes=None, file_id=None, text="", has_buttons=True, is_video=False, is_text=False, is_album=False, album_photos=None, video_file_id=None):
+async def send_to_channel(context, channel_id, channel_link, photo_bytes, text, has_buttons=True):
     lines = text.split('\n')
     title = lines[0] if lines else ""
-    
-    body_lines = []
-    found_empty = False
-    for line in lines[1:]:
-        if not found_empty and line.strip() == "":
-            found_empty = True
-            continue
-        if found_empty:
-            body_lines.append(line)
-        elif line.strip():
-            body_lines.append(line)
-    
-    body = '\n'.join(body_lines).strip()
-    
-    if body:
-        caption = f"<b>{title}</b>\n\n{body}"
-    else:
-        caption = f"<b>{title}</b>"
-    
-    caption = add_links_to_text(caption, channel_link, has_buttons)
-    
+    body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+    caption = add_links_to_text(format_caption(title, body), channel_link, has_buttons)
     try:
-        if is_video and video_file_id:
-            await context.bot.send_video(chat_id=channel_id, video=video_file_id, caption=caption, parse_mode="HTML", disable_web_page_preview=True)
-        elif is_album and album_photos:
-            media_group = []
-            for i, photo in enumerate(album_photos[:10]):
-                if i == 0:
-                    media_group.append({"type": "photo", "media": photo, "caption": caption, "parse_mode": "HTML"})
-                else:
-                    media_group.append({"type": "photo", "media": photo})
-            await context.bot.send_media_group(chat_id=channel_id, media=media_group)
-        elif is_text:
-            await context.bot.send_message(chat_id=channel_id, text=caption, parse_mode="HTML", disable_web_page_preview=True)
-        elif photo_bytes:
-            await context.bot.send_photo(chat_id=channel_id, photo=photo_bytes, caption=caption, parse_mode="HTML", disable_web_page_preview=True)
-        elif file_id:
-            await context.bot.send_photo(chat_id=channel_id, photo=file_id, caption=caption, parse_mode="HTML", disable_web_page_preview=True)
+        await context.bot.send_photo(chat_id=channel_id, photo=photo_bytes, caption=caption, parse_mode="HTML", disable_web_page_preview=True)
         return True
     except Exception as e:
-        logger.error(f"Ошибка отправки в канал {channel_id}: {e}")
+        logger.error(f"Ошибка: {e}")
         return False
 
-# ==================== ОБРАБОТЧИКИ ====================
+# ==================== ОСНОВНЫЕ ОБРАБОТЧИКИ ====================
 async def start(update, context):
     await update.message.reply_text(
         "🤖 *MINSK NEWS BOT*\n\n"
-        "📸 *Отправьте фото* для создания поста\n"
-        "🤖 *Чат с GPT* - общайтесь с ИИ\n"
-        "✨ *Стильный пост* - создайте премиальный пост через GPT\n"
-        "🎨 *Сгенерировать афишу* - создайте изображение через DALL-E 2\n\n"
-        "👇 Выберите действие:",
+        "🎨 *Афиша* - фото + текст → стильная афиша\n"
+        "✨ *Стильный пост* - текст → пост с дизайном\n"
+        "🤖 *Чат с GPT* - общение с ИИ\n"
+        "📤 *Опубликовать* - выбрать канал\n\n"
+        "Также доступны: оформление, водяной знак, обработка DeepSeek, отложенная публикация",
         parse_mode="Markdown", reply_markup=get_main_keyboard())
 
-async def handle_photo(update, context):
-    msg = update.message
-    
-    if msg.media_group_id:
-        album_key = f"album_{msg.media_group_id}"
-        if album_key not in context.chat_data:
-            context.chat_data[album_key] = []
-        photo = msg.photo[-1]
-        context.chat_data[album_key].append(photo.file_id)
-        if not context.chat_data.get("processing_album"):
-            asyncio.create_task(handle_album(update, context))
+# === АФИША ===
+async def create_afisha(update, context):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("📸 Отправьте фото для афиши:")
+    context.user_data["state"] = "afisha_photo"
+
+async def handle_afisha_photo(update, context):
+    if context.user_data.get("state") != "afisha_photo":
         return
-    
-    photo = msg.photo[-1]
+    photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     photo_bytes = await file.download_as_bytearray()
-    text = remove_emojis(msg.caption or "")
-    context.chat_data["pending"] = {
-        "type": "photo", 
-        "text": text, 
-        "file_id": photo.file_id, 
-        "photo_bytes": photo_bytes, 
-        "original": photo_bytes
-    }
-    await msg.reply_photo(photo=photo.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
+    context.user_data["afisha_photo_bytes"] = photo_bytes
+    context.user_data["state"] = "afisha_text"
+    await update.message.reply_text("✅ Фото получено! Теперь отправьте текст для афиши:")
 
-async def handle_album(update, context):
-    message = update.message
-    if not message.media_group_id: return
-    if context.chat_data.get("processing_album") == message.media_group_id: return
-    
-    context.chat_data["processing_album"] = message.media_group_id
-    await asyncio.sleep(0.5)
-    
-    album_photos = context.chat_data.get(f"album_{message.media_group_id}", [])
-    if not album_photos and message.photo:
-        album_photos.append(message.photo[-1].file_id)
-    if not album_photos:
-        context.chat_data["processing_album"] = None
+async def handle_afisha_text(update, context):
+    if context.user_data.get("state") != "afisha_text":
         return
-    
-    caption = remove_emojis(message.caption or "")
-    photo_bytes_list = []
-    for file_id in album_photos[:10]:
-        try:
-            file = await context.bot.get_file(file_id)
-            photo_bytes = await file.download_as_bytearray()
-            photo_bytes_list.append(photo_bytes)
-        except Exception as e:
-            logger.error(f"Ошибка загрузки фото: {e}")
-    
-    context.chat_data["pending"] = {
-        "type": "album",
-        "text": caption,
-        "album_photos": album_photos[:10],
-        "album_photos_bytes": photo_bytes_list
-    }
-    
-    first_photo = album_photos[0]
-    await message.reply_photo(photo=first_photo, caption=f"📸 *Альбом из {len(album_photos)} фото*\n\nТекст: {caption[:200]}...\n\nВыберите действие:", parse_mode="Markdown", reply_markup=get_album_keyboard())
-    context.chat_data["processing_album"] = None
-
-async def handle_text(update, context):
-    if context.user_data.get("gpt_chat_mode"):
-        user_id = update.effective_user.id
-        message = update.message.text
-        if message.lower() == "/exit":
-            context.user_data["gpt_chat_mode"] = False
-            await update.message.reply_text("👋 Выход из чата с GPT. Используйте /start для возврата в меню.")
-            return
-        await update.message.reply_text("🤔 Думаю...")
-        response = await chat_with_gpt(user_id, message)
-        await update.message.reply_text(response, parse_mode="Markdown", reply_markup=get_gpt_chat_keyboard())
-        return
-    
-    if context.user_data.get("waiting_for_custom_request"):
-        return
-    if context.user_data.get("waiting_for_afisha_prompt"):
-        context.user_data["afisha_prompt"] = update.message.text
-        context.user_data["waiting_for_afisha_prompt"] = False
-        await update.message.reply_text("🎨 Генерирую афишу через DALL-E 2... 10-20 секунд")
-        await generate_afisha_from_prompt(update, context)
-        return
-    
     text = update.message.text
-    if not text or text.startswith('/'): return
-    context.chat_data["pending"] = {"type": "text", "text": remove_emojis(text)}
-    await update.message.reply_text(f"📝 Текст:\n\n{text[:500]}...\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
+    photo_bytes = context.user_data.get("afisha_photo_bytes")
+    if not photo_bytes:
+        await update.message.reply_text("❌ Ошибка, начните заново", reply_markup=get_main_keyboard())
+        return
+    await update.message.reply_text("🎨 Создаю афишу... 10-20 секунд")
+    result, error = await create_afisha_with_openai(photo_bytes, text)
+    if result:
+        context.user_data["pending"] = {"type": "photo", "text": text, "photo_bytes": result.getvalue()}
+        context.user_data["state"] = None
+        await update.message.reply_photo(photo=result, caption=f"✨ Афиша готова!\n\n{text}", reply_markup=get_afisha_keyboard())
+    else:
+        await update.message.reply_text(f"❌ {error}", reply_markup=get_main_keyboard())
 
-async def handle_video(update, context):
-    msg = update.message
-    text = remove_emojis(msg.caption or "")
-    context.chat_data["pending"] = {"type": "video", "text": text, "file_id": msg.video.file_id}
-    await msg.reply_video(video=msg.video.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("video"))
+# === СТИЛЬНЫЙ ПОСТ ===
+async def create_style_post(update, context):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("📝 Отправьте текст для стильного поста:")
+    context.user_data["state"] = "style_text"
 
-# ==================== GPT ЧАТ ====================
+async def handle_style_text(update, context):
+    if context.user_data.get("state") != "style_text":
+        return
+    text = update.message.text
+    await update.message.reply_text("✨ Генерирую...")
+    result, error = await generate_gpt_post(text)
+    if result:
+        context.user_data["pending"] = {"type": "photo", "text": result, "photo_bytes": None}
+        await update.message.reply_text(f"✨ *Сгенерированный пост:*\n\n{result}\n\nОтправьте фото для оформления или нажмите «Опубликовать»", parse_mode="Markdown", reply_markup=get_preview_keyboard())
+    else:
+        await update.message.reply_text(f"❌ {error}")
+
+# === ЧАТ GPT ===
 async def start_gpt_chat(update, context):
     query = update.callback_query
     await query.answer()
-    user_id = update.effective_user.id
-    context.user_data["gpt_chat_mode"] = True
-    clear_chat_history(user_id)
-    await query.message.reply_text("🤖 *Чат с GPT активирован!*\n\nПросто отправляйте сообщения.\n/exit для выхода.\n\n👇 Начните общение!", parse_mode="Markdown", reply_markup=get_gpt_chat_keyboard())
+    context.user_data["chat_mode"] = True
+    await query.message.reply_text("🤖 Чат с GPT активирован!\nОтправляйте сообщения.\n/exit для выхода.", reply_markup=get_chat_keyboard())
 
-async def clear_chat_history_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-    user_id = update.effective_user.id
-    clear_chat_history(user_id)
-    await query.message.reply_text("🗑 История диалога очищена!")
-
-# ==================== ГЕНЕРАЦИЯ АФИШИ DALL-E ====================
-async def generate_afisha(update, context):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("📝 Напишите тему для афиши (например: Фуд-корт у дворца спорта):")
-    context.user_data["waiting_for_afisha_prompt"] = True
-
-async def generate_afisha_from_prompt(update, context):
-    prompt = context.user_data.get("afisha_prompt", "")
-    if not prompt:
+async def handle_chat_message(update, context):
+    if not context.user_data.get("chat_mode"):
         return
-    
-    img_bytes = await generate_afisha_image(prompt)
-    if img_bytes:
-        title = prompt[:50]
-        body = "Узнайте подробности в нашем канале"
-        call = "Подпишитесь на канал"
-        hashtags = "#Minsk #News"
-        
-        styled = create_city_post(img_bytes.getvalue(), title, body, call, hashtags)
-        final_text = f"{title}\n\n{body}\n\n✨ {call}\n\n{hashtags}"
-        
-        context.chat_data["pending"] = {
-            "type": "photo",
-            "text": final_text,
-            "photo_bytes": styled.getvalue(),
-            "original": img_bytes.getvalue()
-        }
-        
-        await update.message.reply_photo(photo=styled, caption=f"✨ Афиша сгенерирована!\n\n{prompt}\n\nВыберите действие:", reply_markup=get_afisha_keyboard())
-    else:
-        await update.message.reply_text("❌ Ошибка генерации афиши. Попробуйте другой запрос.")
-
-async def generate_afisha_from_photo(update, context):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("📝 Напишите тему для афиши:")
-    context.user_data["waiting_for_afisha_prompt"] = True
-
-# ==================== СТИЛЬНЫЙ ПОСТ ====================
-async def create_style_post(update, context, photo_bytes=None):
-    query = update.callback_query
-    await query.answer()
-    
-    if not chatgpt_client:
-        await query.message.reply_text("❌ ChatGPT API не настроен. Добавьте переменную CHATGPT_API_KEY")
+    text = update.message.text
+    if text == "/exit":
+        context.user_data["chat_mode"] = False
+        await update.message.reply_text("👋 Выход из чата.", reply_markup=get_main_keyboard())
         return
-    
-    pending = context.chat_data.get("pending", {})
-    text = pending.get("text", "")
-    
-    if not text:
-        await query.message.reply_text("❌ Нет текста для обработки. Сначала отправьте текст или фото с подписью.")
-        return
-    
-    if not photo_bytes and pending.get("type") == "photo":
-        photo_bytes = pending.get("original")
-    
-    await query.message.reply_text("✨ Генерирую стильный пост через ChatGPT...")
-    
-    try:
-        response = await chatgpt_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "system", "content": CHATGPT_POST_PROMPT}, {"role": "user", "content": f"Создай пост на тему: {text}"}],
-            temperature=0.8,
-            max_tokens=500
-        )
-        
-        result = response.choices[0].message.content
-        
-        title = ""; body = ""; call_to_action = ""; hashtags = ""
-        for line in result.split('\n'):
-            if line.startswith("ЗАГОЛОВОК:"): title = line.replace("ЗАГОЛОВОК:", "").strip()
-            elif line.startswith("ТЕКСТ:"): body = line.replace("ТЕКСТ:", "").strip()
-            elif line.startswith("ПРИЗЫВ:"): call_to_action = line.replace("ПРИЗЫВ:", "").strip()
-            elif line.startswith("ХЭШТЕГИ:"): hashtags = line.replace("ХЭШТЕГИ:", "").strip()
-        
-        if not title: title = text[:50]
-        if not call_to_action: call_to_action = "Подпишитесь на наш канал!"
-        if not hashtags: hashtags = "#Minsk #MinskNews #MinskCity"
-        
-        if photo_bytes:
-            await query.message.reply_text("🎨 Создаю визуальное оформление...")
-            styled_photo = create_city_post(photo_bytes, title, body, call_to_action, hashtags)
-            final_text = f"{title}\n\n{body}\n\n✨ {call_to_action}\n\n{hashtags}"
-            context.chat_data["pending"]["text"] = final_text
-            context.chat_data["pending"]["photo_bytes"] = styled_photo.getvalue()
-            await query.message.reply_photo(photo=styled_photo, caption=f"{final_text}\n\n✅ Стильный пост создан!", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
-        else:
-            await query.message.reply_text(f"✨ *Сгенерированный пост:*\n\n📰 *{title}*\n\n📝 {body}\n\n✨ {call_to_action}\n\n{hashtags}\n\nℹ️ Для визуального оформления отправьте фото.", parse_mode="Markdown", reply_markup=get_ai_result_keyboard("photo"))
-            context.chat_data["pending"]["text"] = f"{title}\n\n{body}\n\n✨ {call_to_action}\n\n{hashtags}"
-    except Exception as e:
-        logger.error(f"Ошибка GPT: {e}")
-        await query.message.reply_text(f"❌ Ошибка: {e}")
+    await update.message.reply_text("🤔 Думаю...")
+    response = await chat_with_gpt(update.effective_user.id, text)
+    await update.message.reply_text(response, reply_markup=get_chat_keyboard())
 
-async def create_style_post_from_photo(update, context):
+# === ОБЩИЕ ФУНКЦИИ ===
+async def publish_with_selection(update, context, has_buttons):
     query = update.callback_query
     await query.answer()
-    pending = context.chat_data.get("pending", {})
-    if pending.get("type") != "photo":
-        await query.message.reply_text("❌ Сначала отправьте фото с подписью")
+    pending = context.user_data.get("pending") or context.chat_data.get("pending")
+    if not pending or not pending.get("photo_bytes"):
+        await query.message.reply_text("❌ Нет готового поста. Сначала создайте афишу или стильный пост.")
         return
-    await create_style_post(update, context, pending.get("original"))
+    context.user_data["publish_data"] = {"photo": pending["photo_bytes"], "text": pending["text"], "has_buttons": has_buttons}
+    await query.message.reply_text("📢 Выберите канал:", reply_markup=get_channel_keyboard("publish"))
 
-# ==================== ПУБЛИКАЦИЯ С ВЫБОРОМ КАНАЛА ====================
-async def publish_with_channel_selection(update, context, media_type, has_buttons):
+async def execute_publish(update, context):
     query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("📢 *Куда публикуем?*\n\nВыберите канал для публикации:", parse_mode="Markdown", reply_markup=get_channel_selection_keyboard(media_type, has_buttons))
-
-async def execute_publish(update, context, channel_key, media_type, has_buttons):
-    query = update.callback_query
-    await query.answer()
-    
-    channel = CHANNELS.get(channel_key)
-    if not channel or not channel["chat_id"]:
-        await query.message.reply_text("❌ Канал не настроен.")
-        return
-    
-    pending = context.chat_data.get("pending", {})
-    
-    if media_type == "photo":
-        if pending.get("type") != "photo":
-            await query.message.reply_text("❌ Нет фото")
+    data = query.data
+    if data.startswith("publish:"):
+        channel_key = data.split(":")[1]
+        channel = CHANNELS.get(channel_key)
+        if not channel or not channel["chat_id"]:
+            await query.message.reply_text("❌ Канал не настроен")
             return
-        success = await send_to_channel(context, channel["chat_id"], channel["link"], file_id=pending["file_id"], text=pending["text"], has_buttons=has_buttons)
-    elif media_type == "album":
-        if pending.get("type") != "album":
-            await query.message.reply_text("❌ Нет альбома")
-            return
-        album_photos = pending.get("album_photos_bytes", [])
-        if not album_photos:
-            await query.message.reply_text("❌ Не удалось загрузить фото")
-            return
-        success = await send_to_channel(context, channel["chat_id"], channel["link"], text=pending["text"], has_buttons=has_buttons, is_album=True, album_photos=album_photos)
-    elif media_type == "text":
-        if pending.get("type") != "text":
-            await query.message.reply_text("❌ Нет текста")
-            return
-        success = await send_to_channel(context, channel["chat_id"], channel["link"], text=pending["text"], has_buttons=has_buttons, is_text=True)
-    elif media_type == "video":
-        if pending.get("type") != "video":
-            await query.message.reply_text("❌ Нет видео")
-            return
-        success = await send_to_channel(context, channel["chat_id"], channel["link"], video_file_id=pending["file_id"], text=pending["text"], has_buttons=has_buttons, is_video=True)
-    elif media_type == "designed":
-        designed = context.chat_data.get("designed", {})
-        if not designed:
-            await query.message.reply_text("❌ Нет оформленного поста")
-            return
-        success = await send_to_channel(context, channel["chat_id"], channel["link"], photo_bytes=designed["photo_bytes"], text=designed["text"], has_buttons=has_buttons)
-    elif media_type == "watermarked":
-        watermarked = context.chat_data.get("watermarked", {})
-        if not watermarked:
-            await query.message.reply_text("❌ Нет поста с водяным знаком")
-            return
-        success = await send_to_channel(context, channel["chat_id"], channel["link"], photo_bytes=watermarked["photo_bytes"], text=watermarked["text"], has_buttons=has_buttons)
-    else:
-        await query.message.reply_text("❌ Неизвестный тип")
-        return
-    
-    if success:
-        await query.message.reply_text(f"✅ Опубликовано в {channel['name']}" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
-        if media_type in ["photo", "album", "text", "video"]:
-            context.chat_data.pop("pending", None)
-        elif media_type == "designed":
-            context.chat_data.pop("designed", None); context.chat_data.pop("pending", None)
-        elif media_type == "watermarked":
-            context.chat_data.pop("watermarked", None); context.chat_data.pop("pending", None)
-    else:
-        await query.message.reply_text(f"❌ Ошибка публикации в {channel['name']}")
-    
-    try: await query.message.delete()
-    except: pass
+        pub_data = context.user_data.get("publish_data", {})
+        success = await send_to_channel(context, channel["chat_id"], channel["link"], pub_data["photo"], pub_data["text"], pub_data.get("has_buttons", True))
+        await query.message.reply_text(f"✅ Опубликовано в {channel['name']}" if success else "❌ Ошибка")
+        context.user_data.pop("publish_data", None)
+    elif data == "back_to_menu":
+        await back_to_menu(update, context)
 
-async def publish_photo_with_buttons(update, context): await publish_with_channel_selection(update, context, "photo", True)
-async def publish_photo_no_buttons(update, context): await publish_with_channel_selection(update, context, "photo", False)
-async def publish_album_with_buttons(update, context): await publish_with_channel_selection(update, context, "album", True)
-async def publish_album_no_buttons(update, context): await publish_with_channel_selection(update, context, "album", False)
-async def publish_text_with_buttons(update, context): await publish_with_channel_selection(update, context, "text", True)
-async def publish_text_no_buttons(update, context): await publish_with_channel_selection(update, context, "text", False)
-async def publish_video_with_buttons(update, context): await publish_with_channel_selection(update, context, "video", True)
-async def publish_video_no_buttons(update, context): await publish_with_channel_selection(update, context, "video", False)
-async def publish_designed_with_buttons(update, context): await publish_with_channel_selection(update, context, "designed", True)
-async def publish_designed_no_buttons(update, context): await publish_with_channel_selection(update, context, "designed", False)
-async def publish_watermarked_with_buttons(update, context): await publish_with_channel_selection(update, context, "watermarked", True)
-async def publish_watermarked_no_buttons(update, context): await publish_with_channel_selection(update, context, "watermarked", False)
-
-# ==================== ВОДЯНОЙ ЗНАК ====================
-async def add_watermark_callback(update, context):
+async def design_post(update, context):
     query = update.callback_query
     await query.answer()
-    pending = context.chat_data.get("pending", {})
-    if pending.get("type") != "photo":
-        await query.message.reply_text("❌ Только для фото")
+    pending = context.user_data.get("pending") or context.chat_data.get("pending")
+    if not pending or not pending.get("photo_bytes"):
+        await query.message.reply_text("❌ Нет фото")
         return
-    await query.message.reply_text("💧 Добавляю водяной знак...")
-    photo_io = add_watermark_only(pending["original"])
-    context.chat_data["watermarked"] = {"text": pending["text"], "photo_bytes": photo_io.getvalue(), "original": pending["original"]}
-    await query.message.reply_photo(photo=photo_io, caption=f"{pending['text']}\n\n💧 Пост с водяным знаком!", parse_mode="HTML", reply_markup=get_preview_keyboard("watermarked"))
-    try: await query.message.delete()
-    except: pass
+    title = pending["text"].split('\n')[0][:150]
+    styled = process_photo(pending["photo_bytes"], title, False)
+    pending["photo_bytes"] = styled.getvalue()
+    await query.message.reply_photo(photo=styled, caption=f"{pending['text']}\n\n✅ Оформлено!", reply_markup=get_preview_keyboard())
 
-async def add_watermark_to_designed_callback(update, context):
+async def add_watermark(update, context):
     query = update.callback_query
     await query.answer()
-    designed = context.chat_data.get("designed", {})
-    if not designed:
-        await query.message.reply_text("❌ Нет оформленного поста")
+    pending = context.user_data.get("pending") or context.chat_data.get("pending")
+    if not pending or not pending.get("photo_bytes"):
+        await query.message.reply_text("❌ Нет фото")
         return
-    await query.message.reply_text("💧 Добавляю водяной знак...")
-    photo_io = add_watermark_only(designed["photo_bytes"])
-    context.chat_data["watermarked"] = {"text": designed["text"], "photo_bytes": photo_io.getvalue(), "original": designed["original"]}
-    await query.message.reply_photo(photo=photo_io, caption=f"{designed['text']}\n\n💧 Пост с водяным знаком!", parse_mode="HTML", reply_markup=get_preview_keyboard("watermarked"))
-    try: await query.message.delete()
-    except: pass
+    watermarked = add_watermark_only(pending["photo_bytes"])
+    pending["photo_bytes"] = watermarked.getvalue()
+    await query.message.reply_photo(photo=watermarked, caption=f"{pending['text']}\n\n💧 Водяной знак добавлен!", reply_markup=get_preview_keyboard())
 
-# ==================== ОФОРМЛЕНИЕ ====================
-async def design_post_callback(update, context):
+async def ai_process_deepseek_callback(update, context):
     query = update.callback_query
     await query.answer()
-    pending = context.chat_data.get("pending", {})
-    if pending.get("type") != "photo":
-        await query.message.reply_text("❌ Оформить можно только фото")
-        return
-    text = pending["text"]
-    title = text.split('\n')[0][:150] if text else "Пост"
-    await query.message.reply_text("🎨 Оформляю...")
-    photo_io = process_photo(pending["photo_bytes"], title, add_watermark_flag=False)
-    context.chat_data["designed"] = {"text": pending["text"], "photo_bytes": photo_io.getvalue(), "original": pending["photo_bytes"]}
-    await query.message.reply_photo(photo=photo_io, caption=f"{pending['text']}\n\n✅ Пост оформлен!", parse_mode="HTML", reply_markup=get_preview_keyboard("designed"))
-    try: await query.message.delete()
-    except: pass
-
-async def design_from_watermark_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-    watermarked = context.chat_data.get("watermarked", {})
-    if not watermarked:
-        await query.message.reply_text("❌ Нет поста")
-        return
-    title = watermarked["text"].split('\n')[0][:150] if watermarked["text"] else "Пост"
-    await query.message.reply_text("🎨 Оформляю...")
-    photo_io = process_photo(watermarked["original"], title, add_watermark_flag=False)
-    context.chat_data["designed"] = {"text": watermarked["text"], "photo_bytes": photo_io.getvalue(), "original": watermarked["original"]}
-    await query.message.reply_photo(photo=photo_io, caption=f"{watermarked['text']}\n\n✅ Пост оформлен!", parse_mode="HTML", reply_markup=get_preview_keyboard("designed"))
-    try: await query.message.delete()
-    except: pass
-
-# ==================== AI ОБРАБОТКА DeepSeek ====================
-async def ai_process_with_custom_request(update, context, media_type, custom_request=None):
-    query = update.callback_query
-    await query.answer()
-    
-    if not deepseek_client:
-        await query.message.reply_text("❌ API DeepSeek не настроен")
-        return
-    
-    prompt = DEEPSEEK_PROMPT
-    if custom_request:
-        prompt = f"{DEEPSEEK_PROMPT}\n\nДополнительные требования: {custom_request}"
-    
-    pending = context.chat_data.get("pending", {})
-    text = pending.get("text", "")
-    
-    if not text:
+    pending = context.user_data.get("pending") or context.chat_data.get("pending")
+    if not pending:
         await query.message.reply_text("❌ Нет текста")
         return
-    
     await query.message.reply_text("🤖 Обрабатываю через DeepSeek...")
-    
-    try:
-        response = await deepseek_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}],
-            temperature=0.7,
-            max_tokens=1000
-        )
-        
-        result = response.choices[0].message.content
-        
-        title = ""; body = ""
-        if "ЗАГОЛОВОК:" in result.upper() and "ТЕКСТ:" in result.upper():
-            title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', result, re.IGNORECASE | re.DOTALL)
-            if title_match: title = title_match.group(1).strip()
-            body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', result, re.IGNORECASE | re.DOTALL)
-            if body_match: body = body_match.group(1).strip()
-        else:
-            lines = result.strip().split('\n')
-            if len(lines) > 0 and len(lines[0]) < 100:
-                title = lines[0].replace('Заголовок:', '').replace('ЗАГОЛОВОК:', '').strip()
-                body = '\n'.join(lines[1:]).strip()
-            else:
-                body = result.strip()
-        
-        if not body: body = result.strip()
-        if not title and body: title = body[:50] + "..."
-        
-        new_text = f"{title}\n\n{body}"
-        pending["text"] = new_text
-        context.chat_data["pending"] = pending
-        
-        await query.message.reply_text(f"✅ *Готово!*\n\n📰 *{title}*\n\n📝 {body}\n\nВыберите действие:", parse_mode="Markdown", reply_markup=get_ai_result_keyboard(media_type))
-    except Exception as e:
-        logger.error(f"Ошибка DeepSeek: {e}")
-        await query.message.reply_text(f"❌ Ошибка: {e}")
-
-async def ai_process_photo_deepseek(update, context): await ai_process_with_custom_request(update, context, "photo", None)
-
-async def ai_custom_request_callback(update, context, media_type):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["waiting_for_custom_request"] = media_type
-    context.user_data["original_message_id"] = query.message.message_id
-    context.user_data["chat_id"] = query.message.chat_id
-    await query.message.reply_text("📝 *Напишите ваш запрос для ИИ*\n\nПримеры:\n• Сделай заголовок броским\n• Сократи до 300 символов\n• Добавь больше фактов\n\nИли /cancel для отмены.", parse_mode="Markdown", reply_markup=get_custom_request_keyboard(media_type))
-
-async def handle_custom_request_text(update, context):
-    media_type = context.user_data.get("waiting_for_custom_request")
-    if not media_type: return
-    custom_request = update.message.text
-    context.user_data["waiting_for_custom_request"] = None
-    await update.message.reply_text(f"✅ Запрос принят: *{custom_request[:100]}*...\n🤖 Обрабатываю...", parse_mode="Markdown")
-    try: await update.message.delete()
-    except: pass
-    
-    class FakeQuery:
-        def __init__(self, message, chat_id): self.message = message; self.message.chat_id = chat_id
-        async def answer(self): pass
-    
-    original_chat_id = context.user_data.get("chat_id")
-    original_message_id = context.user_data.get("original_message_id")
-    if original_chat_id and original_message_id:
-        try:
-            original_message = await context.bot.get_message(chat_id=original_chat_id, message_id=original_message_id)
-            fake_query = FakeQuery(original_message, original_chat_id)
-            await ai_process_with_custom_request(fake_query, context, media_type, custom_request)
-        except Exception as e:
-            await update.message.reply_text("❌ Не удалось обработать запрос")
+    result, error = await ai_process_deepseek(pending["text"])
+    if result:
+        pending["text"] = result
+        await query.message.reply_text(f"✅ Готово!\n\n{result}", reply_markup=get_preview_keyboard())
     else:
-        await update.message.reply_text("❌ Не удалось обработать запрос")
+        await query.message.reply_text(f"❌ {error}")
 
-async def back_to_ai_result_callback(update, context, media_type):
+async def gpt_style_callback(update, context):
     query = update.callback_query
     await query.answer()
-    context.user_data["waiting_for_custom_request"] = None
-    pending = context.chat_data.get("pending", {})
-    text = pending.get("text", "")
-    lines = text.split('\n\n', 1)
-    title = lines[0].strip() if lines else ""
-    body = lines[1].strip() if len(lines) > 1 else ""
-    await query.message.edit_text(f"✅ *Готово!*\n\n📰 *{title}*\n\n📝 {body}\n\nВыберите действие:", parse_mode="Markdown", reply_markup=get_ai_result_keyboard(media_type))
-
-# ==================== РЕДАКТИРОВАНИЕ ====================
-async def edit_text_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["waiting_edit"] = True
-    await query.message.reply_text("✏️ Отправьте новый текст. /cancel для отмены.")
-
-async def edit_designed_text_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["waiting_edit_designed"] = True
-    await query.message.reply_text("✏️ Отправьте новый текст для оформленного поста.")
-
-async def edit_album_text_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["waiting_edit_album"] = True
-    await query.message.reply_text("✏️ Отправьте новый текст для альбома.")
-
-async def handle_edit_text(update, context):
-    if context.user_data.get("waiting_edit_album"):
-        pending = context.chat_data.get("pending", {})
-        if pending and pending.get("type") == "album":
-            pending["text"] = update.message.text
-            context.chat_data["pending"] = pending
-            await update.message.reply_text("✅ Текст альбома обновлён!", reply_markup=get_album_keyboard())
-        context.user_data["waiting_edit_album"] = None
+    pending = context.user_data.get("pending") or context.chat_data.get("pending")
+    if not pending:
+        await query.message.reply_text("❌ Нет текста")
         return
-    if context.user_data.get("waiting_edit_designed"):
-        designed = context.chat_data.get("designed", {})
-        if designed:
-            designed["text"] = update.message.text
-            context.chat_data["designed"] = designed
-            if designed.get("photo_bytes"):
-                await update.message.reply_photo(photo=designed["photo_bytes"], caption=f"{designed['text']}\n\n✅ Текст обновлён!", parse_mode="HTML", reply_markup=get_preview_keyboard("designed"))
-        context.user_data["waiting_edit_designed"] = None
-        return
-    if context.user_data.get("waiting_edit"):
-        pending = context.chat_data.get("pending", {})
-        if pending:
-            pending["text"] = update.message.text
-            context.chat_data["pending"] = pending
-            media_type = pending.get("type", "photo")
-            await update.message.reply_text("✅ Текст обновлён!", reply_markup=get_preview_keyboard(media_type))
-        context.user_data["waiting_edit"] = None
+    await query.message.reply_text("✨ Обрабатываю через GPT...")
+    result, error = await generate_gpt_post(pending["text"])
+    if result:
+        pending["text"] = result
+        await query.message.reply_text(f"✅ Готово!\n\n{result}", reply_markup=get_preview_keyboard())
+    else:
+        await query.message.reply_text(f"❌ {error}")
 
-# ==================== ОТЛОЖЕННАЯ ПУБЛИКАЦИЯ ====================
-async def schedule_post(update, context, media_type):
+async def schedule_menu(update, context):
     query = update.callback_query
     await query.answer()
-    time_value = query.data.split(":")[1]
+    await query.message.edit_reply_markup(reply_markup=get_schedule_keyboard())
+
+async def schedule_post_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    time_val = query.data.split(":")[1]
     now = datetime.now()
-    
-    if time_value == "30min":
-        publish_time = now + timedelta(minutes=30); time_str = "через 30 минут"
+    if time_val == "30":
+        publish_time = now + timedelta(minutes=30)
+        time_str = "через 30 минут"
     else:
-        hour, minute = map(int, time_value.split(":"))
+        hour, minute = map(int, time_val.split(":"))
         publish_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if publish_time <= now: publish_time += timedelta(days=1)
-        time_str = f"{publish_time.strftime('%H:%M')} ({publish_time.strftime('%d.%m')})"
-    
-    pending = context.chat_data.get("pending", {})
-    designed = context.chat_data.get("designed", {})
-    watermarked = context.chat_data.get("watermarked", {})
-    default_channel_id = CHANNELS.get("news", {}).get("chat_id", "")
-    
-    if media_type == "photo":
-        save_scheduled_post(pending["text"], pending["photo_bytes"], publish_time, has_buttons=True, channel_id=default_channel_id)
-        context.chat_data.pop("pending", None)
-    elif media_type == "designed":
-        save_scheduled_post(designed["text"], designed["photo_bytes"], publish_time, has_buttons=True, is_designed=True, channel_id=default_channel_id)
-        context.chat_data.pop("designed", None); context.chat_data.pop("pending", None)
-    elif media_type == "watermarked":
-        save_scheduled_post(watermarked["text"], watermarked["photo_bytes"], publish_time, has_buttons=True, has_watermark=True, channel_id=default_channel_id)
-        context.chat_data.pop("watermarked", None); context.chat_data.pop("pending", None)
-    elif media_type == "album":
-        album_photos_bytes = pending.get("album_photos_bytes", [])
-        if album_photos_bytes:
-            save_scheduled_post(pending["text"], album_photos_bytes[0], publish_time, has_buttons=True, is_album=True, channel_id=default_channel_id)
-        context.chat_data.pop("pending", None)
-    elif media_type == "video":
-        save_scheduled_post(pending["text"], None, publish_time, has_buttons=True, is_video=True, video_file_id=pending["file_id"], channel_id=default_channel_id)
-        context.chat_data.pop("pending", None)
-    else:
-        save_scheduled_post(pending["text"], None, publish_time, has_buttons=True, is_text=True, channel_id=default_channel_id)
-        context.chat_data.pop("pending", None)
-    
+        if publish_time <= now:
+            publish_time += timedelta(days=1)
+        time_str = publish_time.strftime("%H:%M")
+    pending = context.user_data.get("pending") or context.chat_data.get("pending")
+    if not pending:
+        await query.message.reply_text("❌ Нет поста")
+        return
+    default_channel = CHANNELS.get("news", {}).get("chat_id", "")
+    save_scheduled_post(pending["text"], pending["photo_bytes"], publish_time, has_buttons=True, channel_id=default_channel)
     await query.message.reply_text(f"✅ Пост запланирован на {time_str}")
-    try: await query.message.delete()
-    except: pass
 
-# ==================== НАЗАД ====================
-async def back_to_preview(update, context, media_type):
+async def back_to_menu(update, context):
     query = update.callback_query
     await query.answer()
-    pending = context.chat_data.get("pending", {})
-    designed = context.chat_data.get("designed", {})
-    
-    if media_type == "photo":
-        await query.message.reply_photo(photo=pending["photo_bytes"], caption=pending["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
-    elif media_type == "designed":
-        await query.message.reply_photo(photo=designed["photo_bytes"], caption=designed["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("designed"))
-    elif media_type == "video":
-        await query.message.reply_video(video=pending["file_id"], caption=pending["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("video"))
-    elif media_type == "text":
-        await query.message.edit_text(text=f"📝 Текст:\n\n{pending['text']}\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
-    elif media_type == "album":
-        first_photo = pending.get("album_photos", [None])[0]
-        if first_photo:
-            await query.message.reply_photo(photo=first_photo, caption=f"📸 *Альбом*\n\nТекст: {pending['text'][:200]}...\n\nВыберите действие:", parse_mode="Markdown", reply_markup=get_album_keyboard())
-    try: await query.message.delete()
-    except: pass
-
-async def back_to_menu_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["gpt_chat_mode"] = False
+    context.user_data.clear()
     await query.message.reply_text("🏠 Главное меню:", reply_markup=get_main_keyboard())
 
-async def back_to_original_callback(update, context):
+async def back_to_preview(update, context):
     query = update.callback_query
     await query.answer()
-    pending = context.chat_data.get("pending", {})
-    if pending.get("type") == "photo":
-        await query.message.reply_photo(photo=pending["photo_bytes"], caption=pending["text"] or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
-        try: await query.message.delete()
-        except: pass
+    pending = context.user_data.get("pending") or context.chat_data.get("pending")
+    if pending:
+        await query.message.reply_photo(photo=pending["photo_bytes"], caption=pending["text"], reply_markup=get_preview_keyboard())
 
-# ==================== ПЛАНИРОВЩИК ====================
+async def edit_afisha_text(update, context):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["state"] = "edit_afisha"
+    await query.message.reply_text("📝 Отправьте новый текст для афиши:")
+
+async def handle_edit_afisha(update, context):
+    if context.user_data.get("state") != "edit_afisha":
+        return
+    new_text = update.message.text
+    photo_bytes = context.user_data.get("afisha_photo_bytes") or (context.user_data.get("pending", {}).get("photo_bytes"))
+    if not photo_bytes:
+        await update.message.reply_text("❌ Ошибка")
+        return
+    await update.message.reply_text("🎨 Обновляю афишу...")
+    result, error = await create_afisha_with_openai(photo_bytes, new_text)
+    if result:
+        context.user_data["pending"] = {"type": "photo", "text": new_text, "photo_bytes": result.getvalue()}
+        context.user_data["state"] = None
+        await update.message.reply_photo(photo=result, caption=f"✨ Афиша обновлена!\n\n{new_text}", reply_markup=get_afisha_keyboard())
+    else:
+        await update.message.reply_text(f"❌ {error}")
+
+# === ОБРАБОТЧИК ВХОДНЫХ СООБЩЕНИЙ ===
+async def handle_message(update, context):
+    if update.message.photo:
+        await handle_afisha_photo(update, context)
+    elif context.user_data.get("chat_mode"):
+        await handle_chat_message(update, context)
+    elif context.user_data.get("state") == "afisha_text":
+        await handle_afisha_text(update, context)
+    elif context.user_data.get("state") == "style_text":
+        await handle_style_text(update, context)
+    elif context.user_data.get("state") == "edit_afisha":
+        await handle_edit_afisha(update, context)
+
+# === КОЛБЭК ===
+async def button_callback(update, context):
+    data = update.callback_query.data
+    
+    handlers = {
+        "create_afisha": create_afisha,
+        "create_style_post": create_style_post,
+        "start_gpt_chat": start_gpt_chat,
+        "publish_menu": lambda u,c: publish_with_selection(u,c,True),
+        "publish_with_buttons": lambda u,c: publish_with_selection(u,c,True),
+        "publish_no_buttons": lambda u,c: publish_with_selection(u,c,False),
+        "design_post": design_post,
+        "add_watermark": add_watermark,
+        "ai_process": ai_process_deepseek_callback,
+        "gpt_style": gpt_style_callback,
+        "schedule_menu": schedule_menu,
+        "back_to_menu": back_to_menu,
+        "back_to_preview": back_to_preview,
+        "edit_afisha_text": edit_afisha_text,
+        "exit_chat": lambda u,c: (c.user_data.update({"chat_mode": False}), back_to_menu(u,c)),
+    }
+    
+    if data in handlers:
+        await handlers[data](update, context)
+    elif data.startswith("publish:") or data.startswith("schedule:"):
+        await execute_publish(update, context) if data.startswith("publish:") else await schedule_post_callback(update, context)
+    
+    await update.callback_query.answer()
+
+# === ПЛАНИРОВЩИК ===
 async def check_scheduled_posts(app):
     while True:
         try:
             for post in get_pending_scheduled_posts():
-                channel_id = post.get("channel_id")
-                if not channel_id: continue
-                channel_link = None
-                for key, ch in CHANNELS.items():
-                    if ch["chat_id"] == channel_id:
-                        channel_link = ch["link"]
-                        break
-                if not channel_link: channel_link = CHANNELS.get("news", {}).get("link", "")
-                
-                if post.get("is_video") and post.get("video_file_id"):
-                    await send_to_channel(app, channel_id, channel_link, text=post["text"], has_buttons=post["has_buttons"], is_video=True, video_file_id=post["video_file_id"])
-                elif post.get("is_text"):
-                    await send_to_channel(app, channel_id, channel_link, text=post["text"], has_buttons=post["has_buttons"], is_text=True)
-                elif post.get("is_album") and post.get("photo_bytes"):
-                    await send_to_channel(app, channel_id, channel_link, photo_bytes=post["photo_bytes"], text=post["text"], has_buttons=post["has_buttons"])
-                elif post.get("photo_bytes"):
-                    await send_to_channel(app, channel_id, channel_link, photo_bytes=post["photo_bytes"], text=post["text"], has_buttons=post["has_buttons"])
+                channel_id = post.get("channel_id") or CHANNELS.get("news", {}).get("chat_id", "")
+                channel_link = CHANNELS.get("news", {}).get("link", "")
+                await send_to_channel(app, channel_id, channel_link, post["photo_bytes"], post["text"], post["has_buttons"])
                 delete_scheduled_post(post["id"])
-                logger.info("✅ Опубликован отложенный пост")
-        except Exception as e: logger.error(f"Ошибка планировщика: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка: {e}")
         await asyncio.sleep(60)
 
-# ==================== ОСНОВНОЙ КОЛБЭК ====================
-async def button_callback(update, context):
-    query = update.callback_query
-    data = query.data
-    
-    # Выбор канала
-    if data.startswith("select_channel:"):
-        parts = data.split(":")
-        if len(parts) >= 4:
-            await execute_publish(update, context, parts[1], parts[2], parts[3] == "True")
-        return
-    
-    # Основные кнопки
-    callbacks = {
-        "send_media_info": lambda: query.message.reply_text("📸 Отправьте текст, фото, видео или альбом фото с подписью"),
-        "start_gpt_chat": lambda: start_gpt_chat(update, context),
-        "clear_chat_history": lambda: clear_chat_history_callback(update, context),
-        "back_to_menu": lambda: back_to_menu_callback(update, context),
-        "create_style_post": lambda: create_style_post(update, context, None),
-        "create_style_post_from_photo": lambda: create_style_post_from_photo(update, context),
-        "generate_afisha": lambda: generate_afisha(update, context),
-        "generate_afisha_from_photo": lambda: generate_afisha_from_photo(update, context),
-        "publish_photo_with_buttons": lambda: publish_photo_with_buttons(update, context),
-        "publish_photo_no_buttons": lambda: publish_photo_no_buttons(update, context),
-        "publish_album_with_buttons": lambda: publish_album_with_buttons(update, context),
-        "publish_album_no_buttons": lambda: publish_album_no_buttons(update, context),
-        "publish_text_with_buttons": lambda: publish_text_with_buttons(update, context),
-        "publish_text_no_buttons": lambda: publish_text_no_buttons(update, context),
-        "publish_video_with_buttons": lambda: publish_video_with_buttons(update, context),
-        "publish_video_no_buttons": lambda: publish_video_no_buttons(update, context),
-        "publish_designed_with_buttons": lambda: publish_designed_with_buttons(update, context),
-        "publish_designed_no_buttons": lambda: publish_designed_no_buttons(update, context),
-        "publish_watermarked_with_buttons": lambda: publish_watermarked_with_buttons(update, context),
-        "publish_watermarked_no_buttons": lambda: publish_watermarked_no_buttons(update, context),
-        "design_post": lambda: design_post_callback(update, context),
-        "design_from_watermark": lambda: design_from_watermark_callback(update, context),
-        "add_watermark": lambda: add_watermark_callback(update, context),
-        "add_watermark_to_designed": lambda: add_watermark_to_designed_callback(update, context),
-        "ai_process_photo": lambda: ai_process_photo_deepseek(update, context),
-        "ai_custom_request_photo": lambda: ai_custom_request_callback(update, context, "photo"),
-        "edit_text": lambda: edit_text_callback(update, context),
-        "edit_designed_text": lambda: edit_designed_text_callback(update, context),
-        "edit_album_text": lambda: edit_album_text_callback(update, context),
-        "schedule_photo_menu": lambda: schedule_menu(update, context, "photo"),
-        "schedule_text_menu": lambda: schedule_menu(update, context, "text"),
-        "schedule_video_menu": lambda: schedule_menu(update, context, "video"),
-        "schedule_album_menu": lambda: schedule_menu(update, context, "album"),
-        "schedule_designed_menu": lambda: schedule_menu(update, context, "designed"),
-        "schedule_watermarked_menu": lambda: schedule_menu(update, context, "watermarked"),
-        "back_to_photo_preview": lambda: back_to_preview(update, context, "photo"),
-        "back_to_designed_preview": lambda: back_to_preview(update, context, "designed"),
-        "back_to_video_preview": lambda: back_to_preview(update, context, "video"),
-        "back_to_text_preview": lambda: back_to_preview(update, context, "text"),
-        "back_to_album_preview": lambda: back_to_preview(update, context, "album"),
-        "back_to_original": lambda: back_to_original_callback(update, context),
-        "back_to_ai_result_photo": lambda: back_to_ai_result_callback(update, context, "photo"),
-        "ai_process_video": lambda: ai_process_with_custom_request(update, context, "video", None),
-        "ai_process_text": lambda: ai_process_with_custom_request(update, context, "text", None),
-        "ai_process_album": lambda: ai_process_with_custom_request(update, context, "album", None),
-        "ai_custom_request_video": lambda: ai_custom_request_callback(update, context, "video"),
-        "ai_custom_request_text": lambda: ai_custom_request_callback(update, context, "text"),
-        "ai_custom_request_album": lambda: ai_custom_request_callback(update, context, "album"),
-    }
-    
-    if data in callbacks:
-        result = callbacks[data]()
-        if asyncio.iscoroutine(result):
-            await result
-        await query.answer()
-    elif data.startswith("schedule_photo:") or data.startswith("schedule_text:") or data.startswith("schedule_video:") or data.startswith("schedule_album:") or data.startswith("schedule_designed:") or data.startswith("schedule_watermarked:"):
-        await schedule_post(update, context, data.split(":")[0].replace("schedule_", ""))
-        await query.answer()
-
-async def schedule_menu(update, context, media_type):
-    query = update.callback_query
-    await query.answer()
-    await query.message.edit_reply_markup(reply_markup=get_schedule_keyboard(f"schedule_{media_type}"))
-
-async def cancel(update, context):
-    context.user_data.clear()
-    await update.message.reply_text("✅ Отменено", reply_markup=get_main_keyboard())
-
-# ==================== ЗАПУСК ====================
+# === ЗАПУСК ===
 app = FastAPI()
-
 @app.get("/")
-async def root(): return {"status": "ok", "bot": "MINSK NEWS Bot with ChatGPT & DALL-E"}
+async def root(): return {"status": "ok"}
 @app.get("/health")
 async def health(): return {"status": "alive"}
 
 async def run_bot():
     init_db()
-    logger.info("📢 Настройка каналов:")
-    for key, channel in CHANNELS.items():
-        logger.info(f"  ✅ {channel['name']}: {channel['chat_id'] if channel['chat_id'] else 'не настроен'}")
-    logger.info(f"🤖 DeepSeek API: {'✅' if deepseek_client else '❌'}")
-    logger.info(f"🤖 ChatGPT/DALL-E API: {'✅' if chatgpt_client else '❌'}")
-    
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_text))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_request_text))
-    
+    application.add_handler(MessageHandler(filters.PHOTO | filters.TEXT, handle_message))
     await application.initialize()
     await application.start()
     asyncio.create_task(check_scheduled_posts(application))
-    
     while True:
         try:
             await application.updater.start_polling(drop_pending_updates=True)
-            logger.info("✅ Бот успешно запущен!")
+            logger.info("✅ Бот запущен!")
             break
         except Conflict:
-            logger.info("Конфликт, перезапуск через 5 сек...")
             await asyncio.sleep(5)
     while True: await asyncio.sleep(60)
 

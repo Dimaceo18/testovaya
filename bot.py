@@ -326,7 +326,7 @@ async def create_afisha_full(photo_bytes, user_text):
     
     final_image = add_text_with_pillow(background.getvalue(), title, description, call_to_action, hashtags)
     
-    # Формируем финальный текст для caption
+    # Формируем финальный текст
     final_text = f"{title}\n\n{description}\n\n✨ {call_to_action}\n\n{hashtags}"
     
     return final_image, final_text

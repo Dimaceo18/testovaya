@@ -308,9 +308,9 @@ async def generate_background_with_gpt(photo_bytes, user_text):
 
 # ==================== ПОЛНЫЙ ПРОЦЕСС СОЗДАНИЯ АФИШИ ====================
 async def create_afisha_full(photo_bytes, user_text):
-    """Полный процесс: GPT генерирует фон, Pillow накладывает текст"""
+    """Полный процесс: DALL-E 2 генерирует фон, Pillow накладывает текст"""
     
-    # Шаг 1: Генерируем фон через GPT
+    # Шаг 1: Генерируем фон через DALL-E 2
     background, error = await generate_background_with_gpt(photo_bytes, user_text)
     if error:
         return None, error

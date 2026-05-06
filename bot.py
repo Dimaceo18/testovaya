@@ -15,7 +15,10 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from openai import AsyncOpenAI
 import httpx
 
-logging.basicConfig(level=logging.INFO)
+# Настройка логирования - убираем лишние логи
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ==================== НАСТРОЙКИ ====================
@@ -363,7 +366,6 @@ async def create_afisha_with_openai(photo_bytes, user_text):
     prompt = AFISHA_STYLE_PROMPT.format(user_text=user_text)
     
     try:
-        # Пытаемся редактировать изображение
         response = await openai_client.images.edit(
             model="dall-e-2",
             image=photo_bytes,
@@ -718,7 +720,7 @@ async def back_to_preview(update, context):
     query = update.callback_query
     await query.answer()
     pending = context.user_data.get("pending") or context.chat_data.get("pending")
-    if pending:
+    if pending and pending.get("photo_bytes"):
         await query.message.reply_photo(photo=pending["photo_bytes"], caption=pending["text"], reply_markup=get_preview_keyboard())
 
 async def edit_afisha_text(update, context):
@@ -744,6 +746,12 @@ async def handle_edit_afisha(update, context):
     else:
         await update.message.reply_text(f"❌ {error}")
 
+async def exit_chat(update, context):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["chat_mode"] = False
+    await back_to_menu(update, context)
+
 # === ОБРАБОТЧИК ВХОДНЫХ СООБЩЕНИЙ ===
 async def handle_message(update, context):
     if update.message.photo:
@@ -759,32 +767,46 @@ async def handle_message(update, context):
 
 # === КОЛБЭК ===
 async def button_callback(update, context):
-    data = update.callback_query.data
+    query = update.callback_query
+    data = query.data
     
-    handlers = {
-        "create_afisha": create_afisha,
-        "create_style_post": create_style_post,
-        "start_gpt_chat": start_gpt_chat,
-        "publish_menu": lambda u,c: publish_with_selection(u,c,True),
-        "publish_with_buttons": lambda u,c: publish_with_selection(u,c,True),
-        "publish_no_buttons": lambda u,c: publish_with_selection(u,c,False),
-        "design_post": design_post,
-        "add_watermark": add_watermark,
-        "ai_process": ai_process_deepseek_callback,
-        "gpt_style": gpt_style_callback,
-        "schedule_menu": schedule_menu,
-        "back_to_menu": back_to_menu,
-        "back_to_preview": back_to_preview,
-        "edit_afisha_text": edit_afisha_text,
-        "exit_chat": lambda u,c: (c.user_data.update({"chat_mode": False}), back_to_menu(u,c)),
-    }
+    # Обработчики для разных callback_data
+    if data == "create_afisha":
+        await create_afisha(update, context)
+    elif data == "create_style_post":
+        await create_style_post(update, context)
+    elif data == "start_gpt_chat":
+        await start_gpt_chat(update, context)
+    elif data == "publish_menu":
+        await publish_with_selection(update, context, True)
+    elif data == "publish_with_buttons":
+        await publish_with_selection(update, context, True)
+    elif data == "publish_no_buttons":
+        await publish_with_selection(update, context, False)
+    elif data == "design_post":
+        await design_post(update, context)
+    elif data == "add_watermark":
+        await add_watermark(update, context)
+    elif data == "ai_process":
+        await ai_process_deepseek_callback(update, context)
+    elif data == "gpt_style":
+        await gpt_style_callback(update, context)
+    elif data == "schedule_menu":
+        await schedule_menu(update, context)
+    elif data == "back_to_menu":
+        await back_to_menu(update, context)
+    elif data == "back_to_preview":
+        await back_to_preview(update, context)
+    elif data == "edit_afisha_text":
+        await edit_afisha_text(update, context)
+    elif data == "exit_chat":
+        await exit_chat(update, context)
+    elif data.startswith("publish:"):
+        await execute_publish(update, context)
+    elif data.startswith("schedule:"):
+        await schedule_post_callback(update, context)
     
-    if data in handlers:
-        await handlers[data](update, context)
-    elif data.startswith("publish:") or data.startswith("schedule:"):
-        await execute_publish(update, context) if data.startswith("publish:") else await schedule_post_callback(update, context)
-    
-    await update.callback_query.answer()
+    await query.answer()
 
 # === ПЛАНИРОВЩИК ===
 async def check_scheduled_posts(app):
@@ -796,15 +818,19 @@ async def check_scheduled_posts(app):
                 await send_to_channel(app, channel_id, channel_link, post["photo_bytes"], post["text"], post["has_buttons"])
                 delete_scheduled_post(post["id"])
         except Exception as e:
-            logger.error(f"Ошибка: {e}")
+            logger.error(f"Ошибка планировщика: {e}")
         await asyncio.sleep(60)
 
 # === ЗАПУСК ===
 app = FastAPI()
+
 @app.get("/")
-async def root(): return {"status": "ok"}
+async def root(): 
+    return {"status": "ok"}
+
 @app.get("/health")
-async def health(): return {"status": "alive"}
+async def health(): 
+    return {"status": "alive"}
 
 async def run_bot():
     init_db()
@@ -812,20 +838,25 @@ async def run_bot():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.PHOTO | filters.TEXT, handle_message))
+    
     await application.initialize()
     await application.start()
     asyncio.create_task(check_scheduled_posts(application))
+    
     while True:
         try:
             await application.updater.start_polling(drop_pending_updates=True)
             logger.info("✅ Бот запущен!")
             break
         except Conflict:
+            logger.info("Конфликт, перезапуск через 5 сек...")
             await asyncio.sleep(5)
-    while True: await asyncio.sleep(60)
+    
+    while True:
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
     import threading, uvicorn
     port = int(os.getenv("PORT", 10000))
-    threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=port)).start()
+    threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=port), daemon=True).start()
     asyncio.run(run_bot())

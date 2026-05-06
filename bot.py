@@ -282,13 +282,14 @@ async def generate_background_with_gpt(photo_bytes, user_text):
     
     prompt = AFISHA_IMAGE_PROMPT.format(user_text=user_text)
     
+    # ПРЕОБРАЗУЕМ bytearray в bytes (самое простое решение)
+    if isinstance(photo_bytes, bytearray):
+        photo_bytes = bytes(photo_bytes)  # <-- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+    
     try:
-        # Конвертируем фото в base64
-        img_base64 = base64.b64encode(photo_bytes).decode('utf-8')
-        
         response = await openai_client.images.edit(
             model="gpt-image-1",
-            image=photo_bytes,
+            image=photo_bytes,  # Теперь это bytes, а не bytearray
             prompt=prompt,
             size="1024x1536",
             n=1

@@ -14,8 +14,26 @@ from openai import AsyncOpenAI
 
 # ==================== НАСТРОЙКИ ====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/minsk_news")
+
+# Каналы для публикации (настраиваются через переменные окружения)
+CHANNELS = {
+    "news": {
+        "name": "📰 Новости Минска",
+        "chat_id": os.getenv("CHANNEL_NEWS_ID", ""),
+        "link": os.getenv("CHANNEL_NEWS_LINK", "https://t.me/minsk_news")
+    },
+    "incident": {
+        "name": "🚨 ЧП И ДТП Минска",
+        "chat_id": os.getenv("CHANNEL_INCIDENT_ID", ""),
+        "link": os.getenv("CHANNEL_INCIDENT_LINK", "https://t.me/minsk_chp")
+    },
+    "afisha": {
+        "name": "🎭 Афиша Минска",
+        "chat_id": os.getenv("CHANNEL_AFISHA_ID", ""),
+        "link": os.getenv("CHANNEL_AFISHA_LINK", "https://t.me/minsk_afisha")
+    }
+}
+
 SUGGEST_LINK = os.getenv("SUGGEST_LINK", "https://t.me/minsk_news_bot?start=suggest")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DB_PATH = "news.db"
@@ -38,18 +56,18 @@ DEEPSEEK_PROMPT = """Ты редактор новостного сайта. У �
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS scheduled_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, photo_bytes BLOB, schedule_time TIMESTAMP, created_at TIMESTAMP, has_buttons BOOLEAN DEFAULT 1, has_watermark BOOLEAN DEFAULT 0, is_designed BOOLEAN DEFAULT 0, is_video BOOLEAN DEFAULT 0, is_text BOOLEAN DEFAULT 0, is_album BOOLEAN DEFAULT 0, video_file_id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS scheduled_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, photo_bytes BLOB, schedule_time TIMESTAMP, created_at TIMESTAMP, has_buttons BOOLEAN DEFAULT 1, has_watermark BOOLEAN DEFAULT 0, is_designed BOOLEAN DEFAULT 0, is_video BOOLEAN DEFAULT 0, is_text BOOLEAN DEFAULT 0, is_album BOOLEAN DEFAULT 0, video_file_id TEXT, channel_id TEXT)")
     print("✅ База данных готова")
 
-def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, has_watermark=False, is_designed=False, is_video=False, is_text=False, is_album=False, video_file_id=None):
+def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, has_watermark=False, is_designed=False, is_video=False, is_text=False, is_album=False, video_file_id=None, channel_id=None):
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id))
+        conn.execute("INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id))
 
 def get_pending_scheduled_posts():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        return [dict(row) for row in conn.execute("SELECT id, text, photo_bytes, schedule_time, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id FROM scheduled_posts WHERE schedule_time <= ?", (datetime.now(),)).fetchall()]
+        return [dict(row) for row in conn.execute("SELECT id, text, photo_bytes, schedule_time, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id FROM scheduled_posts WHERE schedule_time <= ?", (datetime.now(),)).fetchall()]
 
 def delete_scheduled_post(post_id):
     with sqlite3.connect(DB_PATH) as conn:
@@ -71,18 +89,17 @@ def remove_emojis(text):
     return emoji_pattern.sub(r'', text)
 
 def format_caption(title, body):
-    """Форматирует подпись - заголовок, пустая строка, текст"""
     if body and body.strip():
         return f"<b>{title}</b>\n\n{body}"
     else:
         return f"<b>{title}</b>"
 
-def add_links_to_text(text, has_buttons=True):
-    """Добавляет гиперссылки в конец текста на разных строках"""
+def add_links_to_text(text, channel_link, has_buttons=True):
+    """Добавляет гиперссылки в конец текста на разных строках с ссылкой на конкретный канал"""
     if not has_buttons:
         return text
     
-    links = f"\n\n<a href=\"{CHANNEL_LINK}\">📢 Подписаться на канал</a>\n<a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
+    links = f"\n\n<a href=\"{channel_link}\">📢 Подписаться на канал</a>\n<a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
     return text + links
 
 # ==================== ВОДЯНОЙ ЗНАК ====================
@@ -186,9 +203,20 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     output.seek(0)
     return output
 
-# ==================== КЛАВИАТУРЫ ДЛЯ УПРАВЛЕНИЯ (ТОЛЬКО INLINE КНОПКИ ДЛЯ БОТА) ====================
+# ==================== КЛАВИАТУРЫ ДЛЯ УПРАВЛЕНИЯ ====================
 def get_main_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("📸 Отправить фото, видео или текст", callback_data="send_media_info")]])
+
+def get_channel_selection_keyboard(original_callback, has_buttons):
+    """Клавиатура выбора канала для публикации"""
+    keyboard = []
+    for key, channel in CHANNELS.items():
+        if channel["chat_id"]:
+            keyboard.append([InlineKeyboardButton(
+                channel["name"], 
+                callback_data=f"select_channel:{key}:{original_callback}:{has_buttons}"
+            )])
+    return InlineKeyboardMarkup(keyboard)
 
 def get_album_keyboard():
     return InlineKeyboardMarkup([
@@ -298,7 +326,7 @@ def get_schedule_keyboard(prefix):
     return InlineKeyboardMarkup(keyboard)
 
 # ==================== ОТПРАВКА В КАНАЛ ====================
-async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_buttons=True, is_video=False, is_text=False, is_album=False, album_photos=None, video_file_id=None):
+async def send_to_channel(context, channel_id, channel_link, photo_bytes=None, file_id=None, text="", has_buttons=True, is_video=False, is_text=False, is_album=False, album_photos=None, video_file_id=None):
     # Разделяем заголовок и текст
     lines = text.split('\n')
     title = lines[0] if lines else ""
@@ -323,13 +351,13 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
     else:
         caption = f"<b>{title}</b>"
     
-    # Добавляем гиперссылки в конец текста (на разных строках)
-    caption = add_links_to_text(caption, has_buttons)
+    # Добавляем гиперссылки в конец текста
+    caption = add_links_to_text(caption, channel_link, has_buttons)
     
     try:
         if is_video and video_file_id:
             await context.bot.send_video(
-                chat_id=CHANNEL_ID, 
+                chat_id=channel_id, 
                 video=video_file_id, 
                 caption=caption, 
                 parse_mode="HTML",
@@ -347,17 +375,17 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
                     })
                 else:
                     media_group.append({"type": "photo", "media": photo})
-            await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media_group)
+            await context.bot.send_media_group(chat_id=channel_id, media=media_group)
         elif is_text:
             await context.bot.send_message(
-                chat_id=CHANNEL_ID, 
+                chat_id=channel_id, 
                 text=caption, 
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
         elif photo_bytes:
             await context.bot.send_photo(
-                chat_id=CHANNEL_ID, 
+                chat_id=channel_id, 
                 photo=photo_bytes, 
                 caption=caption, 
                 parse_mode="HTML",
@@ -365,14 +393,16 @@ async def send_to_channel(context, photo_bytes=None, file_id=None, text="", has_
             )
         elif file_id:
             await context.bot.send_photo(
-                chat_id=CHANNEL_ID, 
+                chat_id=channel_id, 
                 photo=file_id, 
                 caption=caption, 
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
+        return True
     except Exception as e:
-        print(f"Ошибка отправки: {e}")
+        print(f"Ошибка отправки в канал {channel_id}: {e}")
+        return False
 
 # ==================== ОБРАБОТЧИКИ СООБЩЕНИЙ ====================
 async def start(update, context):
@@ -467,92 +497,176 @@ async def handle_video(update, context):
     context.chat_data["pending"] = {"type": "video", "text": text, "file_id": msg.video.file_id}
     await msg.reply_video(video=msg.video.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("video"))
 
-# ==================== ПУБЛИКАЦИЯ ====================
-async def publish_photo(update, context, has_buttons):
+# ==================== ПУБЛИКАЦИЯ С ВЫБОРОМ КАНАЛА ====================
+async def publish_with_channel_selection(update, context, media_type, has_buttons):
+    """Показывает выбор канала перед публикацией"""
     query = update.callback_query
     await query.answer()
-    pending = context.chat_data.get("pending", {})
-    if pending.get("type") != "photo":
-        await query.message.reply_text("❌ Нет фото")
-        return
-    await send_to_channel(context, file_id=pending["file_id"], text=pending["text"], has_buttons=has_buttons)
-    await query.message.reply_text(f"✅ Опубликовано" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
-    context.chat_data.pop("pending", None)
-    try: await query.message.delete()
-    except: pass
+    
+    # Сохраняем в user_data информацию о том, что нужно опубликовать
+    context.user_data["pending_publish"] = {
+        "media_type": media_type,
+        "has_buttons": has_buttons
+    }
+    
+    # Показываем выбор канала
+    await query.message.reply_text(
+        "📢 *Куда публикуем?*\n\nВыберите канал для публикации:",
+        parse_mode="Markdown",
+        reply_markup=get_channel_selection_keyboard(media_type, has_buttons)
+    )
 
-async def publish_album(update, context, has_buttons):
+async def execute_publish(update, context, channel_key, media_type, has_buttons):
+    """Выполняет публикацию в выбранный канал"""
     query = update.callback_query
     await query.answer()
-    pending = context.chat_data.get("pending", {})
-    if pending.get("type") != "album":
-        await query.message.reply_text("❌ Нет альбома")
+    
+    channel = CHANNELS.get(channel_key)
+    if not channel or not channel["chat_id"]:
+        await query.message.reply_text("❌ Канал не настроен. Обратитесь к администратору.")
         return
     
-    album_photos = pending.get("album_photos_bytes", [])
-    if not album_photos:
-        await query.message.reply_text("❌ Не удалось загрузить фото")
+    pending = context.chat_data.get("pending", {})
+    
+    if media_type == "photo":
+        if pending.get("type") != "photo":
+            await query.message.reply_text("❌ Нет фото для публикации")
+            return
+        success = await send_to_channel(
+            context, 
+            channel_id=channel["chat_id"],
+            channel_link=channel["link"],
+            file_id=pending["file_id"], 
+            text=pending["text"], 
+            has_buttons=has_buttons
+        )
+    elif media_type == "album":
+        if pending.get("type") != "album":
+            await query.message.reply_text("❌ Нет альбома для публикации")
+            return
+        album_photos = pending.get("album_photos_bytes", [])
+        if not album_photos:
+            await query.message.reply_text("❌ Не удалось загрузить фото")
+            return
+        success = await send_to_channel(
+            context,
+            channel_id=channel["chat_id"],
+            channel_link=channel["link"],
+            text=pending["text"],
+            has_buttons=has_buttons,
+            is_album=True,
+            album_photos=album_photos
+        )
+    elif media_type == "text":
+        if pending.get("type") != "text":
+            await query.message.reply_text("❌ Нет текста для публикации")
+            return
+        success = await send_to_channel(
+            context,
+            channel_id=channel["chat_id"],
+            channel_link=channel["link"],
+            text=pending["text"],
+            has_buttons=has_buttons,
+            is_text=True
+        )
+    elif media_type == "video":
+        if pending.get("type") != "video":
+            await query.message.reply_text("❌ Нет видео для публикации")
+            return
+        success = await send_to_channel(
+            context,
+            channel_id=channel["chat_id"],
+            channel_link=channel["link"],
+            video_file_id=pending["file_id"],
+            text=pending["text"],
+            has_buttons=has_buttons,
+            is_video=True
+        )
+    elif media_type == "designed":
+        designed = context.chat_data.get("designed", {})
+        if not designed:
+            await query.message.reply_text("❌ Нет оформленного поста")
+            return
+        success = await send_to_channel(
+            context,
+            channel_id=channel["chat_id"],
+            channel_link=channel["link"],
+            photo_bytes=designed["photo_bytes"],
+            text=designed["text"],
+            has_buttons=has_buttons
+        )
+    elif media_type == "watermarked":
+        watermarked = context.chat_data.get("watermarked", {})
+        if not watermarked:
+            await query.message.reply_text("❌ Нет поста с водяным знаком")
+            return
+        success = await send_to_channel(
+            context,
+            channel_id=channel["chat_id"],
+            channel_link=channel["link"],
+            photo_bytes=watermarked["photo_bytes"],
+            text=watermarked["text"],
+            has_buttons=has_buttons
+        )
+    else:
+        await query.message.reply_text("❌ Неизвестный тип публикации")
         return
     
-    await send_to_channel(context, text=pending["text"], has_buttons=has_buttons, is_album=True, album_photos=album_photos)
-    await query.message.reply_text(f"✅ Альбом опубликован" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
-    context.chat_data.pop("pending", None)
-    try: await query.message.delete()
-    except: pass
+    if success:
+        await query.message.reply_text(f"✅ Опубликовано в {channel['name']}" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
+        # Очищаем данные после успешной публикации
+        if media_type in ["photo", "album", "text", "video"]:
+            context.chat_data.pop("pending", None)
+        elif media_type == "designed":
+            context.chat_data.pop("designed", None)
+            context.chat_data.pop("pending", None)
+        elif media_type == "watermarked":
+            context.chat_data.pop("watermarked", None)
+            context.chat_data.pop("pending", None)
+    else:
+        await query.message.reply_text(f"❌ Ошибка при публикации в {channel['name']}")
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
 
-async def publish_text(update, context, has_buttons):
-    query = update.callback_query
-    await query.answer()
-    pending = context.chat_data.get("pending", {})
-    if pending.get("type") != "text":
-        await query.message.reply_text("❌ Нет текста")
-        return
-    await send_to_channel(context, text=pending["text"], has_buttons=has_buttons, is_text=True)
-    await query.message.reply_text(f"✅ Текст опубликован" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
-    context.chat_data.pop("pending", None)
-    try: await query.message.delete()
-    except: pass
+# ==================== ПУБЛИКАЦИЯ ДЛЯ РАЗНЫХ ТИПОВ (ОБЁРТКИ) ====================
+async def publish_photo_with_buttons(update, context):
+    await publish_with_channel_selection(update, context, "photo", True)
 
-async def publish_video(update, context, has_buttons):
-    query = update.callback_query
-    await query.answer()
-    pending = context.chat_data.get("pending", {})
-    if pending.get("type") != "video":
-        await query.message.reply_text("❌ Нет видео")
-        return
-    await send_to_channel(context, video_file_id=pending["file_id"], text=pending["text"], has_buttons=has_buttons, is_video=True)
-    await query.message.reply_text(f"✅ Видео опубликовано" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
-    context.chat_data.pop("pending", None)
-    try: await query.message.delete()
-    except: pass
+async def publish_photo_no_buttons(update, context):
+    await publish_with_channel_selection(update, context, "photo", False)
 
-async def publish_designed(update, context, has_buttons):
-    query = update.callback_query
-    await query.answer()
-    designed = context.chat_data.get("designed", {})
-    if not designed:
-        await query.message.reply_text("❌ Нет оформленного поста")
-        return
-    await send_to_channel(context, photo_bytes=designed["photo_bytes"], text=designed["text"], has_buttons=has_buttons)
-    await query.message.reply_text(f"✅ Оформленный пост опубликован" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
-    context.chat_data.pop("pending", None)
-    context.chat_data.pop("designed", None)
-    try: await query.message.delete()
-    except: pass
+async def publish_album_with_buttons(update, context):
+    await publish_with_channel_selection(update, context, "album", True)
 
-async def publish_watermarked(update, context, has_buttons):
-    query = update.callback_query
-    await query.answer()
-    watermarked = context.chat_data.get("watermarked", {})
-    if not watermarked:
-        await query.message.reply_text("❌ Нет поста")
-        return
-    await send_to_channel(context, photo_bytes=watermarked["photo_bytes"], text=watermarked["text"], has_buttons=has_buttons)
-    await query.message.reply_text(f"✅ Пост с водяным знаком опубликован" + (" (с кнопками)" if has_buttons else " (без кнопок)"))
-    context.chat_data.pop("pending", None)
-    context.chat_data.pop("watermarked", None)
-    try: await query.message.delete()
-    except: pass
+async def publish_album_no_buttons(update, context):
+    await publish_with_channel_selection(update, context, "album", False)
+
+async def publish_text_with_buttons(update, context):
+    await publish_with_channel_selection(update, context, "text", True)
+
+async def publish_text_no_buttons(update, context):
+    await publish_with_channel_selection(update, context, "text", False)
+
+async def publish_video_with_buttons(update, context):
+    await publish_with_channel_selection(update, context, "video", True)
+
+async def publish_video_no_buttons(update, context):
+    await publish_with_channel_selection(update, context, "video", False)
+
+async def publish_designed_with_buttons(update, context):
+    await publish_with_channel_selection(update, context, "designed", True)
+
+async def publish_designed_no_buttons(update, context):
+    await publish_with_channel_selection(update, context, "designed", False)
+
+async def publish_watermarked_with_buttons(update, context):
+    await publish_with_channel_selection(update, context, "watermarked", True)
+
+async def publish_watermarked_no_buttons(update, context):
+    await publish_with_channel_selection(update, context, "watermarked", False)
 
 # ==================== ВОДЯНОЙ ЗНАК ====================
 async def add_watermark_callback(update, context):
@@ -676,7 +790,6 @@ async def ai_process_with_custom_request(update, context, media_type, custom_req
         if not title and body:
             title = body[:50] + "..."
         
-        # Формируем текст с пустой строкой между заголовком и текстом
         new_text = f"{title}\n\n{body}"
         
         pending["text"] = new_text
@@ -923,15 +1036,29 @@ async def check_scheduled_posts(app):
     while True:
         try:
             for post in get_pending_scheduled_posts():
+                channel_id = post.get("channel_id")
+                if not channel_id:
+                    continue
+                
+                # Ищем канал по ID
+                channel_link = None
+                for key, ch in CHANNELS.items():
+                    if ch["chat_id"] == channel_id:
+                        channel_link = ch["link"]
+                        break
+                
+                if not channel_link:
+                    channel_link = CHANNELS.get("news", {}).get("link", "")
+                
                 if post.get("is_video") and post.get("video_file_id"):
-                    await send_to_channel(app, text=post["text"], has_buttons=post["has_buttons"], is_video=True, video_file_id=post["video_file_id"])
+                    await send_to_channel(app, channel_id, channel_link, text=post["text"], has_buttons=post["has_buttons"], is_video=True, video_file_id=post["video_file_id"])
                 elif post.get("is_text"):
-                    await send_to_channel(app, text=post["text"], has_buttons=post["has_buttons"], is_text=True)
+                    await send_to_channel(app, channel_id, channel_link, text=post["text"], has_buttons=post["has_buttons"], is_text=True)
                 elif post.get("is_album"):
                     if post.get("photo_bytes"):
-                        await send_to_channel(app, photo_bytes=post["photo_bytes"], text=post["text"], has_buttons=post["has_buttons"])
+                        await send_to_channel(app, channel_id, channel_link, photo_bytes=post["photo_bytes"], text=post["text"], has_buttons=post["has_buttons"])
                 elif post.get("photo_bytes"):
-                    await send_to_channel(app, photo_bytes=post["photo_bytes"], text=post["text"], has_buttons=post["has_buttons"])
+                    await send_to_channel(app, channel_id, channel_link, photo_bytes=post["photo_bytes"], text=post["text"], has_buttons=post["has_buttons"])
                 delete_scheduled_post(post["id"])
                 print("✅ Опубликован отложенный пост")
         except Exception as e: print(f"❌ Ошибка планировщика: {e}")
@@ -942,19 +1069,43 @@ async def button_callback(update, context):
     query = update.callback_query
     data = query.data
     
-    # Публикация
-    if data == "publish_photo_with_buttons": await publish_photo(update, context, True)
-    elif data == "publish_photo_no_buttons": await publish_photo(update, context, False)
-    elif data == "publish_album_with_buttons": await publish_album(update, context, True)
-    elif data == "publish_album_no_buttons": await publish_album(update, context, False)
-    elif data == "publish_text_with_buttons": await publish_text(update, context, True)
-    elif data == "publish_text_no_buttons": await publish_text(update, context, False)
-    elif data == "publish_video_with_buttons": await publish_video(update, context, True)
-    elif data == "publish_video_no_buttons": await publish_video(update, context, False)
-    elif data == "publish_designed_with_buttons": await publish_designed(update, context, True)
-    elif data == "publish_designed_no_buttons": await publish_designed(update, context, False)
-    elif data == "publish_watermarked_with_buttons": await publish_watermarked(update, context, True)
-    elif data == "publish_watermarked_no_buttons": await publish_watermarked(update, context, False)
+    # Выбор канала
+    if data.startswith("select_channel:"):
+        parts = data.split(":")
+        if len(parts) >= 4:
+            channel_key = parts[1]
+            original_callback = parts[2]
+            has_buttons = parts[3] == "True"
+            
+            # Выполняем публикацию в выбранный канал
+            await execute_publish(update, context, channel_key, original_callback, has_buttons)
+        return
+    
+    # Публикация (показываем выбор канала)
+    elif data == "publish_photo_with_buttons": 
+        await publish_photo_with_buttons(update, context)
+    elif data == "publish_photo_no_buttons": 
+        await publish_photo_no_buttons(update, context)
+    elif data == "publish_album_with_buttons": 
+        await publish_album_with_buttons(update, context)
+    elif data == "publish_album_no_buttons": 
+        await publish_album_no_buttons(update, context)
+    elif data == "publish_text_with_buttons": 
+        await publish_text_with_buttons(update, context)
+    elif data == "publish_text_no_buttons": 
+        await publish_text_no_buttons(update, context)
+    elif data == "publish_video_with_buttons": 
+        await publish_video_with_buttons(update, context)
+    elif data == "publish_video_no_buttons": 
+        await publish_video_no_buttons(update, context)
+    elif data == "publish_designed_with_buttons": 
+        await publish_designed_with_buttons(update, context)
+    elif data == "publish_designed_no_buttons": 
+        await publish_designed_no_buttons(update, context)
+    elif data == "publish_watermarked_with_buttons": 
+        await publish_watermarked_with_buttons(update, context)
+    elif data == "publish_watermarked_no_buttons": 
+        await publish_watermarked_no_buttons(update, context)
     
     # Оформление
     elif data == "design_post": await design_post_callback(update, context)
@@ -1051,6 +1202,14 @@ async def run_bot():
     init_db()
     await Bot(token=BOT_TOKEN).delete_webhook()
     print("✅ Webhook удалён")
+    
+    # Проверка настроек каналов
+    print("📢 Настройка каналов:")
+    for key, channel in CHANNELS.items():
+        if channel["chat_id"]:
+            print(f"  ✅ {channel['name']}: {channel['chat_id']}")
+        else:
+            print(f"  ⚠️ {channel['name']}: не настроен")
     
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))

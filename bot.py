@@ -42,13 +42,17 @@ CHANNELS = {
 
 SUGGEST_LINK = os.getenv("SUGGEST_LINK", "https://t.me/minsk_news_bot?start=suggest")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+CHATGPT_API_KEY = os.getenv("CHATGPT_API_KEY")
 DB_PATH = "news.db"
 
 WATERMARK_TEXT = "MINSK NEWS"
 WATERMARK_OPACITY = 38
 
+# Инициализация клиентов AI
 deepseek_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
+chatgpt_client = AsyncOpenAI(api_key=CHATGPT_API_KEY, base_url="https://api.openai.com/v1") if CHATGPT_API_KEY else None
 
+# Промпт для DeepSeek
 DEEPSEEK_PROMPT = """Ты редактор новостного сайта. У тебя строгий новостной формат. Без обращений на "вы", "ты". Только новостной формат.
 
 Переделай новость в формат на 500-600 символов. Убери всю воду, сделай интересный заголовок. Без смайликов. Сохраняй главные факты.
@@ -59,25 +63,59 @@ DEEPSEEK_PROMPT = """Ты редактор новостного сайта. У �
 ЗАГОЛОВОК: (заголовок новости до 80 символов)
 ТЕКСТ: (текст новости с абзацами)"""
 
+# Промпт для ChatGPT для создания стильного поста
+CHATGPT_POST_PROMPT = """Ты креативный копирайтер premium city media. Создай современный Instagram-пост в стиле Minsk City Magazine.
+
+Формат: короткий, ёмкий, вовлекающий текст для социальных сетей.
+
+Требования к посту:
+- Заголовок (крупный, цепляющий)
+- Основной текст (3-4 предложения, атмосферно)
+- Вовлекающий вопрос или призыв к действию в конце
+- 2-3 хэштега (#Minsk #MinskCity #MinskNews)
+
+Стиль: минималистичный, кинематографичный, эстетичный, премиальный.
+
+Верни строго в формате:
+ЗАГОЛОВОК: (заголовок)
+ТЕКСТ: (основной текст)
+ПРИЗЫВ: (призыв к действию)
+ХЭШТЕГИ: (хэштеги через пробел)"""
+
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS scheduled_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, photo_bytes BLOB, schedule_time TIMESTAMP, created_at TIMESTAMP, has_buttons BOOLEAN DEFAULT 1, has_watermark BOOLEAN DEFAULT 0, is_designed BOOLEAN DEFAULT 0, is_video BOOLEAN DEFAULT 0, is_text BOOLEAN DEFAULT 0, is_album BOOLEAN DEFAULT 0, video_file_id TEXT, channel_id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS scheduled_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, photo_bytes BLOB, schedule_time TIMESTAMP, created_at TIMESTAMP, has_buttons BOOLEAN DEFAULT 1, has_watermark BOOLEAN DEFAULT 0, is_designed BOOLEAN DEFAULT 0, is_video BOOLEAN DEFAULT 0, is_text BOOLEAN DEFAULT 0, is_album BOOLEAN DEFAULT 0, video_file_id TEXT, channel_id TEXT, is_ai_generated BOOLEAN DEFAULT 0, ai_model TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, role TEXT, content TEXT, created_at TIMESTAMP)")
     print("✅ База данных готова")
 
-def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, has_watermark=False, is_designed=False, is_video=False, is_text=False, is_album=False, video_file_id=None, channel_id=None):
+def save_scheduled_post(text, photo_bytes, schedule_time, has_buttons=True, has_watermark=False, is_designed=False, is_video=False, is_text=False, is_album=False, video_file_id=None, channel_id=None, is_ai_generated=False, ai_model=None):
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id))
+        conn.execute("INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id, is_ai_generated, ai_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (text, photo_bytes, schedule_time, datetime.now(), has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id, is_ai_generated, ai_model))
 
 def get_pending_scheduled_posts():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        return [dict(row) for row in conn.execute("SELECT id, text, photo_bytes, schedule_time, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id FROM scheduled_posts WHERE schedule_time <= ?", (datetime.now(),)).fetchall()]
+        return [dict(row) for row in conn.execute("SELECT id, text, photo_bytes, schedule_time, has_buttons, has_watermark, is_designed, is_video, is_text, is_album, video_file_id, channel_id, is_ai_generated, ai_model FROM scheduled_posts WHERE schedule_time <= ?", (datetime.now(),)).fetchall()]
 
 def delete_scheduled_post(post_id):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM scheduled_posts WHERE id = ?", (post_id,))
+
+def save_chat_message(user_id, role, content):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("INSERT INTO chat_history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                    (user_id, role, content, datetime.now()))
+
+def get_chat_history(user_id, limit=10):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute("SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", (user_id, limit)).fetchall()][::-1]
+
+def clear_chat_history(user_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM chat_history WHERE user_id = ?", (user_id,))
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def remove_emojis(text):
@@ -106,6 +144,189 @@ def add_links_to_text(text, channel_link, has_buttons=True):
     
     links = f"\n\n<a href=\"{channel_link}\">📢 Подписаться на канал</a>\n<a href=\"{SUGGEST_LINK}\">📝 Прислать нам новость</a>"
     return text + links
+
+# ==================== СОЗДАНИЕ СТИЛЬНОГО ПОСТА (С НАЛОЖЕНИЕМ ТЕКСТА) ====================
+def create_city_post(photo_bytes, title, text, call_to_action, hashtags):
+    """Создаёт стильный пост с наложением текста на фото"""
+    if not photo_bytes or len(photo_bytes) == 0:
+        raise ValueError("Фото пустое")
+    
+    print(f"🎨 Создаю стильный пост, размер: {len(photo_bytes) / 1024:.1f}KB")
+    
+    # Открываем изображение
+    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
+    w, h = img.size
+    
+    # Обрезаем до соотношения 4:5
+    target_ratio = 4/5
+    cur_ratio = w / h
+    if cur_ratio > target_ratio:
+        new_w = int(h * target_ratio)
+        left = (w - new_w) // 2
+        img = img.crop((left, 0, left + new_w, h))
+    else:
+        new_h = int(w / target_ratio)
+        top = (h - new_h) // 2
+        img = img.crop((0, top, w, top + new_h))
+    
+    # Ресайз
+    img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
+    w, h = img.size
+    
+    # Затемняем изображение
+    img = ImageEnhance.Brightness(img).enhance(0.7)
+    
+    # Добавляем градиент слева
+    gradient_width = int(w * 0.45)  # 45% ширины
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (gradient_width, 1), 0)
+    for x in range(gradient_width):
+        # Плавный переход от чёрного к прозрачному
+        a = int(200 * (1 - x / gradient_width))
+        grad.putpixel((x, 0), a)
+    grad = grad.resize((gradient_width, h))
+    overlay_alpha.paste(grad, (0, 0))
+    
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    img = Image.alpha_composite(base, overlay).convert("RGB")
+    
+    draw = ImageDraw.Draw(img)
+    
+    # Загрузка шрифтов
+    try:
+        font_title = ImageFont.truetype("Montserrat-Bold.ttf", 72)
+        font_text = ImageFont.truetype("Montserrat-Regular.ttf", 32)
+        font_small = ImageFont.truetype("Montserrat-Light.ttf", 28)
+    except:
+        font_title = ImageFont.load_default()
+        font_text = ImageFont.load_default()
+        font_small = ImageFont.load_default()
+    
+    # Декоративная линия сверху
+    line_x = 60
+    line_y = 80
+    for i in range(3):
+        draw.line([(line_x + i*80, line_y), (line_x + i*80 + 50, line_y)], fill=(218, 165, 32), width=3)  # золотой цвет
+    
+    # Заголовок (слева, крупный)
+    title_y = 140
+    title_lines = []
+    current_line = ""
+    for word in title.split():
+        test_line = current_line + " " + word if current_line else word
+        try:
+            bbox = font_title.getbbox(test_line)
+            width = bbox[2] - bbox[0]
+        except:
+            width = len(test_line) * 40
+        if width <= w - 120:
+            current_line = test_line
+        else:
+            if current_line:
+                title_lines.append(current_line)
+            current_line = word
+    if current_line:
+        title_lines.append(current_line)
+    
+    for i, line in enumerate(title_lines):
+        # Тень
+        for offset in [(2,2), (2,-2), (-2,2), (-2,-2)]:
+            draw.text((60 + offset[0], title_y + i*85 + offset[1]), line, font=font_title, fill=(0,0,0))
+        # Основной текст
+        if i == 0:
+            draw.text((60, title_y + i*85), line, font=font_title, fill=(255, 215, 0))  # золотой для первой строки
+        else:
+            draw.text((60, title_y + i*85), line, font=font_title, fill=(255,255,255))
+    
+    # Основной текст
+    text_y = title_y + len(title_lines)*85 + 60
+    text_lines = []
+    for paragraph in text.split('\n'):
+        words = paragraph.split()
+        current_line = ""
+        for word in words:
+            test_line = current_line + " " + word if current_line else word
+            try:
+                bbox = font_text.getbbox(test_line)
+                width = bbox[2] - bbox[0]
+            except:
+                width = len(test_line) * 20
+            if width <= w - 120:
+                current_line = test_line
+            else:
+                if current_line:
+                    text_lines.append(current_line)
+                current_line = word
+        if current_line:
+            text_lines.append(current_line)
+        text_lines.append("")  # пустая строка между абзацами
+    
+    for i, line in enumerate(text_lines):
+        if line:
+            # Тень
+            for offset in [(1,1)]:
+                draw.text((60 + offset[0], text_y + i*40 + offset[1]), line, font=font_text, fill=(0,0,0))
+            draw.text((60, text_y + i*40), line, font=font_text, fill=(240,240,240))
+    
+    # Призыв к действию
+    call_y = text_y + len(text_lines)*40 + 40
+    for offset in [(1,1)]:
+        draw.text((60 + offset[0], call_y + offset[1]), f"✨ {call_to_action}", font=font_small, fill=(0,0,0))
+    draw.text((60, call_y), f"✨ {call_to_action}", font=font_small, fill=(255, 215, 0))
+    
+    # Хэштеги
+    hash_y = call_y + 50
+    for offset in [(1,1)]:
+        draw.text((60 + offset[0], hash_y + offset[1]), hashtags, font=font_small, fill=(0,0,0))
+    draw.text((60, hash_y), hashtags, font=font_small, fill=(180,180,180))
+    
+    # Нижняя декоративная линия
+    line_y_bottom = h - 60
+    for i in range(3):
+        draw.line([(60 + i*80, line_y_bottom), (60 + i*80 + 50, line_y_bottom)], fill=(218, 165, 32), width=2)
+    
+    # Сохраняем
+    output = io.BytesIO()
+    img.save(output, format="JPEG", quality=90)
+    output.seek(0)
+    
+    print(f"✅ Стильный пост создан! Размер: {output.getbuffer().nbytes / (1024 * 1024):.2f}MB")
+    return output
+
+# ==================== AI ЧАТ ====================
+async def chat_with_gpt(user_id, message):
+    """Общение с ChatGPT с сохранением истории"""
+    if not chatgpt_client:
+        return "❌ ChatGPT API не настроен. Добавьте переменную окружения CHATGPT_API_KEY"
+    
+    # Сохраняем сообщение пользователя
+    save_chat_message(user_id, "user", message)
+    
+    # Получаем историю
+    history = get_chat_history(user_id, 10)
+    
+    # Формируем сообщения
+    messages = [{"role": "system", "content": "Ты дружелюбный и полезный ассистент. Отвечай кратко, по делу, но дружелюбно."}]
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": message})
+    
+    try:
+        response = await chatgpt_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1000
+        )
+        
+        reply = response.choices[0].message.content
+        save_chat_message(user_id, "assistant", reply)
+        return reply
+    except Exception as e:
+        logger.error(f"Ошибка ChatGPT: {e}")
+        return f"❌ Ошибка: {e}"
 
 # ==================== ВОДЯНОЙ ЗНАК ====================
 def add_watermark_to_image(image):
@@ -137,6 +358,7 @@ def add_watermark_only(photo_bytes):
     output.seek(0)
     return output
 
+# ==================== ПРОЦЕССИНГ ФОТО ====================
 def process_photo(photo_bytes, title_text, add_watermark_flag=False):
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
     w, h = img.size
@@ -210,7 +432,17 @@ def process_photo(photo_bytes, title_text, add_watermark_flag=False):
 
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("📸 Отправить фото, видео или текст", callback_data="send_media_info")]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📸 Отправить фото для поста", callback_data="send_media_info")],
+        [InlineKeyboardButton("🤖 Чат с GPT", callback_data="start_gpt_chat")],
+        [InlineKeyboardButton("✨ Сделать стильный пост (GPT)", callback_data="create_style_post")]
+    ])
+
+def get_gpt_chat_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Очистить историю", callback_data="clear_chat_history")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ])
 
 def get_channel_selection_keyboard(original_callback, has_buttons):
     keyboard = []
@@ -274,7 +506,8 @@ def get_preview_keyboard(media_type):
             [InlineKeyboardButton("🎨 Оформить пост", callback_data="design_post")],
             [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
             [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
-            [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_photo")],
+            [InlineKeyboardButton("🤖 Обработать текст (DeepSeek)", callback_data="ai_process_photo")],
+            [InlineKeyboardButton("✨ Сделать стильный пост (GPT)", callback_data="create_style_post_from_photo")],
             [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_photo_menu")]
         ])
 
@@ -308,7 +541,8 @@ def get_ai_result_keyboard(media_type):
             [InlineKeyboardButton("📤 Опубликовать", callback_data="publish_photo_with_buttons")],
             [InlineKeyboardButton("🎨 Оформить", callback_data="design_post")],
             [InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark")],
-            [InlineKeyboardButton("📝 Новый запрос ИИ", callback_data=f"ai_custom_request_photo")],
+            [InlineKeyboardButton("📝 Новый запрос DeepSeek", callback_data=f"ai_custom_request_photo")],
+            [InlineKeyboardButton("✨ Сделать стильный пост (GPT)", callback_data="create_style_post_from_photo")],
             [InlineKeyboardButton("⏰ Отложить", callback_data="schedule_photo_menu")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_photo_preview")]
         ])
@@ -407,9 +641,67 @@ async def send_to_channel(context, channel_id, channel_link, photo_bytes=None, f
 # ==================== ОБРАБОТЧИКИ ====================
 async def start(update, context):
     await update.message.reply_text(
-        "🤖 *Бот MINSK NEWS*\n\nОтправьте текст, фото, альбом фото или видео с подписью.\n\n"
-        "• 📤 Опубликовать с/без кнопок\n• 🎨 Оформить пост (фото)\n• 💧 Водяной знак (фото)\n• 🤖 Обработка ИИ\n• ⏰ Отложить публикацию",
+        "🤖 *MINSK NEWS BOT*\n\n"
+        "📸 *Отправьте фото* для создания поста\n"
+        "🤖 *Чат с GPT* - общайтесь с ИИ\n"
+        "✨ *Стильный пост* - создайте премиальный пост через GPT\n\n"
+        "👇 Выберите действие:",
         parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+async def handle_text(update, context):
+    # Если в режиме чата с GPT
+    if context.user_data.get("gpt_chat_mode"):
+        user_id = update.effective_user.id
+        message = update.message.text
+        
+        if message.lower() == "/exit":
+            context.user_data["gpt_chat_mode"] = False
+            await update.message.reply_text("👋 Выход из чата с GPT. Используйте /start для возврата в меню.")
+            return
+        
+        await update.message.reply_text("🤔 Думаю...")
+        response = await chat_with_gpt(user_id, message)
+        await update.message.reply_text(response, parse_mode="Markdown", reply_markup=get_gpt_chat_keyboard())
+        return
+    
+    # Обычная обработка текста для поста
+    if context.user_data.get("waiting_for_custom_request"):
+        return
+    
+    text = update.message.text
+    if not text or text.startswith('/'): return
+    context.chat_data["pending"] = {"type": "text", "text": remove_emojis(text)}
+    await update.message.reply_text(f"📝 Текст:\n\n{text[:500]}...\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
+
+async def handle_photo(update, context):
+    msg = update.message
+    
+    # Проверка на альбом
+    if msg.media_group_id:
+        album_key = f"album_{msg.media_group_id}"
+        if album_key not in context.chat_data:
+            context.chat_data[album_key] = []
+        
+        photo = msg.photo[-1]
+        context.chat_data[album_key].append(photo.file_id)
+        
+        if not context.chat_data.get("processing_album"):
+            asyncio.create_task(handle_album(update, context))
+        return
+    
+    # Одиночное фото
+    photo = msg.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    photo_bytes = await file.download_as_bytearray()
+    text = remove_emojis(msg.caption or "")
+    context.chat_data["pending"] = {
+        "type": "photo", 
+        "text": text, 
+        "file_id": photo.file_id, 
+        "photo_bytes": photo_bytes, 
+        "original": photo_bytes
+    }
+    await msg.reply_photo(photo=photo.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
 
 async def handle_album(update, context):
     message = update.message
@@ -460,42 +752,148 @@ async def handle_album(update, context):
     
     context.chat_data["processing_album"] = None
 
-async def handle_photo(update, context):
-    msg = update.message
-    
-    if msg.media_group_id:
-        album_key = f"album_{msg.media_group_id}"
-        if album_key not in context.chat_data:
-            context.chat_data[album_key] = []
-        
-        photo = msg.photo[-1]
-        context.chat_data[album_key].append(photo.file_id)
-        
-        if not context.chat_data.get("processing_album"):
-            asyncio.create_task(handle_album(update, context))
-        return
-    
-    photo = msg.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    photo_bytes = await file.download_as_bytearray()
-    text = remove_emojis(msg.caption or "")
-    context.chat_data["pending"] = {"type": "photo", "text": text, "file_id": photo.file_id, "photo_bytes": photo_bytes, "original": photo_bytes}
-    await msg.reply_photo(photo=photo.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("photo"))
-
-async def handle_text(update, context):
-    if context.user_data.get("waiting_for_custom_request"):
-        return
-    
-    text = update.message.text
-    if not text or text.startswith('/'): return
-    context.chat_data["pending"] = {"type": "text", "text": remove_emojis(text)}
-    await update.message.reply_text(f"📝 Текст:\n\n{text[:500]}...\n\nВыберите действие:", parse_mode="HTML", reply_markup=get_preview_keyboard("text"))
-
 async def handle_video(update, context):
     msg = update.message
     text = remove_emojis(msg.caption or "")
     context.chat_data["pending"] = {"type": "video", "text": text, "file_id": msg.video.file_id}
     await msg.reply_video(video=msg.video.file_id, caption=text or " ", parse_mode="HTML", reply_markup=get_preview_keyboard("video"))
+
+# ==================== GPT ЧАТ ====================
+async def start_gpt_chat(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    context.user_data["gpt_chat_mode"] = True
+    clear_chat_history(user_id)
+    
+    await query.message.reply_text(
+        "🤖 *Чат с GPT активирован!*\n\n"
+        "Просто отправляйте мне сообщения, и я буду отвечать.\n"
+        "История диалога сохраняется.\n\n"
+        "Команды:\n"
+        "• /exit - выйти из чата\n"
+        "• /clear - очистить историю\n\n"
+        "👇 Начните общение!",
+        parse_mode="Markdown",
+        reply_markup=get_gpt_chat_keyboard()
+    )
+
+async def clear_chat_history_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    clear_chat_history(user_id)
+    
+    await query.message.reply_text("🗑 История диалога очищена!")
+
+# ==================== СОЗДАНИЕ СТИЛЬНОГО ПОСТА ЧЕРЕЗ GPT ====================
+async def create_style_post(update, context, photo_bytes=None):
+    """Создаёт стильный пост через GPT и накладывает текст на фото"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not chatgpt_client:
+        await query.message.reply_text("❌ ChatGPT API не настроен. Добавьте переменную CHATGPT_API_KEY")
+        return
+    
+    # Получаем текст для обработки
+    pending = context.chat_data.get("pending", {})
+    text = pending.get("text", "")
+    
+    if not text:
+        await query.message.reply_text("❌ Нет текста для обработки. Сначала отправьте текст или фото с подписью.")
+        return
+    
+    # Если нет фото, просим отправить
+    if not photo_bytes and pending.get("type") == "photo":
+        photo_bytes = pending.get("original")
+    
+    await query.message.reply_text("✨ Генерирую стильный пост через ChatGPT...")
+    
+    try:
+        # Генерируем текст через GPT
+        response = await chatgpt_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": CHATGPT_POST_PROMPT},
+                {"role": "user", "content": f"Создай пост на тему: {text}"}
+            ],
+            temperature=0.8,
+            max_tokens=500
+        )
+        
+        result = response.choices[0].message.content
+        
+        # Парсим результат
+        title = ""
+        body = ""
+        call_to_action = ""
+        hashtags = ""
+        
+        for line in result.split('\n'):
+            if line.startswith("ЗАГОЛОВОК:"):
+                title = line.replace("ЗАГОЛОВОК:", "").strip()
+            elif line.startswith("ТЕКСТ:"):
+                body = line.replace("ТЕКСТ:", "").strip()
+            elif line.startswith("ПРИЗЫВ:"):
+                call_to_action = line.replace("ПРИЗЫВ:", "").strip()
+            elif line.startswith("ХЭШТЕГИ:"):
+                hashtags = line.replace("ХЭШТЕГИ:", "").strip()
+        
+        if not title:
+            title = text[:50]
+        if not call_to_action:
+            call_to_action = "Подпишитесь на наш канал!"
+        if not hashtags:
+            hashtags = "#Minsk #MinskNews #MinskCity"
+        
+        # Создаём стильный пост с наложением текста
+        if photo_bytes:
+            await query.message.reply_text("🎨 Создаю визуальное оформление...")
+            styled_photo = create_city_post(photo_bytes, title, body, call_to_action, hashtags)
+            
+            # Формируем финальный текст
+            final_text = f"{title}\n\n{body}\n\n✨ {call_to_action}\n\n{hashtags}"
+            
+            # Сохраняем в pending
+            context.chat_data["pending"]["text"] = final_text
+            context.chat_data["pending"]["photo_bytes"] = styled_photo.getvalue()
+            
+            await query.message.reply_photo(
+                photo=styled_photo,
+                caption=f"{final_text}\n\n✅ Стильный пост создан!",
+                parse_mode="HTML",
+                reply_markup=get_preview_keyboard("photo")
+            )
+        else:
+            await query.message.reply_text(
+                f"✨ *Сгенерированный пост:*\n\n"
+                f"📰 *{title}*\n\n"
+                f"📝 {body}\n\n"
+                f"✨ {call_to_action}\n\n"
+                f"{hashtags}\n\n"
+                f"ℹ️ Для создания визуального оформления отправьте фото.",
+                parse_mode="Markdown",
+                reply_markup=get_ai_result_keyboard("photo")
+            )
+            context.chat_data["pending"]["text"] = f"{title}\n\n{body}\n\n✨ {call_to_action}\n\n{hashtags}"
+        
+    except Exception as e:
+        logger.error(f"Ошибка GPT: {e}")
+        await query.message.reply_text(f"❌ Ошибка: {e}")
+
+async def create_style_post_from_photo(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    pending = context.chat_data.get("pending", {})
+    if pending.get("type") != "photo":
+        await query.message.reply_text("❌ Сначала отправьте фото с подписью")
+        return
+    
+    await create_style_post(update, context, pending.get("original"))
 
 # ==================== ПУБЛИКАЦИЯ С ВЫБОРОМ КАНАЛА ====================
 async def publish_with_channel_selection(update, context, media_type, has_buttons):
@@ -728,13 +1126,16 @@ async def design_from_watermark_callback(update, context):
     try: await query.message.delete()
     except: pass
 
-# ==================== ОБРАБОТКА ИИ ====================
-async def ai_process_with_custom_request(update, context, media_type, custom_request=None):
+# ==================== ОБРАБОТКА AI ====================
+async def ai_process_with_custom_request(update, context, media_type, custom_request=None, use_chatgpt=False):
     query = update.callback_query
     await query.answer()
     
-    if not deepseek_client:
-        await query.message.reply_text("❌ API DeepSeek не настроен")
+    client = chatgpt_client if use_chatgpt else deepseek_client
+    model = "gpt-3.5-turbo" if use_chatgpt else "deepseek-chat"
+    
+    if not client:
+        await query.message.reply_text(f"❌ API {'ChatGPT' if use_chatgpt else 'DeepSeek'} не настроен")
         return
     
     prompt = DEEPSEEK_PROMPT
@@ -748,11 +1149,11 @@ async def ai_process_with_custom_request(update, context, media_type, custom_req
         await query.message.reply_text("❌ Нет текста")
         return
     
-    await query.message.reply_text("🤖 Обрабатываю через DeepSeek...")
+    await query.message.reply_text(f"🤖 Обрабатываю через {'ChatGPT' if use_chatgpt else 'DeepSeek'}...")
     
     try:
-        response = await deepseek_client.chat.completions.create(
-            model="deepseek-chat",
+        response = await client.chat.completions.create(
+            model=model,
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}],
             temperature=0.7,
             max_tokens=1000
@@ -800,8 +1201,14 @@ async def ai_process_with_custom_request(update, context, media_type, custom_req
         )
         
     except Exception as e:
-        logger.error(f"Ошибка DeepSeek: {e}")
+        logger.error(f"Ошибка AI: {e}")
         await query.message.reply_text(f"❌ Ошибка: {e}")
+
+async def ai_process_photo_deepseek(update, context):
+    await ai_process_with_custom_request(update, context, "photo", None, False)
+
+async def ai_process_photo_chatgpt(update, context):
+    await ai_process_with_custom_request(update, context, "photo", None, True)
 
 async def ai_custom_request_callback(update, context, media_type):
     query = update.callback_query
@@ -854,7 +1261,7 @@ async def handle_custom_request_text(update, context):
         try:
             original_message = await context.bot.get_message(chat_id=original_chat_id, message_id=original_message_id)
             fake_query = FakeQuery(original_message, original_chat_id)
-            await ai_process_with_custom_request(fake_query, context, media_type, custom_request)
+            await ai_process_with_custom_request(fake_query, context, media_type, custom_request, False)
         except Exception as e:
             logger.error(f"Ошибка при получении исходного сообщения: {e}")
             await update.message.reply_text("❌ Не удалось обработать запрос. Попробуйте снова.")
@@ -962,7 +1369,6 @@ async def schedule_post(update, context, media_type):
     designed = context.chat_data.get("designed", {})
     watermarked = context.chat_data.get("watermarked", {})
     
-    # Для отложенной публикации пока используем канал по умолчанию
     default_channel_id = CHANNELS.get("news", {}).get("chat_id", "")
     
     if media_type == "photo":
@@ -1019,6 +1425,12 @@ async def back_to_preview(update, context, media_type):
     
     try: await query.message.delete()
     except: pass
+
+async def back_to_menu_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["gpt_chat_mode"] = False
+    await query.message.reply_text("🏠 Главное меню:", reply_markup=get_main_keyboard())
 
 async def back_to_original_callback(update, context):
     query = update.callback_query
@@ -1078,6 +1490,20 @@ async def button_callback(update, context):
             await execute_publish(update, context, channel_key, original_callback, has_buttons)
         return
     
+    # GPT чат
+    elif data == "start_gpt_chat":
+        await start_gpt_chat(update, context)
+    elif data == "clear_chat_history":
+        await clear_chat_history_callback(update, context)
+    elif data == "back_to_menu":
+        await back_to_menu_callback(update, context)
+    
+    # Стильный пост
+    elif data == "create_style_post":
+        await create_style_post(update, context, None)
+    elif data == "create_style_post_from_photo":
+        await create_style_post_from_photo(update, context)
+    
     # Публикация (показываем выбор канала)
     elif data == "publish_photo_with_buttons": 
         await publish_photo_with_buttons(update, context)
@@ -1112,13 +1538,15 @@ async def button_callback(update, context):
     
     # AI обработка
     elif data == "ai_process_photo": 
-        await ai_process_with_custom_request(update, context, "photo", None)
+        await ai_process_photo_deepseek(update, context)
+    elif data == "ai_process_chatgpt":
+        await ai_process_photo_chatgpt(update, context)
     elif data == "ai_process_video": 
-        await ai_process_with_custom_request(update, context, "video", None)
+        await ai_process_with_custom_request(update, context, "video", None, False)
     elif data == "ai_process_text": 
-        await ai_process_with_custom_request(update, context, "text", None)
+        await ai_process_with_custom_request(update, context, "text", None, False)
     elif data == "ai_process_album":
-        await ai_process_with_custom_request(update, context, "album", None)
+        await ai_process_with_custom_request(update, context, "album", None, False)
     
     # AI кастомные запросы
     elif data == "ai_custom_request_photo":
@@ -1193,7 +1621,7 @@ app = FastAPI()
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "bot": "MINSK NEWS Bot"}
+    return {"status": "ok", "bot": "MINSK NEWS Bot with ChatGPT"}
 
 @app.get("/health")
 async def health():
@@ -1210,6 +1638,9 @@ async def run_bot():
         else:
             logger.info(f"  ⚠️ {channel['name']}: не настроен")
     
+    logger.info(f"🤖 DeepSeek API: {'✅' if deepseek_client else '❌'}")
+    logger.info(f"🤖 ChatGPT API: {'✅' if chatgpt_client else '❌'}")
+    
     # Создаём приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -1223,7 +1654,6 @@ async def run_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_text))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_request_text))
     
-    # Запускаем polling с обработкой конфликта
     await application.initialize()
     await application.start()
     

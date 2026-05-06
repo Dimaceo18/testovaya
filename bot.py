@@ -287,16 +287,14 @@ async def generate_background_with_gpt(photo_bytes, user_text):
         photo_bytes = bytes(photo_bytes)
     
     try:
-        # МЕНЯЕМ model="dall-e-2" ВМЕСТО "gpt-image-1"
-        response = await openai_client.images.generate(  # ЗАМЕНИЛИ edit НА generate
-            model="dall-e-2",  # <--- ИЗМЕНЕНО
+        response = await openai_client.images.generate(
+            model="dall-e-2",
             prompt=prompt,
             size="512x512",
-            n=1,
-            quality="standard"
+            n=1
+            # quality УДАЛЁН — DALL-E 2 его не поддерживает
         )
         
-        # Получаем результат
         image_url = response.data[0].url
         async with httpx.AsyncClient() as client:
             img_response = await client.get(image_url)

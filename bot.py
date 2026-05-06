@@ -276,38 +276,34 @@ def add_text_with_pillow(photo_bytes, title, description, call_to_action, hashta
 
 # ==================== ГЕНЕРАЦИЯ ФОНА ЧЕРЕЗ GPT-IMAGE-1 ====================
 async def generate_background_with_gpt(photo_bytes, user_text):
-    """Генерирует фон/стиль через gpt-image-1"""
+    """Генерирует фон/стиль через DALL-E 2"""
     if not openai_client:
         return None, "❌ OpenAI API не настроен"
     
     prompt = AFISHA_IMAGE_PROMPT.format(user_text=user_text)
     
-    # ПРЕОБРАЗУЕМ bytearray в bytes (самое простое решение)
+    # Преобразуем bytearray в bytes
     if isinstance(photo_bytes, bytearray):
-        photo_bytes = bytes(photo_bytes)  # <-- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+        photo_bytes = bytes(photo_bytes)
     
     try:
-        response = await openai_client.images.edit(
-            model="gpt-image-1",
-            image=photo_bytes,  # Теперь это bytes, а не bytearray
+        # МЕНЯЕМ model="dall-e-2" ВМЕСТО "gpt-image-1"
+        response = await openai_client.images.generate(  # ЗАМЕНИЛИ edit НА generate
+            model="dall-e-2",  # <--- ИЗМЕНЕНО
             prompt=prompt,
-            size="1024x1536",
-            n=1
+            size="512x512",
+            n=1,
+            quality="standard"
         )
         
         # Получаем результат
-        if response.data[0].b64_json:
-            image_data = base64.b64decode(response.data[0].b64_json)
-            return io.BytesIO(image_data), None
-        elif response.data[0].url:
-            async with httpx.AsyncClient() as client:
-                img_response = await client.get(response.data[0].url)
-                return io.BytesIO(img_response.content), None
-        else:
-            return None, "Не удалось получить изображение"
+        image_url = response.data[0].url
+        async with httpx.AsyncClient() as client:
+            img_response = await client.get(image_url)
+            return io.BytesIO(img_response.content), None
             
     except Exception as e:
-        logger.error(f"GPT-image-1 ошибка: {e}")
+        logger.error(f"DALL-E 2 ошибка: {e}")
         return None, f"Ошибка: {e}"
 
 # ==================== ПОЛНЫЙ ПРОЦЕСС СОЗДАНИЯ АФИШИ ====================

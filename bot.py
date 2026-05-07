@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 import os
 import io
 import base64
@@ -8,10 +9,17 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from openai import AsyncOpenAI
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
-
-# ================== НАСТРОЙКИ ==================
+# ======================================================
+# НАСТРОЙКИ
+# ======================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -21,49 +29,51 @@ client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-OUT_W, OUT_H = 1080, 1350
+OUT_W = 1080
+OUT_H = 1350
 
-
-# ================== AI PROMPT ==================
+# ======================================================
+# PROMPT
+# ======================================================
 
 STYLE_PROMPT = """
-Transform the uploaded photo into a premium cinematic editorial image for a modern city media Instagram poster.
+Transform the uploaded photo into a premium cinematic editorial image.
 
 Style:
 - realistic photography
 - premium city media aesthetic
 - cinematic lighting
-- clean Apple-style editorial mood
+- clean Apple-style composition
 - rich shadows
 - glossy highlights
-- soft bokeh
+- modern urban atmosphere
 - realistic depth
-- stylish urban vibe
+- stylish Belarus media look
 - magazine quality
-- modern Belarus city media style
 
 Keep:
-- same main subject
+- same person
 - same pose
+- same framing
 - same location feeling
-- same general framing
 
 Do not add:
 - text
-- letters
-- logos
 - typography
-- fake signs
+- logos
+- signs
 - cartoon style
 - illustration style
 
-The image must look like a premium photographed scene.
+The image should look like a premium city media photo.
 """
 
+# ======================================================
+# ШРИФТЫ
+# ======================================================
 
-# ================== ШРИФТЫ ==================
+def get_font(size=40, bold=True):
 
-def get_font(size: int, bold: bool = True):
     paths = []
 
     if bold:
@@ -77,22 +87,26 @@ def get_font(size: int, bold: bool = True):
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         ]
 
-    for path in paths:
+    for p in paths:
         try:
-            return ImageFont.truetype(path, size)
-        except Exception:
+            return ImageFont.truetype(p, size)
+        except:
             pass
 
     return ImageFont.load_default()
 
+# ======================================================
+# ОБРЕЗКА
+# ======================================================
 
-# ================== ОБРЕЗКА 4:5 ==================
+def cover_crop(img, size=(OUT_W, OUT_H)):
 
-def cover_crop(img: Image.Image, size=(OUT_W, OUT_H)):
     target_w, target_h = size
+
     src_w, src_h = img.size
 
     scale = max(target_w / src_w, target_h / src_h)
+
     new_w = int(src_w * scale)
     new_h = int(src_h * scale)
 
@@ -103,120 +117,144 @@ def cover_crop(img: Image.Image, size=(OUT_W, OUT_H)):
 
     return img.crop((left, top, left + target_w, top + target_h))
 
+# ======================================================
+# AI ПЕРЕРИСОВКА
+# ======================================================
 
-# ================== AI ПЕРЕРИСОВКА ==================
+async def ai_redraw(photo_bytes: bytes):
 
-async def ai_redraw(photo_bytes: bytes) -> bytes:
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
-    img = cover_crop(img, (1024, 1536))
+
+    img = cover_crop(img, (1536, 1536))
 
     image_file = io.BytesIO()
+
     img.save(image_file, format="PNG")
+
     image_file.seek(0)
+
     image_file.name = "input.png"
 
     response = await client.images.edit(
         model="gpt-image-1",
         image=image_file,
         prompt=STYLE_PROMPT,
-        size="1024x1536",
-        quality="medium",
+        size="1536x1536",
     )
 
-    b64 = response.data[0].b64_json
-    return base64.b64decode(b64)
+    image_base64 = response.data[0].b64_json
 
+    image_bytes = base64.b64decode(image_base64)
 
-# ================== ГРАДИЕНТ ==================
+    return image_bytes
 
-def add_gradient(img: Image.Image):
+# ======================================================
+# ГРАДИЕНТ
+# ======================================================
+
+def add_gradient(img):
+
     img = img.convert("RGBA")
+
     w, h = img.size
 
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
     draw = ImageDraw.Draw(overlay)
 
-    grad_w = int(w * 0.66)
+    grad_w = int(w * 0.65)
 
     for x in range(grad_w):
-        t = x / grad_w
-        alpha = int(225 * (1 - t) ** 1.7)
-        draw.line([(x, 0), (x, h)], fill=(0, 35, 28, alpha), width=1)
 
-    for y in range(h):
-        if y > h * 0.58:
-            t = (y - h * 0.58) / (h * 0.42)
-            alpha = int(100 * t)
-            draw.line([(0, y), (w, y)], fill=(0, 25, 20, alpha), width=1)
+        t = x / grad_w
+
+        alpha = int(225 * (1 - t) ** 1.7)
+
+        draw.line(
+            [(x, 0), (x, h)],
+            fill=(0, 35, 28, alpha),
+            width=1
+        )
 
     return Image.alpha_composite(img, overlay)
 
+# ======================================================
+# ДЕКОР
+# ======================================================
 
-# ================== ДЕКОР ==================
+def draw_decor(draw):
 
-def draw_decor(draw: ImageDraw.ImageDraw):
-    green = (135, 190, 105)
+    green = (130, 190, 110)
 
     for i in range(5):
+
         draw.arc(
-            (-130 + i * 24, -135 + i * 18, 310 + i * 24, 250 + i * 18),
-            18,
+            (-120 + i * 25, -130 + i * 18,
+             280 + i * 25, 240 + i * 18),
+            15,
             120,
             fill=green,
-            width=3,
+            width=3
         )
 
     draw.arc(
-        (-360, 930, 360, 1640),
+        (-350, 920, 340, 1600),
         205,
-        25,
+        20,
         fill=(48, 92, 54),
-        width=58,
+        width=55
     )
 
-    for r in range(3):
-        for c in range(3):
-            x = 76 + c * 34
-            y = 1230 + r * 34
-            draw.ellipse((x, y, x + 7, y + 7), fill=(160, 205, 105))
-
-
-# ================== ПЛАШКА ==================
+# ======================================================
+# ПЛАШКА
+# ======================================================
 
 def draw_label(draw, x, y, text):
-    font = get_font(22, True)
+
+    font = get_font(22)
 
     bbox = draw.textbbox((0, 0), text, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
+
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
 
     draw.rounded_rectangle(
-        (x, y, x + tw + 40, y + th + 22),
+        (x, y, x + w + 40, y + h + 22),
         radius=18,
-        fill=(255, 202, 54),
+        fill=(255, 202, 54)
     )
 
-    draw.text((x + 20, y + 9), text, font=font, fill=(0, 28, 22))
+    draw.text(
+        (x + 20, y + 9),
+        text,
+        font=font,
+        fill=(0, 25, 20)
+    )
 
-
-# ================== ТЕКСТ ==================
+# ======================================================
+# ПЕРЕНОС ТЕКСТА
+# ======================================================
 
 def wrap_text(draw, text, font, max_width):
+
     words = text.split()
+
     lines = []
+
     current = ""
 
     for word in words:
-        test = f"{current} {word}".strip()
+
+        test = current + " " + word if current else word
 
         bbox = draw.textbbox((0, 0), test, font=font)
+
         width = bbox[2] - bbox[0]
 
         if width <= max_width:
             current = test
         else:
-            if current:
-                lines.append(current)
+            lines.append(current)
             current = word
 
     if current:
@@ -224,181 +262,251 @@ def wrap_text(draw, text, font, max_width):
 
     return lines
 
-
-def draw_shadow_text(draw, x, y, text, font, fill):
-    draw.text((x + 3, y + 3), text, font=font, fill=(0, 0, 0, 150))
-    draw.text((x, y), text, font=font, fill=fill)
-
-
-# ================== ИКОНКИ ==================
+# ======================================================
+# ИКОНКИ
+# ======================================================
 
 def draw_pin(draw, x, y):
+
     yellow = (255, 196, 45)
 
-    draw.ellipse((x - 15, y - 24, x + 15, y + 6), fill=yellow)
-    draw.polygon([(x - 12, y), (x + 12, y), (x, y + 30)], fill=yellow)
-    draw.ellipse((x - 5, y - 14, x + 5, y - 4), fill=(0, 35, 28))
+    draw.ellipse((x - 14, y - 24, x + 14, y + 4), fill=yellow)
 
+    draw.polygon(
+        [(x - 12, y),
+         (x + 12, y),
+         (x, y + 28)],
+        fill=yellow
+    )
 
 def draw_calendar(draw, x, y):
+
     yellow = (255, 196, 45)
 
-    draw.rounded_rectangle((x - 20, y - 20, x + 20, y + 22), radius=5, outline=yellow, width=4)
-    draw.line((x - 20, y - 7, x + 20, y - 7), fill=yellow, width=4)
-    draw.line((x - 10, y - 27, x - 10, y - 15), fill=yellow, width=4)
-    draw.line((x + 10, y - 27, x + 10, y - 15), fill=yellow, width=4)
+    draw.rounded_rectangle(
+        (x - 18, y - 18, x + 18, y + 18),
+        radius=4,
+        outline=yellow,
+        width=4
+    )
 
+    draw.line((x - 18, y - 6, x + 18, y - 6), fill=yellow, width=4)
+
+# ======================================================
+# КАРТОЧКИ
+# ======================================================
 
 def info_card(draw, x, y, title, value, icon="pin"):
+
     draw.rounded_rectangle(
-        (x, y, x + 365, y + 90),
+        (x, y, x + 360, y + 90),
         radius=18,
         fill=(0, 28, 22, 220),
         outline=(120, 180, 100),
-        width=2,
+        width=2
     )
 
     if icon == "pin":
-        draw_pin(draw, x + 48, y + 42)
+        draw_pin(draw, x + 48, y + 40)
     else:
-        draw_calendar(draw, x + 48, y + 42)
+        draw_calendar(draw, x + 48, y + 40)
 
-    draw.line((x + 100, y + 18, x + 100, y + 72), fill=(120, 180, 100), width=2)
+    draw.line(
+        (x + 100, y + 18, x + 100, y + 70),
+        fill=(120, 180, 100),
+        width=2
+    )
 
-    small = get_font(20, True)
-    big = get_font(28, True)
+    font_small = get_font(20)
+    font_big = get_font(28)
 
-    draw.text((x + 125, y + 15), title.upper(), font=small, fill=(240, 240, 240))
-    draw.text((x + 125, y + 45), value.upper(), font=big, fill=(255, 196, 45))
+    draw.text(
+        (x + 125, y + 15),
+        title.upper(),
+        font=font_small,
+        fill=(240, 240, 240)
+    )
 
+    draw.text(
+        (x + 125, y + 45),
+        value.upper(),
+        font=font_big,
+        fill=(255, 196, 45)
+    )
 
-# ================== ОФОРМЛЕНИЕ ==================
+# ======================================================
+# ПОСТЕР
+# ======================================================
 
-def render_poster(image_bytes: bytes, title: str):
+def render_poster(image_bytes, title):
+
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img = cover_crop(img, (OUT_W, OUT_H))
+
+    img = cover_crop(img)
 
     img = ImageEnhance.Contrast(img).enhance(1.05)
-    img = ImageEnhance.Color(img).enhance(1.03)
 
     img = add_gradient(img)
+
     draw = ImageDraw.Draw(img)
 
     draw_decor(draw)
-    draw_label(draw, 78, 210, "НОВОСТИ МИНСКА")
 
-    title_font = get_font(64, True)
+    draw_label(draw, 78, 205, "НОВОСТИ МИНСКА")
 
-    lines = wrap_text(draw, title.upper(), title_font, 560)
+    title_font = get_font(66)
+
+    lines = wrap_text(
+        draw,
+        title.upper(),
+        title_font,
+        520
+    )
 
     y = 340
 
-    for i, line in enumerate(lines[:5]):
-        if i == 1:
-            color = (160, 205, 105)
-        elif i == 2:
-            color = (255, 196, 45)
-        else:
-            color = (255, 255, 255)
+    for i, line in enumerate(lines[:4]):
 
-        draw_shadow_text(draw, 80, y, line, title_font, color)
-        y += 76
+        color = (255, 255, 255)
+
+        if i == 1:
+            color = (170, 210, 100)
+
+        draw.text(
+            (80 + 3, y + 3),
+            line,
+            font=title_font,
+            fill=(0, 0, 0)
+        )
+
+        draw.text(
+            (80, y),
+            line,
+            font=title_font,
+            fill=color
+        )
+
+        y += 84
 
     info_card(draw, 76, 1030, "Где", "Минск", "pin")
+
     info_card(draw, 76, 1140, "Когда", "Скоро", "calendar")
 
     output = io.BytesIO()
-    img.convert("RGB").save(output, format="PNG")
+
+    img.save(output, format="PNG")
+
     output.seek(0)
 
     return output
 
-
-# ================== TELEGRAM ==================
+# ======================================================
+# START
+# ======================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     context.user_data.clear()
+
     context.user_data["state"] = "waiting_photo"
 
     await update.message.reply_text(
-        "🎨 Бот Афиша Минска\n\n"
-        "1. Отправь фото\n"
-        "2. Потом отправь заголовок\n"
-        "3. Я сделаю афишу с AI-перерисовкой и фирменным оформлением"
+        "📸 Отправь фото\n"
+        "✍️ Потом отправь заголовок\n\n"
+        "Я создам афишу."
     )
 
+# ======================================================
+# PHOTO
+# ======================================================
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = context.user_data.get("state")
 
-    if state != "waiting_photo":
-        await update.message.reply_text("Сначала нажми /start")
+    if context.user_data.get("state") != "waiting_photo":
         return
 
     photo = update.message.photo[-1]
+
     file = await context.bot.get_file(photo.file_id)
+
     photo_bytes = await file.download_as_bytearray()
 
     context.user_data["photo"] = bytes(photo_bytes)
+
     context.user_data["state"] = "waiting_title"
 
-    await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
+    await update.message.reply_text(
+        "✍️ Теперь отправь заголовок"
+    )
 
+# ======================================================
+# TEXT
+# ======================================================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = context.user_data.get("state")
 
-    if state != "waiting_title":
-        await update.message.reply_text("Нажми /start и отправь фото.")
+    if context.user_data.get("state") != "waiting_title":
         return
 
-    title = update.message.text.strip()
+    title = update.message.text
+
     photo = context.user_data.get("photo")
 
-    if not photo:
-        context.user_data.clear()
-        await update.message.reply_text("Фото потерялось. Нажми /start и начни заново.")
-        return
-
-    msg = await update.message.reply_text("🎛️ Делаю AI-перерисовку и оформление...")
+    msg = await update.message.reply_text(
+        "🎨 Создаю афишу..."
+    )
 
     try:
+
         ai_image = await ai_redraw(photo)
+
         poster = render_poster(ai_image, title)
 
-        await update.message.reply_photo(photo=poster, caption="Готово ✨")
+        await update.message.reply_photo(
+            photo=poster
+        )
 
     except Exception as e:
+
         logger.exception(e)
-        await update.message.reply_text(f"❌ Ошибка:\n{e}")
+
+        await update.message.reply_text(
+            f"❌ Ошибка:\n{e}"
+        )
 
     context.user_data.clear()
+
     context.user_data["state"] = "waiting_photo"
 
     try:
         await msg.delete()
-    except Exception:
+    except:
         pass
 
-
-# ================== ЗАПУСК ==================
+# ======================================================
+# MAIN
+# ======================================================
 
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Нет BOT_TOKEN")
-
-    if not OPENAI_API_KEY:
-        raise RuntimeError("Нет OPENAI_API_KEY")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    app.add_handler(
+        MessageHandler(filters.PHOTO, handle_photo)
+    )
+
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
+    )
 
     print("✅ BOT STARTED")
+
     app.run_polling(drop_pending_updates=True)
 
+# ======================================================
 
 if __name__ == "__main__":
+
     main()

@@ -90,11 +90,12 @@ async def generate_banner(photo_bytes: bytes, user_text: str) -> bytes:
     style_image = open(STYLE_REFERENCE_PATH, "rb")
 
     try:
-        response = await client.images.edit(
-            model=IMAGE_MODEL,
-            image=[main_image, style_image],
-            prompt=make_prompt(user_text),
-            size="1024x1536",
+       response = await client.images.edit(
+    model=IMAGE_MODEL,
+    image=main_image,
+    input_fidelity_images=[style_image],
+    prompt=make_prompt(user_text),
+    size="1024x1536",
         )
     finally:
         style_image.close()

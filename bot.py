@@ -24,7 +24,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")
 
-STYLE_REFERENCE_PATH = Path("assets/style_reference.png")
+STYLE_REFERENCE_PATH = Path("style_reference.png")
 
 if not BOT_TOKEN:
     raise RuntimeError("Нет BOT_TOKEN")

@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 import os
 import io
-import base64
+import json
+import re
 import logging
 
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 from openai import AsyncOpenAI
 
 from telegram import Update
@@ -16,10 +17,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("Нет BOT_TOKEN")
-if not OPENAI_API_KEY:
-    raise RuntimeError("Нет OPENAI_API_KEY")
 
-client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,109 +26,121 @@ logger = logging.getLogger(__name__)
 OUT_W, OUT_H = 1080, 1350
 
 
-STYLE_PROMPT = """
-Transform the uploaded photo into a premium cinematic editorial image for a modern city media Instagram poster.
+# ================= GPT РАЗБОР ТЕКСТА =================
 
-Important:
-Do not add text, letters, words, typography, logos, fake signs, captions or numbers.
+async def parse_news_text(text: str) -> dict:
+    fallback = {
+        "label": "НОВОСТИ МИНСКА",
+        "title": text.strip(),
+        "accent": "",
+        "place": "Минск",
+        "date": "Скоро",
+        "category": "Город",
+    }
 
-Style:
-- premium city media aesthetic
-- cinematic realistic photography
-- Apple-style editorial look
-- dark emerald and deep green mood
-- warm yellow highlights
-- glossy cinematic light
-- realistic shadows
-- realistic people and faces
-- soft bokeh
-- rich contrast
-- modern urban atmosphere
-- Belarus / Minsk city media feeling
-- premium magazine quality
+    if not client:
+        return fallback
 
-Keep:
-- same main subject
-- same pose
-- same general framing
-- same location feeling
+    prompt = f"""
+Разбери текст для Instagram-афиши Минска.
 
-Avoid:
-- cartoon
-- illustration
-- cheap banner design
-- distorted face
-- broken hands
-- artificial text
+Верни СТРОГО JSON без пояснений:
+{{
+  "label": "короткая категория капсом, например НОВОСТИ МИНСКА или АФИША МИНСКА",
+  "title": "главный короткий заголовок до 7 слов",
+  "accent": "самая важная часть для выделения до 4 слов",
+  "place": "место события, если есть, иначе Минск",
+  "date": "дата/время, если есть, иначе Скоро",
+  "category": "категория: Афиша, Город, Погода, Спорт, Концерт, Скидки"
+}}
+
+Текст:
+{text}
 """
 
+    try:
+        response = await client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt,
+        )
+        raw = response.output_text.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        data = json.loads(raw)
+
+        return {
+            "label": data.get("label") or fallback["label"],
+            "title": data.get("title") or fallback["title"],
+            "accent": data.get("accent") or "",
+            "place": data.get("place") or "Минск",
+            "date": data.get("date") or "Скоро",
+            "category": data.get("category") or "Город",
+        }
+
+    except Exception as e:
+        logger.warning(f"GPT parse failed: {e}")
+        return fallback
+
+
+# ================= ШРИФТЫ =================
 
 def get_font(size: int, bold: bool = True):
     paths = [
         "./fonts/Montserrat-Bold.ttf" if bold else "./fonts/Montserrat-Regular.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
+
     for path in paths:
         try:
             return ImageFont.truetype(path, size)
         except Exception:
             pass
+
     return ImageFont.load_default()
 
+
+# ================= ОБРАБОТКА ФОТО =================
 
 def cover_crop(img: Image.Image, size=(OUT_W, OUT_H)):
     tw, th = size
     sw, sh = img.size
+
     scale = max(tw / sw, th / sh)
     nw, nh = int(sw * scale), int(sh * scale)
+
     img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+
     left = (nw - tw) // 2
     top = (nh - th) // 2
+
     return img.crop((left, top, left + tw, top + th))
-
-
-async def ai_redraw(photo_bytes: bytes) -> bytes:
-    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
-    img = cover_crop(img, (1024, 1536))
-
-    image_file = io.BytesIO()
-    img.save(image_file, format="PNG")
-    image_file.seek(0)
-    image_file.name = "input.png"
-
-    response = await client.images.edit(
-        model="gpt-image-1",
-        image=image_file,
-        prompt=STYLE_PROMPT,
-        size="1024x1536",
-    )
-
-    b64 = response.data[0].b64_json
-    return base64.b64decode(b64)
 
 
 def add_gradient(img: Image.Image):
     img = img.convert("RGBA")
     w, h = img.size
+
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
     grad_w = int(w * 0.68)
+
     for x in range(grad_w):
         t = x / grad_w
-        alpha = int(230 * (1 - t) ** 1.65)
+        alpha = int(235 * (1 - t) ** 1.65)
         draw.line([(x, 0), (x, h)], fill=(0, 34, 27, alpha), width=1)
 
     for y in range(h):
         if y > h * 0.58:
             t = (y - h * 0.58) / (h * 0.42)
-            alpha = int(120 * t)
-            draw.line([(0, y), (w, y)], fill=(0, 28, 22, alpha), width=1)
+            alpha = int(115 * t)
+            draw.line([(0, y), (w, y)], fill=(0, 25, 20, alpha), width=1)
 
     return Image.alpha_composite(img, overlay)
 
 
-def draw_decor(draw: ImageDraw.ImageDraw):
+# ================= ДИЗАЙН =================
+
+def draw_decor(draw):
     green = (136, 190, 104)
 
     for i in range(5):
@@ -157,6 +168,7 @@ def draw_decor(draw: ImageDraw.ImageDraw):
 def draw_label(draw, x, y, text):
     font = get_font(22, True)
     bbox = draw.textbbox((0, 0), text, font=font)
+
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
 
@@ -165,6 +177,7 @@ def draw_label(draw, x, y, text):
         radius=18,
         fill=(255, 202, 54),
     )
+
     draw.text((x + 20, y + 9), text, font=font, fill=(0, 28, 22))
 
 
@@ -191,9 +204,9 @@ def wrap_text(draw, text, font, max_width):
     return lines
 
 
-def draw_shadow_text(draw, x, y, text, font, fill):
+def shadow_text(draw, x, y, text, font, color):
     draw.text((x + 3, y + 3), text, font=font, fill=(0, 0, 0, 150))
-    draw.text((x, y), text, font=font, fill=fill)
+    draw.text((x, y), text, font=font, fill=color)
 
 
 def draw_pin(draw, x, y):
@@ -213,7 +226,7 @@ def draw_calendar(draw, x, y):
 
 def info_card(draw, x, y, title, value, icon="pin"):
     draw.rounded_rectangle(
-        (x, y, x + 365, y + 90),
+        (x, y, x + 390, y + 90),
         radius=18,
         fill=(0, 28, 22, 220),
         outline=(120, 180, 100),
@@ -228,49 +241,61 @@ def info_card(draw, x, y, title, value, icon="pin"):
     draw.line((x + 100, y + 18, x + 100, y + 72), fill=(120, 180, 100), width=2)
 
     small = get_font(20, True)
-    big = get_font(28, True)
+    big = get_font(26, True)
 
     draw.text((x + 125, y + 15), title.upper(), font=small, fill=(240, 240, 240))
     draw.text((x + 125, y + 45), value.upper(), font=big, fill=(255, 196, 45))
 
 
-def render_poster(image_bytes: bytes, title: str):
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img = cover_crop(img, (OUT_W, OUT_H))
+def render_poster(photo_bytes: bytes, info: dict):
+    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
+    img = cover_crop(img)
 
-    img = ImageEnhance.Contrast(img).enhance(1.06)
-    img = ImageEnhance.Color(img).enhance(1.03)
+    img = ImageEnhance.Contrast(img).enhance(1.08)
+    img = ImageEnhance.Color(img).enhance(0.96)
+    img = ImageEnhance.Sharpness(img).enhance(1.08)
 
     img = add_gradient(img)
     draw = ImageDraw.Draw(img)
 
     draw_decor(draw)
-    draw_label(draw, 78, 210, "НОВОСТИ МИНСКА")
 
-    title_font = get_font(64, True)
-    lines = wrap_text(draw, title.upper(), title_font, 560)
+    draw_label(draw, 78, 210, info["label"])
 
+    title_font = get_font(62, True)
+    accent_font = get_font(68, True)
+
+    x = 80
     y = 340
+    max_width = 570
 
-    for i, line in enumerate(lines[:5]):
-        if i == 1:
-            color = (160, 205, 105)
-        elif i == 2:
-            color = (255, 196, 45)
-        else:
-            color = (255, 255, 255)
+    title = info["title"].upper()
+    accent = info["accent"].upper().strip()
 
-        draw_shadow_text(draw, 80, y, line, title_font, color)
-        y += 76
+    title_lines = wrap_text(draw, title, title_font, max_width)
 
-    info_card(draw, 76, 1030, "Где", "Минск", "pin")
-    info_card(draw, 76, 1140, "Когда", "Скоро", "calendar")
+    for line in title_lines[:3]:
+        shadow_text(draw, x, y, line, title_font, (255, 255, 255))
+        y += 74
+
+    if accent:
+        y += 8
+        accent_lines = wrap_text(draw, accent, accent_font, max_width)
+        for line in accent_lines[:2]:
+            shadow_text(draw, x, y, line, accent_font, (255, 196, 45))
+            y += 80
+
+    info_card(draw, 76, 1030, "Где", info["place"], "pin")
+    info_card(draw, 76, 1140, "Когда", info["date"], "calendar")
 
     output = io.BytesIO()
     img.convert("RGB").save(output, format="PNG")
     output.seek(0)
+
     return output
 
+
+# ================= TELEGRAM =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -279,8 +304,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎨 Бот Афиша Минска\n\n"
         "1. Отправь фото\n"
-        "2. Потом отправь заголовок\n"
-        "3. Я сделаю AI-перерисовку и оформление"
+        "2. Потом отправь текст новости\n"
+        "3. Я сам разберу заголовок, место и дату\n\n"
+        "Фото не перерисовывается. Оформление накладывается поверх твоего фото."
     )
 
 
@@ -294,32 +320,35 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_bytes = await file.download_as_bytearray()
 
     context.user_data["photo"] = bytes(photo_bytes)
-    context.user_data["state"] = "waiting_title"
+    context.user_data["state"] = "waiting_text"
 
-    await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
+    await update.message.reply_text("✅ Фото получил. Теперь отправь текст новости.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("state") != "waiting_title":
+    if context.user_data.get("state") != "waiting_text":
         await update.message.reply_text("Нажми /start и отправь фото.")
         return
 
-    title = update.message.text.strip()
+    user_text = update.message.text.strip()
     photo = context.user_data.get("photo")
 
-    if not photo:
-        context.user_data.clear()
-        context.user_data["state"] = "waiting_photo"
-        await update.message.reply_text("Фото потерялось. Нажми /start и начни заново.")
-        return
-
-    msg = await update.message.reply_text("🎛️ Делаю AI-перерисовку и оформление...")
+    msg = await update.message.reply_text("🎛️ Разбираю текст и оформляю пост...")
 
     try:
-        ai_image = await ai_redraw(photo)
-        poster = render_poster(ai_image, title)
+        info = await parse_news_text(user_text)
+        poster = render_poster(photo, info)
 
-        await update.message.reply_photo(photo=poster, caption="Готово ✨")
+        await update.message.reply_photo(
+            photo=poster,
+            caption=(
+                "Готово ✨\n\n"
+                f"Заголовок: {info['title']}\n"
+                f"Акцент: {info['accent']}\n"
+                f"Место: {info['place']}\n"
+                f"Когда: {info['date']}"
+            )
+        )
 
     except Exception as e:
         logger.exception(e)

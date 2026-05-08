@@ -35,7 +35,7 @@ WHITE = (255, 255, 255)
 LIGHT_BG = (250, 249, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
-FONT_REGULAR = "Montserrat-SemiBold.ttf"
+FONT_REGULAR = "Montserrat-Bold.ttf"
 
 
 # =========================

@@ -18,6 +18,9 @@ from telegram.ext import (
 )
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -110,13 +113,11 @@ def create_story(photo_bytes, title, body):
     canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
-    # Фото
     photo_h = 760
     photo = crop_cover(img, (W, photo_h))
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, 0))
 
-    # Логотип
     logo_font = font(FONT_BOLD, 38)
     logo_x, logo_y = 55, 55
     logo_w, logo_h = 205, 68
@@ -134,14 +135,12 @@ def create_story(photo_bytes, title, body):
         fill=WHITE
     )
 
-    # Фиолетовая плашка
     divider_y = 755
     divider_h = 38
 
     draw.rectangle((0, divider_y, W, divider_y + divider_h), fill=PURPLE)
     draw.rectangle((0, divider_y + divider_h, W, H), fill=WHITE)
 
-    # Заголовок
     title = title.strip()
 
     title_font, title_lines = fit_text(
@@ -161,29 +160,24 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # Акцентная линия
     y += 18
     draw.rounded_rectangle((80, y, 190, y + 10), radius=5, fill=PURPLE)
     y += 70
 
-    # Основной текст
     body = body.strip()
-
-    if len(body) > 720:
-        body = body[:720].rsplit(" ", 1)[0] + "..."
 
     body_font, body_lines = fit_text(
         draw,
         body,
         FONT_REGULAR,
         max_width=900,
-        max_height=500,
+        max_height=760,
         start_size=33,
-        min_size=24,
+        min_size=18,
         gap=8,
     )
 
-    max_body_y = 1685
+    max_body_y = 1780
 
     for line in body_lines:
         if y + body_font.size > max_body_y:
@@ -193,7 +187,6 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # Подвал
     footer_y = 1768
 
     draw.rounded_rectangle(
@@ -348,10 +341,10 @@ def main():
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
-        .connect_timeout(30)
-        .read_timeout(60)
-        .write_timeout(60)
-        .pool_timeout(60)
+        .connect_timeout(60)
+        .read_timeout(120)
+        .write_timeout(120)
+        .pool_timeout(120)
         .build()
     )
 
@@ -364,8 +357,9 @@ def main():
 
     app.run_polling(
         drop_pending_updates=True,
-        poll_interval=1.0,
-        timeout=30,
+        poll_interval=2.0,
+        timeout=60,
+        allowed_updates=Update.ALL_TYPES,
     )
 
 

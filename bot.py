@@ -48,6 +48,7 @@ WHITE = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
+DIVIDER_PATH = "divider.png"
 
 
 def font(path, size):
@@ -113,11 +114,13 @@ def create_story(photo_bytes, title, body):
     canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
+    # Фото
     photo_h = 760
     photo = crop_cover(img, (W, photo_h))
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, 0))
 
+    # Логотип
     logo_font = font(FONT_BOLD, 38)
     logo_x, logo_y = 55, 55
     logo_w, logo_h = 205, 68
@@ -135,12 +138,21 @@ def create_story(photo_bytes, title, body):
         fill=WHITE
     )
 
-    divider_y = 755
-    divider_h = 38
+    # Вставка готовой фиолетовой плашки
+    divider_y = 735
 
-    draw.rectangle((0, divider_y, W, divider_y + divider_h), fill=PURPLE)
-    draw.rectangle((0, divider_y + divider_h, W, H), fill=WHITE)
+    if not os.path.exists(DIVIDER_PATH):
+        raise RuntimeError("Не найден файл divider.png рядом с bot.py")
 
+    divider = Image.open(DIVIDER_PATH).convert("RGBA")
+    divider = divider.resize((W, 110), Image.LANCZOS)
+
+    canvas.paste(divider, (0, divider_y), divider)
+
+    # Белая зона под текстом
+    draw.rectangle((0, divider_y + 80, W, H), fill=WHITE)
+
+    # Заголовок
     title = title.strip()
 
     title_font, title_lines = fit_text(
@@ -164,6 +176,7 @@ def create_story(photo_bytes, title, body):
     draw.rounded_rectangle((80, y, 190, y + 10), radius=5, fill=PURPLE)
     y += 70
 
+    # Основной текст без ограничения по символам
     body = body.strip()
 
     body_font, body_lines = fit_text(
@@ -187,6 +200,7 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
+    # Подвал
     footer_y = 1768
 
     draw.rounded_rectangle(

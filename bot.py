@@ -2,7 +2,10 @@
 
 import os
 import io
+import threading
 import logging
+
+from flask import Flask
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
 from telegram import Update
@@ -23,7 +26,23 @@ if not BOT_TOKEN:
     raise RuntimeError("Нет BOT_TOKEN")
 
 # =========================
-# НАСТРОЙКИ
+# FLASK ДЛЯ RENDER WEB SERVICE
+# =========================
+
+web_app = Flask(__name__)
+
+@web_app.get("/")
+def health():
+    return "OK", 200
+
+
+def run_web():
+    port = int(os.getenv("PORT", "10000"))
+    web_app.run(host="0.0.0.0", port=port)
+
+
+# =========================
+# НАСТРОЙКИ ДИЗАЙНА
 # =========================
 
 W, H = 1080, 1920
@@ -39,7 +58,7 @@ FONT_REGULAR = "Montserrat-Bold.ttf"
 
 
 # =========================
-# PILLOW-ФУНКЦИИ
+# PILLOW
 # =========================
 
 def font(path, size):
@@ -99,18 +118,6 @@ def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size,
     return fnt, lines
 
 
-def draw_gradient(draw, box, color1, color2):
-    x1, y1, x2, y2 = box
-    height = y2 - y1
-
-    for i in range(height):
-        ratio = i / height
-        r = int(color1[0] * (1 - ratio) + color2[0] * ratio)
-        g = int(color1[1] * (1 - ratio) + color2[1] * ratio)
-        b = int(color1[2] * (1 - ratio) + color2[2] * ratio)
-        draw.line((x1, y1 + i, x2, y1 + i), fill=(r, g, b))
-
-
 def create_story(photo_bytes, title, body):
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
 
@@ -120,16 +127,15 @@ def create_story(photo_bytes, title, body):
     # Фото сверху
     photo_h = 800
     photo = crop_cover(img, (W, photo_h))
-
     photo = ImageEnhance.Brightness(photo).enhance(0.82)
     canvas.paste(photo, (0, 0))
 
-    # Логотип fider.by
+    # Логотип
     logo_font = font(FONT_BOLD, 42)
     draw.rounded_rectangle((60, 70, 245, 135), radius=18, fill=PURPLE)
     draw.text((84, 84), "fider.by", font=logo_font, fill=WHITE)
 
-    # Фиолетовая волна-разделитель
+    # Фиолетовый разделитель
     wave_y = 735
     draw.polygon(
         [
@@ -141,7 +147,7 @@ def create_story(photo_bytes, title, body):
         fill=PURPLE,
     )
 
-    # Белая нижняя зона
+    # Белый фон под текст
     draw.rectangle((0, wave_y + 70, W, H), fill=WHITE)
 
     # Заголовок
@@ -157,18 +163,17 @@ def create_story(photo_bytes, title, body):
     )
 
     y = 860
+
     for line in title_lines[:5]:
-        if "BYN" in line or "руб" in line:
-            draw.text((80, y), line, font=title_font, fill=PURPLE_DARK)
-        else:
-            draw.text((80, y), line, font=title_font, fill=BLACK)
+        draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 8
 
-    # Маленькая фиолетовая линия
+    # Акцентная линия
     draw.rounded_rectangle((80, y + 20, 190, y + 30), radius=5, fill=PURPLE)
 
     # Основной текст
     body = body.strip()
+
     if len(body) > 950:
         body = body[:950].rsplit(" ", 1)[0] + "..."
 
@@ -189,20 +194,18 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 10
 
-    # Нижняя линия
+    # Подвал
     draw.rounded_rectangle((80, 1780, 1000, 1784), radius=2, fill=PURPLE)
 
-    # Подвал
     footer_font = font(FONT_REGULAR, 34)
     draw.text((140, 1815), "Читайте больше на", font=footer_font, fill=BLACK)
 
     site_font = font(FONT_BOLD, 34)
     draw.text((475, 1815), "fider.by", font=site_font, fill=PURPLE)
 
-    # Иконка слева
     draw.ellipse((80, 1808, 120, 1848), fill=PURPLE)
     small_font = font(FONT_BOLD, 24)
-    draw.text((91, 1814), "f", font=small_font, fill=WHITE)
+    draw.text((93, 1814), "f", font=small_font, fill=WHITE)
 
     output = io.BytesIO()
     canvas.save(output, format="PNG", quality=95)
@@ -211,7 +214,7 @@ def create_story(photo_bytes, title, body):
 
 
 # =========================
-# TELEGRAM-БОТ
+# TELEGRAM
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -317,10 +320,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Нажми /start и отправь фото.")
 
 
+async def post_init(app):
+    await app.bot.delete_webhook(drop_pending_updates=True)
+
+
 def main():
+    threading.Thread(target=run_web, daemon=True).start()
+
     app = (
         Application.builder()
         .token(BOT_TOKEN)
+        .post_init(post_init)
         .connect_timeout(30)
         .read_timeout(60)
         .write_timeout(60)
@@ -334,8 +344,13 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ FIDER STORY BOT STARTED")
+
     app.run_polling(
         drop_pending_updates=True,
         poll_interval=1.0,
         timeout=30,
     )
+
+
+if __name__ == "__main__":
+    main()

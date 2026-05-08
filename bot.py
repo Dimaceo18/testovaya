@@ -25,10 +25,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Нет BOT_TOKEN")
 
-# =========================
-# FLASK ДЛЯ RENDER WEB SERVICE
-# =========================
-
 web_app = Flask(__name__)
 
 @web_app.get("/")
@@ -41,25 +37,15 @@ def run_web():
     web_app.run(host="0.0.0.0", port=port)
 
 
-# =========================
-# НАСТРОЙКИ ДИЗАЙНА
-# =========================
-
 W, H = 1080, 1920
 
 PURPLE = (111, 55, 245)
-PURPLE_DARK = (76, 36, 190)
 BLACK = (20, 22, 32)
 WHITE = (255, 255, 255)
-LIGHT_BG = (250, 249, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
 
-
-# =========================
-# PILLOW
-# =========================
 
 def font(path, size):
     return ImageFont.truetype(path, size)
@@ -68,8 +54,8 @@ def font(path, size):
 def crop_cover(img, size):
     target_w, target_h = size
     img_w, img_h = img.size
-
     scale = max(target_w / img_w, target_h / img_h)
+
     img = img.resize((int(img_w * scale), int(img_h * scale)), Image.LANCZOS)
 
     left = (img.width - target_w) // 2
@@ -121,101 +107,132 @@ def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size,
 def create_story(photo_bytes, title, body):
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
 
-    canvas = Image.new("RGB", (W, H), LIGHT_BG)
+    canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
-    # Фото сверху
-    photo_h = 800
+    # Фото
+    photo_h = 760
     photo = crop_cover(img, (W, photo_h))
-    photo = ImageEnhance.Brightness(photo).enhance(0.82)
+    photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, 0))
 
     # Логотип
-    logo_font = font(FONT_BOLD, 42)
-    draw.rounded_rectangle((60, 70, 245, 135), radius=18, fill=PURPLE)
-    draw.text((84, 84), "fider.by", font=logo_font, fill=WHITE)
+    logo_font = font(FONT_BOLD, 38)
+    logo_x, logo_y = 55, 55
+    logo_w, logo_h = 205, 68
 
-    # Фиолетовый разделитель
-    wave_y = 735
-    draw.polygon(
-        [
-            (0, wave_y),
-            (W, wave_y - 35),
-            (W, wave_y + 80),
-            (0, wave_y + 45),
-        ],
-        fill=PURPLE,
+    draw.rounded_rectangle(
+        (logo_x, logo_y, logo_x + logo_w, logo_y + logo_h),
+        radius=18,
+        fill=PURPLE
     )
 
-    # Белый фон под текст
-    draw.rectangle((0, wave_y + 70, W, H), fill=WHITE)
+    draw.text(
+        (logo_x + 26, logo_y + 12),
+        "fider.by",
+        font=logo_font,
+        fill=WHITE
+    )
+
+    # Фиолетовая плашка
+    divider_y = 755
+    divider_h = 38
+
+    draw.rectangle((0, divider_y, W, divider_y + divider_h), fill=PURPLE)
+    draw.rectangle((0, divider_y + divider_h, W, H), fill=WHITE)
 
     # Заголовок
+    title = title.strip()
+
     title_font, title_lines = fit_text(
         draw,
         title,
         FONT_BOLD,
-        max_width=920,
-        max_height=330,
-        start_size=66,
-        min_size=42,
+        max_width=900,
+        max_height=300,
+        start_size=58,
+        min_size=38,
         gap=8,
     )
 
-    y = 860
+    y = 900
 
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=BLACK)
-        y += title_font.size + 8
+        y += title_font.size + 10
 
     # Акцентная линия
-    draw.rounded_rectangle((80, y + 20, 190, y + 30), radius=5, fill=PURPLE)
+    y += 18
+    draw.rounded_rectangle((80, y, 190, y + 10), radius=5, fill=PURPLE)
+    y += 70
 
     # Основной текст
     body = body.strip()
 
-    if len(body) > 950:
-        body = body[:950].rsplit(" ", 1)[0] + "..."
+    if len(body) > 720:
+        body = body[:720].rsplit(" ", 1)[0] + "..."
 
     body_font, body_lines = fit_text(
         draw,
         body,
         FONT_REGULAR,
         max_width=900,
-        max_height=560,
-        start_size=38,
-        min_size=26,
-        gap=10,
+        max_height=500,
+        start_size=33,
+        min_size=24,
+        gap=8,
     )
 
-    y += 75
+    max_body_y = 1685
 
     for line in body_lines:
+        if y + body_font.size > max_body_y:
+            draw.text((80, y), "...", font=body_font, fill=BLACK)
+            break
+
         draw.text((80, y), line, font=body_font, fill=BLACK)
-        y += body_font.size + 10
+        y += body_font.size + 8
 
     # Подвал
-    draw.rounded_rectangle((80, 1780, 1000, 1784), radius=2, fill=PURPLE)
+    footer_y = 1768
 
-    footer_font = font(FONT_REGULAR, 34)
-    draw.text((140, 1815), "Читайте больше на", font=footer_font, fill=BLACK)
+    draw.rounded_rectangle(
+        (80, footer_y, 1000, footer_y + 5),
+        radius=3,
+        fill=PURPLE
+    )
 
-    site_font = font(FONT_BOLD, 34)
-    draw.text((475, 1815), "fider.by", font=site_font, fill=PURPLE)
+    footer_text_y = footer_y + 42
 
-    draw.ellipse((80, 1808, 120, 1848), fill=PURPLE)
-    small_font = font(FONT_BOLD, 24)
-    draw.text((93, 1814), "f", font=small_font, fill=WHITE)
+    draw.ellipse(
+        (80, footer_text_y - 4, 126, footer_text_y + 42),
+        fill=PURPLE
+    )
+
+    small_font = font(FONT_BOLD, 25)
+    draw.text((96, footer_text_y + 2), "f", font=small_font, fill=WHITE)
+
+    footer_font = font(FONT_REGULAR, 30)
+    draw.text(
+        (150, footer_text_y + 1),
+        "Читайте больше на",
+        font=footer_font,
+        fill=BLACK
+    )
+
+    site_font = font(FONT_BOLD, 30)
+    draw.text(
+        (455, footer_text_y + 1),
+        "fider.by",
+        font=site_font,
+        fill=PURPLE
+    )
 
     output = io.BytesIO()
     canvas.save(output, format="PNG", quality=95)
     output.seek(0)
     return output
 
-
-# =========================
-# TELEGRAM
-# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()

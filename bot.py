@@ -43,19 +43,19 @@ def run_web():
 W, H = 1080, 1920
 
 PURPLE = (111, 55, 245)
+PURPLE_LIGHT = (131, 75, 255)
 BLACK = (20, 22, 32)
 WHITE = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
-DIVIDER_PATH = "divider.png"
-
-# Высота плашки-разделителя в пикселях
-DIVIDER_HEIGHT = 50
 
 
 def font(path, size):
-    return ImageFont.truetype(path, size)
+    try:
+        return ImageFont.truetype(path, size)
+    except:
+        return ImageFont.load_default()
 
 
 def crop_cover(img, size):
@@ -111,6 +111,27 @@ def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size,
     return fnt, lines
 
 
+def draw_beautiful_divider(draw, y, width, height):
+    """Рисует красивую фиолетовую плашку-разделитель"""
+    # Основная плашка
+    draw.rectangle((0, y, width, y + height), fill=PURPLE)
+    
+    # Декоративная полоска сверху (более светлая)
+    draw.rectangle((0, y, width, y + 3), fill=PURPLE_LIGHT)
+    
+    # Декоративная полоска снизу (более светлая)
+    draw.rectangle((0, y + height - 3, width, y + height), fill=PURPLE_LIGHT)
+    
+    # Маленькие декоративные элементы (кружочки) 
+    circle_radius = 4
+    spacing = 30
+    
+    for x in range(40, width - 40, spacing):
+        draw.ellipse((x - circle_radius, y + height//2 - circle_radius, 
+                      x + circle_radius, y + height//2 + circle_radius), 
+                     fill=PURPLE_LIGHT)
+
+
 def create_story(photo_bytes, title, body):
     # Проверка длины текста
     if len(body) > 900:
@@ -121,43 +142,39 @@ def create_story(photo_bytes, title, body):
     canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
-    # Высота фото - примерно 40% от высоты сторис
-    photo_h = int(H * 0.4)  # 768px
+    # Высота фото - 40% от высоты сторис
+    photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, 0))
 
     # Логотип
-    logo_font = font(FONT_BOLD, 38)
-    logo_x, logo_y = 55, 55
-    logo_w, logo_h = 205, 68
+    try:
+        logo_font = font(FONT_BOLD, 38)
+        logo_x, logo_y = 55, 55
+        logo_w, logo_h = 205, 68
 
-    draw.rounded_rectangle(
-        (logo_x, logo_y, logo_x + logo_w, logo_y + logo_h),
-        radius=18,
-        fill=PURPLE
-    )
+        draw.rounded_rectangle(
+            (logo_x, logo_y, logo_x + logo_w, logo_y + logo_h),
+            radius=18,
+            fill=PURPLE
+        )
 
-    draw.text(
-        (logo_x + 26, logo_y + 12),
-        "fider.by",
-        font=logo_font,
-        fill=WHITE
-    )
+        draw.text(
+            (logo_x + 26, logo_y + 12),
+            "fider.by",
+            font=logo_font,
+            fill=WHITE
+        )
+    except:
+        pass
 
-    # Разделитель (фиолетовая плашка) - теперь всегда 50px высотой и на всю ширину
+    # Фиолетовая плашка-разделитель (50px высотой, на всю ширину)
     divider_y = photo_h
-    
-    if not os.path.exists(DIVIDER_PATH):
-        # Если файла нет, рисуем фиолетовую полосу
-        draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
-    else:
-        divider = Image.open(DIVIDER_PATH).convert("RGBA")
-        # Растягиваем плашку ровно на всю ширину (1080px) и высоту DIVIDER_HEIGHT
-        divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
-        canvas.paste(divider, (0, divider_y), divider)
+    DIVIDER_HEIGHT = 50
+    draw_beautiful_divider(draw, divider_y, W, DIVIDER_HEIGHT)
 
-    # Белая зона под текстом (начинается сразу после плашки)
+    # Белая зона под текстом
     white_bg_start = divider_y + DIVIDER_HEIGHT
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
@@ -175,7 +192,7 @@ def create_story(photo_bytes, title, body):
         gap=8,
     )
 
-    y = white_bg_start + 80  # Отступ от плашки
+    y = white_bg_start + 80
 
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=BLACK)
@@ -185,10 +202,8 @@ def create_story(photo_bytes, title, body):
     draw.rounded_rectangle((80, y, 190, y + 10), radius=5, fill=PURPLE)
     y += 70
 
-    # Основной текст (весь, без обрезания)
+    # Основной текст
     body = body.strip()
-    
-    # Доступная высота для текста
     available_height = H - y - 100
 
     body_font, body_lines = fit_text(
@@ -206,7 +221,7 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # Тонкая фиолетовая полоса внизу (4 пикселя)
+    # Тонкая фиолетовая полоса внизу (4px)
     footer_height = 4
     draw.rectangle((0, H - footer_height, W, H), fill=PURPLE)
 
@@ -305,9 +320,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = "waiting_photo"
 
         except ValueError as e:
-            # Ошибка из-за слишком длинного текста
             await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый, более короткий текст.")
-            # Оставляем state = "waiting_body", чтобы пользователь мог отправить новый текст
             return
 
         except Exception as e:

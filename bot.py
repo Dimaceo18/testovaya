@@ -4,9 +4,10 @@ import os
 import io
 import threading
 import logging
+import math
 
 from flask import Flask
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 
 from telegram import Update
 from telegram.ext import (
@@ -43,7 +44,9 @@ def run_web():
 W, H = 1080, 1920
 
 PURPLE = (111, 55, 245)
-PURPLE_LIGHT = (131, 75, 255)
+PURPLE_DARK = (88, 40, 200)
+PURPLE_LIGHT = (147, 95, 255)
+PURPLE_GLOW = (180, 130, 255)
 BLACK = (20, 22, 32)
 WHITE = (255, 255, 255)
 
@@ -111,25 +114,76 @@ def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size,
     return fnt, lines
 
 
-def draw_beautiful_divider(draw, y, width, height):
-    """Рисует красивую фиолетовую плашку-разделитель"""
-    # Основная плашка
-    draw.rectangle((0, y, width, y + height), fill=PURPLE)
+def draw_gradient_rectangle(draw, bbox, color1, color2):
+    """Рисует прямоугольник с градиентом"""
+    x1, y1, x2, y2 = bbox
+    width = x2 - x1
+    height = y2 - y1
     
-    # Декоративная полоска сверху (более светлая)
-    draw.rectangle((0, y, width, y + 3), fill=PURPLE_LIGHT)
+    for i in range(height):
+        ratio = i / height
+        r = int(color1[0] * (1 - ratio) + color2[0] * ratio)
+        g = int(color1[1] * (1 - ratio) + color2[1] * ratio)
+        b = int(color1[2] * (1 - ratio) + color2[2] * ratio)
+        draw.rectangle((x1, y1 + i, x2, y1 + i + 1), fill=(r, g, b))
+
+
+def draw_stylish_divider(draw, y, width):
+    """Рисует стильную плашку-разделитель с дизайнерскими элементами"""
+    divider_height = 65
     
-    # Декоративная полоска снизу (более светлая)
-    draw.rectangle((0, y + height - 3, width, y + height), fill=PURPLE_LIGHT)
+    # Основная плашка с градиентом (скруглённая)
+    margin = 20
+    x1, x2 = margin, width - margin
+    y1, y2 = y, y + divider_height
     
-    # Маленькие декоративные элементы (кружочки) 
-    circle_radius = 4
-    spacing = 30
+    # Скруглённый прямоугольник (рисуем через многоугольник для скруглений)
+    radius = 20
+    draw.rounded_rectangle((x1, y1, x2, y2), radius=radius, fill=PURPLE)
     
-    for x in range(40, width - 40, spacing):
-        draw.ellipse((x - circle_radius, y + height//2 - circle_radius, 
-                      x + circle_radius, y + height//2 + circle_radius), 
-                     fill=PURPLE_LIGHT)
+    # Добавляем градиент поверх (более светлый к центру)
+    for i in range(divider_height):
+        ratio = 1 - abs(i - divider_height/2) / (divider_height/2) * 0.5
+        r = int(PURPLE[0] + (PURPLE_LIGHT[0] - PURPLE[0]) * ratio)
+        g = int(PURPLE[1] + (PURPLE_LIGHT[1] - PURPLE[1]) * ratio)
+        b = int(PURPLE[2] + (PURPLE_LIGHT[2] - PURPLE[2]) * ratio)
+        draw.rectangle((x1 + 2, y1 + i, x2 - 2, y1 + i + 1), fill=(r, g, b))
+    
+    # Тонкая светлая линия сверху
+    draw.rounded_rectangle((x1 + 10, y1 + 5, x2 - 10, y1 + 7), radius=3, fill=PURPLE_GLOW)
+    
+    # Тонкая светлая линия снизу
+    draw.rounded_rectangle((x1 + 10, y2 - 7, x2 - 10, y2 - 5), radius=3, fill=PURPLE_GLOW)
+    
+    # Декоративный элемент - маленький ромб в центре
+    center_x = width // 2
+    center_y = y + divider_height // 2
+    diamond_size = 8
+    
+    diamond_points = [
+        (center_x, center_y - diamond_size),
+        (center_x + diamond_size, center_y),
+        (center_x, center_y + diamond_size),
+        (center_x - diamond_size, center_y)
+    ]
+    draw.polygon(diamond_points, fill=PURPLE_GLOW)
+    
+    # Маленькие кружочки по бокам от ромба
+    circle_radius = 3
+    draw.ellipse((center_x - 30 - circle_radius, center_y - circle_radius,
+                  center_x - 30 + circle_radius, center_y + circle_radius), fill=PURPLE_GLOW)
+    draw.ellipse((center_x + 30 - circle_radius, center_y - circle_radius,
+                  center_x + 30 + circle_radius, center_y + circle_radius), fill=PURPLE_GLOW)
+    
+    # Штриховка по краям (декоративные вертикальные линии)
+    for x_offset in [40, 60]:
+        for y_offset in range(15, divider_height - 15, 8):
+            draw.line((x1 + x_offset, y1 + y_offset, x1 + x_offset + 4, y1 + y_offset + 4), 
+                     fill=PURPLE_GLOW, width=2)
+            draw.line((x2 - x_offset, y1 + y_offset, x2 - x_offset - 4, y1 + y_offset + 4), 
+                     fill=PURPLE_GLOW, width=2)
+    
+    return divider_height
 
 
 def create_story(photo_bytes, title, body):
@@ -166,16 +220,22 @@ def create_story(photo_bytes, title, body):
             font=logo_font,
             fill=WHITE
         )
+        
+        # Маленький акцент на логотипе
+        draw.rounded_rectangle(
+            (logo_x + logo_w - 30, logo_y + 10, logo_x + logo_w - 10, logo_y + logo_h - 10),
+            radius=10,
+            fill=PURPLE_LIGHT
+        )
     except:
         pass
 
-    # Фиолетовая плашка-разделитель (50px высотой, на всю ширину)
+    # Стильная плашка-разделитель
     divider_y = photo_h
-    DIVIDER_HEIGHT = 50
-    draw_beautiful_divider(draw, divider_y, W, DIVIDER_HEIGHT)
+    divider_height = draw_stylish_divider(draw, divider_y, W)
 
     # Белая зона под текстом
-    white_bg_start = divider_y + DIVIDER_HEIGHT
+    white_bg_start = divider_y + divider_height
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
     # Заголовок
@@ -198,13 +258,14 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    y += 18
-    draw.rounded_rectangle((80, y, 190, y + 10), radius=5, fill=PURPLE)
-    y += 70
+    # Декоративная полоска под заголовком
+    y += 10
+    draw.rounded_rectangle((80, y, 180, y + 6), radius=3, fill=PURPLE)
+    y += 45
 
     # Основной текст
     body = body.strip()
-    available_height = H - y - 100
+    available_height = H - y - 80
 
     body_font, body_lines = fit_text(
         draw,
@@ -221,9 +282,17 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # Тонкая фиолетовая полоса внизу (4px)
-    footer_height = 4
-    draw.rectangle((0, H - footer_height, W, H), fill=PURPLE)
+    # Элегантная тонкая линия внизу
+    footer_height = 3
+    footer_y = H - footer_height
+    
+    # Градиентная линия внизу
+    for i in range(footer_height):
+        ratio = i / footer_height
+        r = int(PURPLE_DARK[0] * (1 - ratio) + PURPLE[0] * ratio)
+        g = int(PURPLE_DARK[1] * (1 - ratio) + PURPLE[1] * ratio)
+        b = int(PURPLE_DARK[2] * (1 - ratio) + PURPLE[2] * ratio)
+        draw.rectangle((0, footer_y + i, W, footer_y + i + 1), fill=(r, g, b))
 
     output = io.BytesIO()
     canvas.save(output, format="PNG", quality=95)
@@ -240,7 +309,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1. Отправь фото\n"
         "2. Потом отправь заголовок\n"
         "3. Потом отправь основной текст (максимум 900 символов)\n\n"
-        "Я соберу готовую сторис 9:16."
+        "Я соберу готовую сторис 9:16 со стильным дизайном."
     )
 
 
@@ -362,7 +431,7 @@ def main():
     app.add_handler(MessageHandler(filters.Document.IMAGE, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("✅ FIDER STORY BOT STARTED")
+    print("✅ FIDER STORY BOT STARTED (with stylish design)")
 
     app.run_polling(
         drop_pending_updates=True,

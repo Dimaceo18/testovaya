@@ -48,7 +48,7 @@ WHITE = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
-DIVIDER_PATH = "divider2.png"
+DIVIDER_PATH = "divider3.png"
 
 # Высота плашки-разделителя в пикселях
 DIVIDER_HEIGHT = 50

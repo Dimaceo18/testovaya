@@ -109,6 +109,10 @@ def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size,
 
 
 def create_story(photo_bytes, title, body):
+    # Проверка длины текста
+    if len(body) > 900:
+        raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
+
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
 
     canvas = Image.new("RGB", (W, H), WHITE)
@@ -138,7 +142,7 @@ def create_story(photo_bytes, title, body):
         fill=WHITE
     )
 
-    # Вставка готовой фиолетовой плашки
+    # Разделитель (фиолетовая плашка сверху)
     divider_y = 735
 
     if not os.path.exists(DIVIDER_PATH):
@@ -176,7 +180,7 @@ def create_story(photo_bytes, title, body):
     draw.rounded_rectangle((80, y, 190, y + 10), radius=5, fill=PURPLE)
     y += 70
 
-    # Основной текст без ограничения по символам
+    # Основной текст (весь, без обрезания)
     body = body.strip()
 
     body_font, body_lines = fit_text(
@@ -194,44 +198,35 @@ def create_story(photo_bytes, title, body):
 
     for line in body_lines:
         if y + body_font.size > max_body_y:
-            draw.text((80, y), "...", font=body_font, fill=BLACK)
+            # Если текст не помещается, подбираем шрифт поменьше
+            # Находим минимально возможный размер
+            for test_size in range(18, 10, -1):
+                test_font = font(FONT_REGULAR, test_size)
+                test_lines = wrap_text(draw, body, test_font, 900)
+                test_height = len(test_lines) * (test_size + 8)
+                if test_height <= 760:
+                    body_font = test_font
+                    body_lines = test_lines
+                    break
+            
+            # Перерисовываем текст с новым шрифтом
+            y_temp = y
+            for line in body_lines:
+                if y_temp + body_font.size > max_body_y:
+                    draw.text((80, y_temp), line, font=body_font, fill=BLACK)
+                    break
+                draw.text((80, y_temp), line, font=body_font, fill=BLACK)
+                y_temp += body_font.size + 8
             break
 
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # Подвал
+    # Фиолетовая полоса внизу
     footer_y = 1768
-
     draw.rounded_rectangle(
-        (80, footer_y, 1000, footer_y + 5),
-        radius=3,
-        fill=PURPLE
-    )
-
-    footer_text_y = footer_y + 42
-
-    draw.ellipse(
-        (80, footer_text_y - 4, 126, footer_text_y + 42),
-        fill=PURPLE
-    )
-
-    small_font = font(FONT_BOLD, 25)
-    draw.text((96, footer_text_y + 2), "f", font=small_font, fill=WHITE)
-
-    footer_font = font(FONT_REGULAR, 30)
-    draw.text(
-        (150, footer_text_y + 1),
-        "Читайте больше на",
-        font=footer_font,
-        fill=BLACK
-    )
-
-    site_font = font(FONT_BOLD, 30)
-    draw.text(
-        (455, footer_text_y + 1),
-        "fider.by",
-        font=site_font,
+        (0, footer_y, W, footer_y + 152),
+        radius=0,
         fill=PURPLE
     )
 
@@ -249,7 +244,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🟣 Бот сторис Fider.by\n\n"
         "1. Отправь фото\n"
         "2. Потом отправь заголовок\n"
-        "3. Потом отправь основной текст\n\n"
+        "3. Потом отправь основной текст (максимум 900 символов)\n\n"
         "Я соберу готовую сторис 9:16."
     )
 
@@ -302,7 +297,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["title"] = title
         context.user_data["state"] = "waiting_body"
 
-        await update.message.reply_text("✅ Заголовок получил. Теперь отправь основной текст.")
+        await update.message.reply_text("✅ Заголовок получил. Теперь отправь основной текст (максимум 900 символов).")
         return
 
     if state == "waiting_body":
@@ -326,13 +321,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 photo=result,
                 caption="Готово ✨"
             )
+            context.user_data.clear()
+            context.user_data["state"] = "waiting_photo"
+
+        except ValueError as e:
+            # Ошибка из-за слишком длинного текста
+            await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый, более короткий текст.")
+            # Оставляем state = "waiting_body", чтобы пользователь мог отправить новый текст
+            return
 
         except Exception as e:
             logger.exception(e)
             await update.message.reply_text(f"❌ Ошибка:\n{e}")
-
-        context.user_data.clear()
-        context.user_data["state"] = "waiting_photo"
+            context.user_data.clear()
+            context.user_data["state"] = "waiting_photo"
 
         try:
             await msg.delete()

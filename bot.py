@@ -124,8 +124,8 @@ def create_story(photo_bytes, title, body):
     canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
-    # Фиолетовая линия сверху (10 пикселей)
-    top_line_height = 10
+    # Фиолетовая линия сверху (15 пикселей)
+    top_line_height = 15
     draw.rectangle((0, 0, W, top_line_height), fill=PURPLE)
 
     # Высота фото - 40% от высоты сторис
@@ -158,9 +158,9 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # Новая полоса (300px ширина, 15px высота, острые края, отступ 80px)
+    # Полоса после заголовка (300px ширина, 15px высота, острые края)
     y += 18
-    draw.rectangle((80, y, 380, y + 15), fill=PURPLE)  # 80 + 300 = 380
+    draw.rectangle((80, y, 380, y + 15), fill=PURPLE)
     y += 70
 
     # Основной текст
@@ -187,7 +187,7 @@ def create_story(photo_bytes, title, body):
     dot_spacing = 20
     
     start_x = W - 70
-    start_y = 50
+    start_y = 55  # Смещаем чуть ниже, так как верхняя полоса стала выше
     
     for i in range(3):
         x = start_x - i * (dot_radius * 2 + dot_spacing)
@@ -245,8 +245,8 @@ def create_story(photo_bytes, title, body):
         fill=WHITE
     )
 
-    # Тонкая фиолетовая полоса внизу (10 пикселей)
-    footer_height = 10
+    # Фиолетовая полоса внизу (15 пикселей)
+    footer_height = 15
     draw.rectangle((0, H - footer_height, W, H), fill=PURPLE)
 
     output = io.BytesIO()

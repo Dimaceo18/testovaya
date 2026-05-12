@@ -177,6 +177,20 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
+    # Три жирные точки в верхнем правом углу
+    dot_size = 20
+    dot_spacing = 15
+    dot_radius = 8
+    
+    # Позиция для точек (верхний правый угол)
+    start_x = W - 80
+    start_y = 70
+    
+    for i in range(3):
+        x = start_x - i * (dot_radius * 2 + dot_spacing)
+        y = start_y
+        draw.ellipse((x - dot_radius, y - dot_radius, x + dot_radius, y + dot_radius), fill=PURPLE)
+
     # ПОСЛЕ ТОГО КАК ВЕСЬ ТЕКСТ НАРИСОВАН, накладываем плашку ПОВЕРХ ВСЕГО
     divider_y = photo_h
     

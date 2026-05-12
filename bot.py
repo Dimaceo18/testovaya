@@ -48,7 +48,7 @@ WHITE = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
-DIVIDER_PATH = "3322.png"
+DIVIDER_PATH = "divider.png"
 
 # Высота плашки-разделителя в пикселях
 DIVIDER_HEIGHT = 50
@@ -132,7 +132,7 @@ def create_story(photo_bytes, title, body):
     photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
-    canvas.paste(photo, (0, top_line_height))  # Сдвигаем фото вниз на высоту линии
+    canvas.paste(photo, (0, top_line_height))
 
     # СНАЧАЛА создаём белый фон с текстом
     white_bg_start = photo_h + top_line_height
@@ -158,8 +158,9 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
+    # Новая полоса (300px ширина, 15px высота, острые края, отступ 80px)
     y += 18
-    draw.rounded_rectangle((80, y, 190, y + 10), radius=5, fill=PURPLE)
+    draw.rectangle((80, y, 380, y + 15), fill=PURPLE)  # 80 + 300 = 380
     y += 70
 
     # Основной текст
@@ -182,17 +183,16 @@ def create_story(photo_bytes, title, body):
         y += body_font.size + 8
 
     # Три большие точки в верхнем правом углу
-    dot_radius = 15  # Увеличенный радиус (было 8)
-    dot_spacing = 20  # Расстояние между точками
+    dot_radius = 15
+    dot_spacing = 20
     
-    # Позиция для точек (верхний правый угол)
     start_x = W - 70
-    start_y = 50  # Смещаем чуть ниже верхней линии
+    start_y = 50
     
     for i in range(3):
         x = start_x - i * (dot_radius * 2 + dot_spacing)
-        y = start_y
-        draw.ellipse((x - dot_radius, y - dot_radius, x + dot_radius, y + dot_radius), fill=PURPLE)
+        y_dot = start_y
+        draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
 
     # ПОСЛЕ ТОГО КАК ВЕСЬ ТЕКСТ НАРИСОВАН, накладываем плашку ПОВЕРХ ВСЕГО
     divider_y = photo_h + top_line_height
@@ -203,11 +203,9 @@ def create_story(photo_bytes, title, body):
         divider = Image.open(DIVIDER_PATH).convert("RGBA")
         divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
         
-        # Создаём временный слой для плашки, чтобы сохранить прозрачность
         temp_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         temp_layer.paste(divider, (0, divider_y), divider)
         
-        # Накладываем плашку поверх всего canvas
         canvas = canvas.convert("RGBA")
         canvas = Image.alpha_composite(canvas, temp_layer)
         canvas = canvas.convert("RGB")
@@ -217,7 +215,6 @@ def create_story(photo_bytes, title, body):
     logo_font = font(FONT_BOLD, 38)
     logo_text = "fider.by"
     
-    # Получаем размер текста логотипа
     try:
         bbox = draw.textbbox((0, 0), logo_text, font=logo_font)
         text_width = bbox[2] - bbox[0]
@@ -226,11 +223,9 @@ def create_story(photo_bytes, title, body):
         text_width = len(logo_text) * 20
         text_height = 40
     
-    # Позиция по центру внизу
     logo_x = (W - text_width) // 2
     logo_y = H - 80
     
-    # Рисуем фон под логотипом
     padding = 20
     logo_bg_x1 = logo_x - padding
     logo_bg_y1 = logo_y - 12
@@ -243,7 +238,6 @@ def create_story(photo_bytes, title, body):
         fill=PURPLE
     )
     
-    # Рисуем текст логотипа
     draw.text(
         (logo_x, logo_y),
         logo_text,

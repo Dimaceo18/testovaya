@@ -124,14 +124,18 @@ def create_story(photo_bytes, title, body):
     canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
+    # Фиолетовая линия сверху (10 пикселей)
+    top_line_height = 10
+    draw.rectangle((0, 0, W, top_line_height), fill=PURPLE)
+
     # Высота фото - 40% от высоты сторис
     photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
-    canvas.paste(photo, (0, 0))
+    canvas.paste(photo, (0, top_line_height))  # Сдвигаем фото вниз на высоту линии
 
     # СНАЧАЛА создаём белый фон с текстом
-    white_bg_start = photo_h
+    white_bg_start = photo_h + top_line_height
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
     # Заголовок
@@ -177,14 +181,13 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # Три жирные точки в верхнем правом углу
-    dot_size = 20
-    dot_spacing = 15
-    dot_radius = 8
+    # Три большие точки в верхнем правом углу
+    dot_radius = 15  # Увеличенный радиус (было 8)
+    dot_spacing = 20  # Расстояние между точками
     
     # Позиция для точек (верхний правый угол)
-    start_x = W - 80
-    start_y = 70
+    start_x = W - 70
+    start_y = 50  # Смещаем чуть ниже верхней линии
     
     for i in range(3):
         x = start_x - i * (dot_radius * 2 + dot_spacing)
@@ -192,7 +195,7 @@ def create_story(photo_bytes, title, body):
         draw.ellipse((x - dot_radius, y - dot_radius, x + dot_radius, y + dot_radius), fill=PURPLE)
 
     # ПОСЛЕ ТОГО КАК ВЕСЬ ТЕКСТ НАРИСОВАН, накладываем плашку ПОВЕРХ ВСЕГО
-    divider_y = photo_h
+    divider_y = photo_h + top_line_height
     
     if not os.path.exists(DIVIDER_PATH):
         draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)

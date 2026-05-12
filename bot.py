@@ -48,7 +48,7 @@ WHITE = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
-DIVIDER_PATH = "4422.png"
+DIVIDER_PATH = "divider.png"
 
 # Высота плашки-разделителя в пикселях
 DIVIDER_HEIGHT = 50
@@ -158,9 +158,19 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # Полоса после заголовка (300px ширина, 15px высота, острые края)
+    # Три большие точки после заголовка (вместо полосы)
     y += 18
-    draw.rectangle((80, y, 380, y + 15), fill=PURPLE)
+    dot_radius = 15
+    dot_spacing = 20
+    
+    # Центрируем точки по горизонтали (относительно левого края 80px)
+    start_x = 80 + 25  # Немного смещаем для лучшего вида
+    
+    for i in range(3):
+        x = start_x + i * (dot_radius * 2 + dot_spacing)
+        y_dot = y + 10
+        draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
+    
     y += 70
 
     # Основной текст
@@ -181,18 +191,6 @@ def create_story(photo_bytes, title, body):
     for line in body_lines:
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
-
-    # Три большие точки в верхнем правом углу
-    dot_radius = 15
-    dot_spacing = 20
-    
-    start_x = W - 70
-    start_y = 55  # Смещаем чуть ниже, так как верхняя полоса стала выше
-    
-    for i in range(3):
-        x = start_x - i * (dot_radius * 2 + dot_spacing)
-        y_dot = start_y
-        draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
 
     # ПОСЛЕ ТОГО КАК ВЕСЬ ТЕКСТ НАРИСОВАН, накладываем плашку ПОВЕРХ ВСЕГО
     divider_y = photo_h + top_line_height

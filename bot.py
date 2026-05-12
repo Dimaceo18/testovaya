@@ -118,8 +118,8 @@ def create_story(photo_bytes, title, body):
     canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
-    # Фото
-    photo_h = 760
+    # Высота фото - примерно 40% от высоты сторис
+    photo_h = int(H * 0.4)  # 768px
     photo = crop_cover(img, (W, photo_h))
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, 0))
@@ -142,19 +142,23 @@ def create_story(photo_bytes, title, body):
         fill=WHITE
     )
 
-    # Разделитель (фиолетовая плашка сверху)
-    divider_y = 735
+    # Разделитель (фиолетовая плашка)
+    # Плашка будет от края до края и высотой 8% от высоты фото
+    divider_y = photo_h
+    divider_height = int(photo_h * 0.08)  # ~8% от высоты фото
 
     if not os.path.exists(DIVIDER_PATH):
-        raise RuntimeError("Не найден файл divider.png рядом с bot.py")
+        # Если файла нет, рисуем фиолетовую полосу сами
+        draw.rectangle((0, divider_y, W, divider_y + divider_height), fill=PURPLE)
+    else:
+        divider = Image.open(DIVIDER_PATH).convert("RGBA")
+        # Растягиваем плашку на всю ширину и нужную высоту
+        divider = divider.resize((W, divider_height), Image.LANCZOS)
+        canvas.paste(divider, (0, divider_y), divider)
 
-    divider = Image.open(DIVIDER_PATH).convert("RGBA")
-    divider = divider.resize((W, 110), Image.LANCZOS)
-
-    canvas.paste(divider, (0, divider_y), divider)
-
-    # Белая зона под текстом
-    draw.rectangle((0, divider_y + 80, W, H), fill=WHITE)
+    # Белая зона под текстом (начинается сразу после плашки)
+    white_bg_start = divider_y + divider_height
+    draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
     # Заголовок
     title = title.strip()
@@ -170,7 +174,7 @@ def create_story(photo_bytes, title, body):
         gap=8,
     )
 
-    y = 900
+    y = white_bg_start + 80  # Отступ от плашки
 
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=BLACK)
@@ -182,53 +186,28 @@ def create_story(photo_bytes, title, body):
 
     # Основной текст (весь, без обрезания)
     body = body.strip()
+    
+    # Доступная высота для текста
+    available_height = H - y - 100
 
     body_font, body_lines = fit_text(
         draw,
         body,
         FONT_REGULAR,
         max_width=900,
-        max_height=760,
+        max_height=available_height,
         start_size=33,
-        min_size=18,
+        min_size=16,
         gap=8,
     )
 
-    max_body_y = 1780
-
     for line in body_lines:
-        if y + body_font.size > max_body_y:
-            # Если текст не помещается, подбираем шрифт поменьше
-            # Находим минимально возможный размер
-            for test_size in range(18, 10, -1):
-                test_font = font(FONT_REGULAR, test_size)
-                test_lines = wrap_text(draw, body, test_font, 900)
-                test_height = len(test_lines) * (test_size + 8)
-                if test_height <= 760:
-                    body_font = test_font
-                    body_lines = test_lines
-                    break
-            
-            # Перерисовываем текст с новым шрифтом
-            y_temp = y
-            for line in body_lines:
-                if y_temp + body_font.size > max_body_y:
-                    draw.text((80, y_temp), line, font=body_font, fill=BLACK)
-                    break
-                draw.text((80, y_temp), line, font=body_font, fill=BLACK)
-                y_temp += body_font.size + 8
-            break
-
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # Фиолетовая полоса внизу
-    footer_y = 1768
-    draw.rounded_rectangle(
-        (0, footer_y, W, footer_y + 152),
-        radius=0,
-        fill=PURPLE
-    )
+    # Тонкая фиолетовая полоса внизу (3-4 пикселя)
+    footer_height = 4
+    draw.rectangle((0, H - footer_height, W, H), fill=PURPLE)
 
     output = io.BytesIO()
     canvas.save(output, format="PNG", quality=95)

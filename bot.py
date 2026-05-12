@@ -50,6 +50,9 @@ FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
 DIVIDER_PATH = "divider.png"
 
+# Высота плашки-разделителя в пикселях
+DIVIDER_HEIGHT = 50
+
 
 def font(path, size):
     return ImageFont.truetype(path, size)
@@ -142,22 +145,20 @@ def create_story(photo_bytes, title, body):
         fill=WHITE
     )
 
-    # Разделитель (фиолетовая плашка)
-    # Плашка будет от края до края и высотой 8% от высоты фото
+    # Разделитель (фиолетовая плашка) - теперь всегда 50px высотой и на всю ширину
     divider_y = photo_h
-    divider_height = int(photo_h * 0.08)  # ~8% от высоты фото
-
+    
     if not os.path.exists(DIVIDER_PATH):
-        # Если файла нет, рисуем фиолетовую полосу сами
-        draw.rectangle((0, divider_y, W, divider_y + divider_height), fill=PURPLE)
+        # Если файла нет, рисуем фиолетовую полосу
+        draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
     else:
         divider = Image.open(DIVIDER_PATH).convert("RGBA")
-        # Растягиваем плашку на всю ширину и нужную высоту
-        divider = divider.resize((W, divider_height), Image.LANCZOS)
+        # Растягиваем плашку ровно на всю ширину (1080px) и высоту DIVIDER_HEIGHT
+        divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
         canvas.paste(divider, (0, divider_y), divider)
 
     # Белая зона под текстом (начинается сразу после плашки)
-    white_bg_start = divider_y + divider_height
+    white_bg_start = divider_y + DIVIDER_HEIGHT
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
     # Заголовок
@@ -205,7 +206,7 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # Тонкая фиолетовая полоса внизу (3-4 пикселя)
+    # Тонкая фиолетовая полоса внизу (4 пикселя)
     footer_height = 4
     draw.rectangle((0, H - footer_height, W, H), fill=PURPLE)
 

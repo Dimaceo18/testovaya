@@ -158,8 +158,8 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # Три большие точки после заголовка (вместо полосы)
-    y += 18
+    # Три большие точки после заголовка (опущены ниже)
+    y += 30  # Увеличил отступ сверху (было 18, стало 30)
     dot_radius = 15
     dot_spacing = 20
     
@@ -171,7 +171,7 @@ def create_story(photo_bytes, title, body):
         y_dot = y + 10
         draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
     
-    y += 70
+    y += 85  # Увеличил отступ после точек (было 70, стало 85)
 
     # Основной текст
     body = body.strip()

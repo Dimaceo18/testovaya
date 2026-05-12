@@ -130,20 +130,8 @@ def create_story(photo_bytes, title, body):
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, 0))
 
-    # Разделитель (фиолетовая плашка)
-    divider_y = photo_h
-    
-    if not os.path.exists(DIVIDER_PATH):
-        # Если файла нет, рисуем фиолетовую полосу
-        draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
-    else:
-        divider = Image.open(DIVIDER_PATH).convert("RGBA")
-        # Растягиваем плашку ровно на всю ширину (1080px) и высоту DIVIDER_HEIGHT
-        divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
-        canvas.paste(divider, (0, divider_y), divider)
-
-    # Белая зона под текстом (начинается сразу после плашки)
-    white_bg_start = divider_y + DIVIDER_HEIGHT
+    # СНАЧАЛА создаём белый фон с текстом
+    white_bg_start = photo_h
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
     # Заголовок
@@ -172,7 +160,7 @@ def create_story(photo_bytes, title, body):
 
     # Основной текст
     body = body.strip()
-    available_height = H - y - 150  # Оставляем место для логотипа снизу
+    available_height = H - y - 150
 
     body_font, body_lines = fit_text(
         draw,
@@ -188,6 +176,25 @@ def create_story(photo_bytes, title, body):
     for line in body_lines:
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
+
+    # ПОСЛЕ ТОГО КАК ВЕСЬ ТЕКСТ НАРИСОВАН, накладываем плашку ПОВЕРХ ВСЕГО
+    divider_y = photo_h
+    
+    if not os.path.exists(DIVIDER_PATH):
+        draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
+    else:
+        divider = Image.open(DIVIDER_PATH).convert("RGBA")
+        divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
+        
+        # Создаём временный слой для плашки, чтобы сохранить прозрачность
+        temp_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        temp_layer.paste(divider, (0, divider_y), divider)
+        
+        # Накладываем плашку поверх всего canvas
+        canvas = canvas.convert("RGBA")
+        canvas = Image.alpha_composite(canvas, temp_layer)
+        canvas = canvas.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
 
     # Логотип внизу по центру
     logo_font = font(FONT_BOLD, 38)

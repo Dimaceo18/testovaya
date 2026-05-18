@@ -44,12 +44,12 @@ def run_web():
 W, H = 1080, 1920
 
 PURPLE = (111, 55, 245)
-BLACK = (7, 7, 10)  # #07070A для тёмной темы
+BLACK = (7, 7, 10)
 WHITE = (255, 255, 255)
-LIGHT_BG = (255, 255, 255)  # светлый фон
-DARK_BG = (7, 7, 10)  # тёмный фон
-LIGHT_TEXT = (20, 22, 32)  # тёмный текст на светлом фоне
-DARK_TEXT = (255, 255, 255)  # белый текст на тёмном фоне
+LIGHT_BG = (255, 255, 255)
+DARK_BG = (7, 7, 10)
+LIGHT_TEXT = (20, 22, 32)
+DARK_TEXT = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
@@ -142,7 +142,6 @@ def create_story(photo_bytes, title, body, dark_mode=False):
     photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
     
-    # Затемнение в зависимости от темы
     if dark_mode:
         photo = ImageEnhance.Brightness(photo).enhance(0.85)
     else:
@@ -167,14 +166,14 @@ def create_story(photo_bytes, title, body, dark_mode=False):
     text_bg_start = divider_y + bottom_line_height
     draw.rectangle((0, text_bg_start, W, H), fill=bg_color)
 
-    # ========== ЗАГОЛОВОК ==========
+    # ========== ЗАГОЛОВОК (поднят на 20px выше) ==========
     title = title.strip()
     title_font, title_lines = fit_text(
         draw, title, FONT_BOLD, max_width=900, max_height=300,
         start_size=58, min_size=38, gap=8,
     )
 
-    y = text_bg_start + 80
+    y = text_bg_start + 60  # Было 80, стало 60 (подняли на 20px)
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=text_color)
         y += title_font.size + 10
@@ -204,39 +203,39 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         draw.text((80, y), line, font=body_font, fill=text_color)
         y += body_font.size + 8
 
-    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + ЭЛЛИПС ПОД НЕЙ ==========
-    # Тонкая фиолетовая полоса (2px)
+    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + ЭЛЛИПС ==========
     thin_line_y = H - 50
     thin_line_height = 2
     draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
     
-    # Эллипс под тонкой линией в левом углу
+    # ЭЛЛИПС (круг) с буквой f
     ellipse_radius = 25
     ellipse_x = 50
     ellipse_y = thin_line_y + thin_line_height + 15
     
+    # Рисуем фиолетовый круг
     draw.ellipse(
         (ellipse_x - ellipse_radius, ellipse_y - ellipse_radius,
          ellipse_x + ellipse_radius, ellipse_y + ellipse_radius),
-        fill=PURPLE
+        fill=PURPLE, outline=None
     )
     
-    # Текст внутри эллипса - буква "f"
-    small_font = font(FONT_BOLD, 24)
-    text_small = "f"
-    bbox = draw.textbbox((0, 0), text_small, font=small_font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    # Буква f внутри круга
+    small_font = font(FONT_BOLD, 26)
     draw.text(
-        (ellipse_x - text_w // 2, ellipse_y - text_h // 2 - 2),
-        text_small, font=small_font, fill=WHITE
+        (ellipse_x - 8, ellipse_y - 12),
+        "f",
+        font=small_font,
+        fill=WHITE
     )
     
-    # Текст "fider.by" рядом с эллипсом
+    # Текст fider.by рядом
     text_font = font(FONT_BOLD, 28)
     draw.text(
-        (ellipse_x + ellipse_radius + 15, ellipse_y - 12),
-        "fider.by", font=text_font, fill=PURPLE
+        (ellipse_x + ellipse_radius + 10, ellipse_y - 12),
+        "fider.by",
+        font=text_font,
+        fill=PURPLE
     )
 
     output = io.BytesIO()
@@ -248,7 +247,7 @@ def create_story(photo_bytes, title, body, dark_mode=False):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "waiting_photo"
-    context.user_data["dark_mode"] = False  # по умолчанию светлая тема
+    context.user_data["dark_mode"] = False
 
     await update.message.reply_text(
         "🟣 Бот сторис Fider.by\n\n"
@@ -363,7 +362,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_photo(
                 photo=result,
-                caption=f"✨ Готово в {theme_name} теме\n\nfider.by — главный технологический"
+                caption=f"✨ Готово в {theme_name} теме\n\nfider.by"
             )
             context.user_data.clear()
             context.user_data["state"] = "waiting_photo"
@@ -414,7 +413,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ FIDER STORY BOT STARTED")
-    print("🌓 Поддержка светлой и тёмной темы")
+    print("🌓 Светлая и тёмная тема | Эллипс с буквой f")
 
     app.run_polling(
         drop_pending_updates=True,

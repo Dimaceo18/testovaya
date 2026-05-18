@@ -4,23 +4,18 @@ import os
 import io
 import threading
 import logging
-import re
-import asyncio
-import httpx
 
 from flask import Flask
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
-from telegram.error import TimedOut
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -29,7 +24,6 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("Нет BOT_TOKEN")
@@ -58,17 +52,6 @@ DIVIDER_PATH = "divider.png"
 
 # Высота плашки-разделителя в пикселях
 DIVIDER_HEIGHT = 50
-
-# Промпт для DeepSeek
-DEEPSEEK_PROMPT = """Ты редактор новостного сайта. У тебя строгий новостной формат. Без обращений на "вы", "ты". Только новостной формат.
-
-Переделай новость в формат на 600-650 символов. Убери всю воду, сделай интересный заголовок. Без смайликов. Сохраняй главные факты.
-
-Текст должен быть разбит на логические абзацы (2-4 предложения). Между абзацами пустая строка.
-
-Верни строго в формате:
-ЗАГОЛОВОК: (заголовок новости)
-ТЕКСТ: (текст новости с абзацами)"""
 
 
 def font(path, size):
@@ -175,19 +158,20 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # Три большие точки после заголовка
-    y += 30
+    # Три большие точки после заголовка (опущены ниже)
+    y += 30  # Увеличил отступ сверху (было 18, стало 30)
     dot_radius = 15
     dot_spacing = 20
     
-    start_x = 80 + 25
+    # Центрируем точки по горизонтали (относительно левого края 80px)
+    start_x = 80 + 25  # Немного смещаем для лучшего вида
     
     for i in range(3):
         x = start_x + i * (dot_radius * 2 + dot_spacing)
         y_dot = y + 10
         draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
     
-    y += 85
+    y += 85  # Увеличил отступ после точек (было 70, стало 85)
 
     # Основной текст
     body = body.strip()
@@ -208,7 +192,7 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # Плашка-разделитель
+    # ПОСЛЕ ТОГО КАК ВЕСЬ ТЕКСТ НАРИСОВАН, накладываем плашку ПОВЕРХ ВСЕГО
     divider_y = photo_h + top_line_height
     
     if not os.path.exists(DIVIDER_PATH):
@@ -269,500 +253,16 @@ def create_story(photo_bytes, title, body):
     return output
 
 
-# ==================== ФУНКЦИЯ ЗАПРОСА К DeepSeek ====================
-async def call_deepseek(prompt, text):
-    """Вызов DeepSeek API"""
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "deepseek-chat",
-                "messages": [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": text}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 1000
-            }
-        )
-        return response.json()
-
-
-# ==================== ОБРАБОТЧИКИ ИИ ====================
-async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка текста через DeepSeek AI"""
-    query = update.callback_query
-    await query.answer()
-    
-    if not DEEPSEEK_API_KEY:
-        await query.message.reply_text("❌ API DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.")
-        return
-    
-    body = context.user_data.get("temp_body", "")
-    if not body:
-        await query.message.reply_text("❌ Нет текста для обработки")
-        return
-    
-    await query.message.reply_text("🤖 Обрабатываю текст через DeepSeek AI...")
-    
-    try:
-        result = await call_deepseek(DEEPSEEK_PROMPT, body)
-        
-        if "error" in result:
-            await query.message.reply_text(f"❌ Ошибка DeepSeek: {result['error'].get('message', 'Unknown error')}")
-            return
-        
-        content = result["choices"][0]["message"]["content"]
-        
-        # Парсим ответ
-        title = ""
-        new_body = ""
-        
-        if "ЗАГОЛОВОК:" in content.upper() and "ТЕКСТ:" in content.upper():
-            title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', content, re.IGNORECASE | re.DOTALL)
-            if title_match:
-                title = title_match.group(1).strip()
-            
-            body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', content, re.IGNORECASE | re.DOTALL)
-            if body_match:
-                new_body = body_match.group(1).strip()
-        else:
-            lines = content.strip().split('\n')
-            if len(lines) > 0 and len(lines[0]) < 100:
-                title = lines[0].replace('Заголовок:', '').replace('ЗАГОЛОВОК:', '').strip()
-                new_body = '\n'.join(lines[1:]).strip()
-            else:
-                new_body = content.strip()
-        
-        if not new_body:
-            new_body = content.strip()
-        
-        if not title and new_body:
-            title = new_body[:50] + "..."
-        
-        char_count = len(new_body)
-        
-        # Проверяем длину текста
-        if char_count < 550:
-            await query.message.reply_text(
-                f"⚠️ *Текст получился коротковат:* {char_count} символов (нужно 600-650).\n\n"
-                f"Попробуйте нажать '🔄 Переделать' и попросите увеличить объем.\n\n"
-                f"📝 *Текст:*\n{new_body}",
-                parse_mode="Markdown"
-            )
-            return
-        elif char_count > 700:
-            await query.message.reply_text(
-                f"⚠️ *Текст получился длинноват:* {char_count} символов (нужно 600-650).\n\n"
-                f"Попробуйте нажать '🔄 Переделать' и попросите сократить.\n\n"
-                f"📝 *Текст:*\n{new_body}",
-                parse_mode="Markdown"
-            )
-            return
-        
-        context.user_data["temp_title"] = title
-        context.user_data["temp_body"] = new_body
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Использовать", callback_data="use_ai_result")],
-            [InlineKeyboardButton("🔄 Переделать", callback_data="ai_reprocess")],
-            [InlineKeyboardButton("✏️ Редактировать вручную", callback_data="edit_manually")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
-        ])
-        
-        await query.message.reply_text(
-            f"✅ *Текст обработан!*\n\n"
-            f"📰 *Заголовок:* {title}\n\n"
-            f"📝 *Текст:*\n{new_body}\n\n"
-            f"📊 *Длина текста:* {char_count} символов\n\n"
-            f"Что делаем дальше?",
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-        
-        try:
-            await query.message.delete()
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Ошибка DeepSeek: {e}")
-        await query.message.reply_text(f"❌ Ошибка при обработке: {e}")
-
-
-async def ai_reprocess_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Повторная обработка с новым запросом"""
-    query = update.callback_query
-    await query.answer()
-    
-    context.user_data["waiting_custom_request"] = True
-    
-    await query.message.reply_text(
-        "📝 *Напишите ваш запрос для переделки текста*\n\n"
-        "Примеры:\n"
-        "• Сделай заголовок броским\n"
-        "• Сделай текст 650 символов\n"
-        "• Сделай более официальным\n"
-        "• Добавь больше фактов\n\n"
-        "Или отправьте /cancel для отмены.",
-        parse_mode="Markdown"
-    )
-    
-    try:
-        await query.message.delete()
-    except:
-        pass
-
-
-async def handle_custom_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кастомного запроса к DeepSeek"""
-    if not context.user_data.get("waiting_custom_request"):
-        return
-    
-    custom_request = update.message.text
-    context.user_data["waiting_custom_request"] = False
-    
-    body = context.user_data.get("temp_body", "")
-    if not body:
-        await update.message.reply_text("❌ Нет текста для обработки")
-        return
-    
-    prompt = f"{DEEPSEEK_PROMPT}\n\nДополнительные требования пользователя: {custom_request}\n\nПеределай новость согласно этим требованиям."
-    
-    await update.message.reply_text("🤖 Обрабатываю с новым запросом...")
-    
-    try:
-        result = await call_deepseek(prompt, body)
-        
-        if "error" in result:
-            await update.message.reply_text(f"❌ Ошибка DeepSeek: {result['error'].get('message', 'Unknown error')}")
-            return
-        
-        content = result["choices"][0]["message"]["content"]
-        
-        title = ""
-        new_body = ""
-        
-        if "ЗАГОЛОВОК:" in content.upper() and "ТЕКСТ:" in content.upper():
-            title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', content, re.IGNORECASE | re.DOTALL)
-            if title_match:
-                title = title_match.group(1).strip()
-            
-            body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', content, re.IGNORECASE | re.DOTALL)
-            if body_match:
-                new_body = body_match.group(1).strip()
-        else:
-            lines = content.strip().split('\n')
-            if len(lines) > 0 and len(lines[0]) < 100:
-                title = lines[0].strip()
-                new_body = '\n'.join(lines[1:]).strip()
-            else:
-                new_body = content.strip()
-        
-        if not new_body:
-            new_body = content.strip()
-        
-        if not title and new_body:
-            title = new_body[:50] + "..."
-        
-        char_count = len(new_body)
-        
-        context.user_data["temp_title"] = title
-        context.user_data["temp_body"] = new_body
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Использовать", callback_data="use_ai_result")],
-            [InlineKeyboardButton("🔄 Переделать", callback_data="ai_reprocess")],
-            [InlineKeyboardButton("✏️ Редактировать вручную", callback_data="edit_manually")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
-        ])
-        
-        await update.message.reply_text(
-            f"✅ *Текст обработан!*\n\n"
-            f"📰 *Заголовок:* {title}\n\n"
-            f"📝 *Текст:*\n{new_body}\n\n"
-            f"📊 *Длина текста:* {char_count} символов\n\n"
-            f"Что делаем дальше?",
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-
-async def use_ai_result_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Использовать результат обработки ИИ"""
-    query = update.callback_query
-    await query.answer()
-    
-    title = context.user_data.get("temp_title", "")
-    body = context.user_data.get("temp_body", "")
-    
-    if not title or not body:
-        await query.message.reply_text("❌ Нет данных. Начните заново.")
-        return
-    
-    context.user_data["title"] = title
-    context.user_data["body"] = body
-    context.user_data["state"] = "ready_to_create"
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
-        [InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title_manual")],
-        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body_manual")],
-        [InlineKeyboardButton("🤖 Обработать снова", callback_data="ai_process")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
-    ])
-    
-    await query.message.reply_text(
-        f"✅ *Готово!*\n\n"
-        f"📰 *Заголовок:* {title}\n\n"
-        f"📝 *Текст:*\n{body}\n\n"
-        f"Нажмите 'Создать сторис' для генерации изображения.",
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
-    
-    try:
-        await query.message.delete()
-    except:
-        pass
-
-
-async def edit_manually_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Редактирование вручную"""
-    query = update.callback_query
-    await query.answer()
-    
-    context.user_data["waiting_edit_body"] = True
-    await query.message.reply_text(
-        "✏️ Отправьте новый текст (макс. 900 символов)\n\n"
-        "Или /cancel для отмены."
-    )
-    
-    try:
-        await query.message.delete()
-    except:
-        pass
-
-
-async def edit_title_manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Редактирование заголовка вручную"""
-    query = update.callback_query
-    await query.answer()
-    
-    context.user_data["waiting_edit_title"] = True
-    await query.message.reply_text(
-        "✏️ Отправьте новый заголовок\n\n"
-        "Или /cancel для отмены."
-    )
-    
-    try:
-        await query.message.delete()
-    except:
-        pass
-
-
-async def edit_body_manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Редактирование текста вручную"""
-    query = update.callback_query
-    await query.answer()
-    
-    context.user_data["waiting_edit_body"] = True
-    await query.message.reply_text(
-        "✏️ Отправьте новый текст (макс. 900 символов)\n\n"
-        "Или /cancel для отмены."
-    )
-    
-    try:
-        await query.message.delete()
-    except:
-        pass
-
-
-async def handle_manual_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ручного редактирования"""
-    if context.user_data.get("waiting_edit_title"):
-        new_title = update.message.text.strip()
-        if new_title and len(new_title) >= 3:
-            context.user_data["title"] = new_title
-            context.user_data["waiting_edit_title"] = False
-            await update.message.reply_text(f"✅ Заголовок обновлён:\n\n{new_title}")
-            
-            title = context.user_data.get("title", "")
-            body = context.user_data.get("body", "")
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
-                [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body_manual")],
-                [InlineKeyboardButton("🤖 Обработать ИИ", callback_data="ai_process")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
-            ])
-            
-            await update.message.reply_text(
-                f"📰 *Заголовок:* {title}\n\n"
-                f"📝 *Текст:*\n{body}\n\n"
-                f"Что дальше?",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-        else:
-            await update.message.reply_text("❌ Заголовок слишком короткий (минимум 3 символа)")
-        return
-    
-    if context.user_data.get("waiting_edit_body"):
-        new_body = update.message.text.strip()
-        if new_body:
-            if len(new_body) > 900:
-                await update.message.reply_text("❌ Текст слишком длинный (макс. 900 символов)")
-                return
-            context.user_data["body"] = new_body
-            context.user_data["waiting_edit_body"] = False
-            await update.message.reply_text(f"✅ Текст обновлён!\n\n{new_body[:200]}...")
-            
-            title = context.user_data.get("title", "")
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
-                [InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title_manual")],
-                [InlineKeyboardButton("🤖 Обработать ИИ", callback_data="ai_process")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
-            ])
-            
-            await update.message.reply_text(
-                f"📰 *Заголовок:* {title}\n\n"
-                f"📝 *Текст:*\n{new_body}\n\n"
-                f"Что дальше?",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-        else:
-            await update.message.reply_text("❌ Текст не может быть пустым")
-        return
-
-
-async def create_story_final_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Создание сторис из подготовленных данных"""
-    query = update.callback_query
-    await query.answer()
-    
-    photo = context.user_data.get("photo")
-    title = context.user_data.get("title")
-    body = context.user_data.get("body")
-    
-    if not photo or not title or not body:
-        await query.message.reply_text("❌ Не хватает данных. Нажмите /start.")
-        return
-    
-    msg = await query.message.reply_text("🎨 Создаю сторис...")
-    
-    try:
-        result = create_story(photo, title, body)
-        result.name = "fider_story.png"
-        
-        await query.message.reply_photo(
-            photo=result,
-            caption="✨ Готово!\n\nfider.by"
-        )
-        
-        context.user_data.clear()
-        context.user_data["state"] = "waiting_photo"
-        
-    except ValueError as e:
-        await query.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый текст.")
-        return
-    except Exception as e:
-        logger.exception(e)
-        await query.message.reply_text(f"❌ Ошибка: {str(e)}")
-        context.user_data.clear()
-        context.user_data["state"] = "waiting_photo"
-    
-    try:
-        await msg.delete()
-    except:
-        pass
-
-
-async def back_to_input_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Возврат к вводу текста"""
-    query = update.callback_query
-    await query.answer()
-    
-    context.user_data["state"] = "waiting_body"
-    await query.message.reply_text(
-        "✏️ Отправьте основной текст (макс. 900 символов)\n\n"
-        "Или нажмите /cancel для отмены."
-    )
-    
-    try:
-        await query.message.delete()
-    except:
-        pass
-
-
-async def continue_without_ai_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Продолжить без обработки ИИ"""
-    query = update.callback_query
-    await query.answer()
-    
-    body = context.user_data.get("original_body", "")
-    
-    context.user_data["body"] = body
-    context.user_data["state"] = "ready_to_create"
-    
-    title = context.user_data.get("title", "")
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
-        [InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title_manual")],
-        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body_manual")],
-        [InlineKeyboardButton("🤖 Обработать ИИ", callback_data="ai_process")]
-    ])
-    
-    await query.message.reply_text(
-        f"📰 *Заголовок:* {title}\n\n"
-        f"📝 *Текст:*\n{body}\n\n"
-        f"Текст {'можно сократить через ИИ до 600-650 символов' if len(body) > 650 else 'хорошей длины'}.\n\n"
-        f"Что делаем?",
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
-    
-    try:
-        await query.message.delete()
-    except:
-        pass
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена текущего действия"""
-    context.user_data.clear()
-    await update.message.reply_text("✅ Отменено. Нажмите /start для начала.")
-
-
-# ==================== ОСНОВНЫЕ ОБРАБОТЧИКИ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "waiting_photo"
 
-    ai_status = "✅ Доступен" if DEEPSEEK_API_KEY else "❌ Не настроен"
-    
     await update.message.reply_text(
-        f"🟣 Бот сторис Fider.by\n\n"
-        f"✨ ДОСТУПНЫЕ ФУНКЦИИ:\n"
-        f"1. Отправь фото\n"
-        f"2. Отправь заголовок\n"
-        f"3. Отправь основной текст (максимум 900 символов)\n\n"
-        f"🤖 DeepSeek AI: {ai_status}\n"
-        f"После отправки текста нажми кнопку 'Обработать через ИИ'\n"
-        f"ИИ сократит текст до 600-650 символов и расставит абзацы\n\n"
-        f"Я соберу готовую сторис 9:16."
+        "🟣 Бот сторис Fider.by\n\n"
+        "1. Отправь фото\n"
+        "2. Потом отправь заголовок\n"
+        "3. Потом отправь основной текст (максимум 900 символов)\n\n"
+        "Я соберу готовую сторис 9:16."
     )
 
 
@@ -771,20 +271,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нажми /start и отправь фото заново.")
         return
 
-    try:
-        photo = update.message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        photo_bytes = await file.download_as_bytearray()
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    photo_bytes = await file.download_as_bytearray()
 
-        context.user_data["photo"] = bytes(photo_bytes)
-        context.user_data["state"] = "waiting_title"
+    context.user_data["photo"] = bytes(photo_bytes)
+    context.user_data["state"] = "waiting_title"
 
-        await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
-    except TimedOut:
-        await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке фото.")
+    await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -798,100 +292,73 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нужен файл изображения.")
         return
 
-    try:
-        file = await context.bot.get_file(doc.file_id)
-        photo_bytes = await file.download_as_bytearray()
+    file = await context.bot.get_file(doc.file_id)
+    photo_bytes = await file.download_as_bytearray()
 
-        context.user_data["photo"] = bytes(photo_bytes)
-        context.user_data["state"] = "waiting_title"
-
-        await update.message.reply_text("✅ Фото получил в хорошем качестве. Теперь отправь заголовок.")
-    except TimedOut:
-        await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке файла.")
-
-
-async def handle_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка заголовка"""
-    if context.user_data.get("state") != "waiting_title":
-        return
-    
-    title = update.message.text.strip()
-
-    if len(title) < 3:
-        await update.message.reply_text("❌ Заголовок слишком короткий (минимум 3 символа).")
-        return
-
-    context.user_data["title"] = title
-    context.user_data["state"] = "waiting_body"
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Продолжить без обработки", callback_data="continue_without_ai")],
-        [InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="ai_process")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_title")]
-    ])
-    
-    await update.message.reply_text(
-        f"✅ Заголовок сохранён:\n\n{title}\n\n"
-        f"📝 Теперь отправь основной текст (макс. 900 символов)\n\n"
-        f"Или выбери действие:",
-        reply_markup=keyboard
-    )
-
-
-async def back_to_title_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Вернуться к вводу заголовка"""
-    query = update.callback_query
-    await query.answer()
-    
+    context.user_data["photo"] = bytes(photo_bytes)
     context.user_data["state"] = "waiting_title"
-    await query.message.reply_text("✏️ Отправьте новый заголовок.")
-    
-    try:
-        await query.message.delete()
-    except:
-        pass
+
+    await update.message.reply_text("✅ Фото получил в хорошем качестве. Теперь отправь заголовок.")
 
 
-async def handle_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка основного текста"""
-    if context.user_data.get("state") != "waiting_body":
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get("state")
+
+    if state == "waiting_title":
+        title = update.message.text.strip()
+
+        if len(title) < 5:
+            await update.message.reply_text("Заголовок слишком короткий. Отправь нормальный заголовок.")
+            return
+
+        context.user_data["title"] = title
+        context.user_data["state"] = "waiting_body"
+
+        await update.message.reply_text("✅ Заголовок получил. Теперь отправь основной текст (максимум 900 символов).")
         return
-    
-    body = update.message.text.strip()
-    
-    if len(body) < 20:
-        await update.message.reply_text("❌ Текст слишком короткий (минимум 20 символов).")
+
+    if state == "waiting_body":
+        body = update.message.text.strip()
+        photo = context.user_data.get("photo")
+        title = context.user_data.get("title")
+
+        if not photo or not title:
+            context.user_data.clear()
+            context.user_data["state"] = "waiting_photo"
+            await update.message.reply_text("Что-то потерялось. Нажми /start и начни заново.")
+            return
+
+        msg = await update.message.reply_text("🎨 Оформляю сторис...")
+
+        try:
+            result = create_story(photo, title, body)
+            result.name = "fider_story.png"
+
+            await update.message.reply_photo(
+                photo=result,
+                caption="Готово ✨"
+            )
+            context.user_data.clear()
+            context.user_data["state"] = "waiting_photo"
+
+        except ValueError as e:
+            await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый, более короткий текст.")
+            return
+
+        except Exception as e:
+            logger.exception(e)
+            await update.message.reply_text(f"❌ Ошибка:\n{e}")
+            context.user_data.clear()
+            context.user_data["state"] = "waiting_photo"
+
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
         return
-    
-    if len(body) > 900:
-        await update.message.reply_text("❌ Текст слишком длинный (макс. 900 символов).")
-        return
-    
-    context.user_data["original_body"] = body
-    context.user_data["temp_body"] = body
-    context.user_data["state"] = "ready_to_create"
-    
-    title = context.user_data.get("title", "")
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
-        [InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="ai_process")],
-        [InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title_manual")],
-        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body_manual")]
-    ])
-    
-    await update.message.reply_text(
-        f"✅ *Всё готово!*\n\n"
-        f"📰 *Заголовок:* {title}\n\n"
-        f"📝 *Текст:*\n{body}\n\n"
-        f"Текст {'можно сократить через ИИ до 600-650 символов' if len(body) > 650 else 'хорошей длины'}.\n\n"
-        f"Что делаем?",
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
+
+    await update.message.reply_text("Нажми /start и отправь фото.")
 
 
 async def post_init(app):
@@ -912,35 +379,12 @@ def main():
         .build()
     )
 
-    # Команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cancel", cancel))
-    
-    # Сообщения
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.IMAGE, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_title))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_body))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_edit))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_request))
-    
-    # Callback кнопки
-    app.add_handler(CallbackQueryHandler(continue_without_ai_callback, pattern="continue_without_ai"))
-    app.add_handler(CallbackQueryHandler(back_to_title_callback, pattern="back_to_title"))
-    app.add_handler(CallbackQueryHandler(back_to_input_callback, pattern="back_to_input"))
-    app.add_handler(CallbackQueryHandler(ai_process_callback, pattern="ai_process"))
-    app.add_handler(CallbackQueryHandler(ai_reprocess_callback, pattern="ai_reprocess"))
-    app.add_handler(CallbackQueryHandler(use_ai_result_callback, pattern="use_ai_result"))
-    app.add_handler(CallbackQueryHandler(edit_manually_callback, pattern="edit_manually"))
-    app.add_handler(CallbackQueryHandler(edit_title_manual_callback, pattern="edit_title_manual"))
-    app.add_handler(CallbackQueryHandler(edit_body_manual_callback, pattern="edit_body_manual"))
-    app.add_handler(CallbackQueryHandler(create_story_final_callback, pattern="create_story_final"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ FIDER STORY BOT STARTED")
-    if DEEPSEEK_API_KEY:
-        print("🤖 DeepSeek AI подключен и готов к работе")
-    else:
-        print("⚠️ DeepSeek AI не настроен (добавьте DEEPSEEK_API_KEY)")
 
     app.run_polling(
         drop_pending_updates=True,

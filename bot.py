@@ -139,8 +139,8 @@ def draw_l_shape_corner(draw, x, y, width, height, thickness, color):
     draw.rectangle((x, y, x + width, y + thickness), fill=color)
 
 
-def extract_text_from_post(text):
-    """Извлекает заголовок и основной текст из поста"""
+def extract_title_and_body(text):
+    """Извлекает заголовок (жирный текст/первая строка) и основной текст из поста"""
     lines = text.strip().split('\n')
     
     # Фильтруем пустые строки
@@ -149,15 +149,18 @@ def extract_text_from_post(text):
     if not lines:
         return None, None
     
-    # Первая строка - заголовок
+    # Заголовок - первая строка
     title = lines[0]
+    
+    # Убираем возможные маркеры жирности (*текст* или **текст**)
+    title = re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', title)
     
     # Остальное - основной текст
     body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
     
-    # Очищаем от лишних символов
+    # Очищаем от лишних символов, но сохраняем пунктуацию
     title = re.sub(r'[^\w\s\.\,\!\?\-\(\)]', '', title)
-    body = re.sub(r'[^\w\s\.\,\!\?\-\(\)\']', '', body)
+    body = re.sub(r'[^\w\s\.\,\!\?\-\(\)\'\"]', '', body)
     
     # Ограничиваем длину
     if len(title) > 200:
@@ -215,37 +218,22 @@ def create_story(photo_bytes, title, body, dark_mode=False):
     text_bg_start = divider_y + bottom_line_height
     draw.rectangle((0, text_bg_start, W, H), fill=bg_color)
 
-    # ========== ЗАГОЛОВОК (поднят на 20px выше - было 55, стало 35) ==========
+    # ========== ЗАГОЛОВОК ==========
     title_font, title_lines = fit_text(
         draw, title, FONT_BOLD, max_width=900, max_height=300,
         start_size=58, min_size=38, gap=8,
     )
 
-    y = text_bg_start + 35  # БЫЛО 55, СТАЛО 35 (подняли на 20px)
+    y = text_bg_start + 35
 
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=text_color)
         y += title_font.size + 10
 
-    # ========== ТРИ ТОЧКИ (на одинаковом расстоянии от заголовка и основного текста) ==========
-    # Запоминаем позицию после заголовка
-    after_title_y = y
-    
-    # Отступ после заголовка (15px)
-    y += 15
-    dot_radius = 12
-    dot_spacing = 18
-    start_x = 80
-    
-    for i in range(3):
-        x = start_x + i * (dot_radius * 2 + dot_spacing)
-        y_dot = y + 8
-        draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
-    
-    # Отступ после точек (15px)
-    y += 40
+    # ========== ОСНОВНОЙ ТЕКСТ (без кружков) ==========
+    # Отступ после заголовка перед текстом
+    y += 25
 
-    # ========== ОСНОВНОЙ ТЕКСТ ==========
     if body:
         available_height = H - y - 150
         body_font, body_lines = fit_text(
@@ -295,9 +283,9 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         fill=WHITE
     )
     
-    # Надпись справа (такого же размера как fider.by - шрифт 28)
-    right_text_font = font(FONT_BOLD, 28)  # БЫЛО 16, СТАЛО 28
-    right_text = "ПРИСЫЛАЙТЕ СВОИ НОВОСТИ В ДИРЕКТ"
+    # Надпись справа
+    right_text_font = font(FONT_BOLD, 22)
+    right_text = "ПРИСЫЛАЙТЕ НОВОСТИ В ДИРЕКТ"
     
     right_text_bbox = draw.textbbox((0, 0), right_text, font=right_text_font)
     right_text_width = right_text_bbox[2] - right_text_bbox[0]
@@ -363,7 +351,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Найди любой пост в Telegram\n"
         "• Нажми на него и выбери «Переслать»\n"
         "• Отправь в этот чат\n"
-        "• Бот сам извлечёт фото, заголовок и текст!\n\n"
+        "• Бот сам извлечёт фото, заголовок и текст и сразу сделает сторис!\n\n"
         "**Способ 2 — Ручной ввод:**\n"
         "1. /start — начать создание\n"
         "2. Отправь фото\n"
@@ -374,7 +362,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/dark — тёмная тема\n"
         "/stats — статистика использования\n"
         "/help — эта справка\n\n"
-        "💡 **Совет:** Для лучшего результата используй фото хорошего качества и короткий заголовок до 5 строк.",
+        "💡 **Совет:** При репосте бот сам определяет заголовок (первая строка) и основной текст.",
         parse_mode="Markdown"
     )
 
@@ -428,88 +416,76 @@ async def light_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает пересланные посты"""
+    """Обрабатывает пересланные посты — сразу делает сторис без дополнительных вопросов"""
     message = update.message
     
-    # Проверяем, есть ли в пересланном сообщении текст и фото
-    if not message.forward_origin:
-        return False
-    
-    # Получаем оригинальное сообщение
+    # Проверяем, есть ли в пересланном сообщении текст
     original_text = message.caption or message.text
     
     if not original_text:
-        original_text = message.caption or ""
+        await update.message.reply_text("❌ В пересланном сообщении нет текста. Попробуй другой пост.")
+        return True
     
     # Ищем фото в сообщении
-    photo = None
+    photo_bytes = None
+    
     if message.photo:
         photo = message.photo[-1]
+        try:
+            file = await context.bot.get_file(photo.file_id)
+            photo_bytes = await file.download_as_bytearray()
+        except Exception as e:
+            logger.error(f"Ошибка загрузки фото: {e}")
+            await update.message.reply_text("❌ Не удалось загрузить фото из поста.")
+            return True
     elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
         try:
             file = await context.bot.get_file(message.document.file_id)
             photo_bytes = await file.download_as_bytearray()
-            context.user_data["photo"] = bytes(photo_bytes)
-            photo = True
         except Exception as e:
             logger.error(f"Ошибка загрузки документа: {e}")
-            return False
-    
-    if not photo:
-        await update.message.reply_text("❌ В пересланном сообщении нет фото. Попробуй другой пост или отправь фото отдельно.")
-        return True
-    
-    if not original_text:
-        await update.message.reply_text("❌ В пересланном сообщении нет текста. Попробуй другой пост или добавь описание.")
+            await update.message.reply_text("❌ Не удалось загрузить файл.")
+            return True
+    else:
+        await update.message.reply_text("❌ В пересланном сообщении нет фото. Попробуй другой пост.")
         return True
     
     # Извлекаем заголовок и текст из поста
     try:
-        title, body = extract_text_from_post(original_text)
+        title, body = extract_title_and_body(original_text)
         
         if not title:
             await update.message.reply_text("❌ Не удалось извлечь заголовок из текста. Попробуй другой пост.")
             return True
         
-        if isinstance(photo, bool):
-            pass
-        else:
-            file = await context.bot.get_file(photo.file_id)
-            photo_bytes = await file.download_as_bytearray()
-            context.user_data["photo"] = bytes(photo_bytes)
-        
-        context.user_data["title"] = title
-        context.user_data["body"] = body
-        context.user_data["state"] = "processing"
-        
         dark_mode = context.user_data.get("dark_mode", False)
         theme_name = "тёмной" if dark_mode else "светлой"
         
-        msg = await update.message.reply_text(f"📱 **Обработка поста...**\n\n"
-                                              f"📷 Фото: ✅\n"
-                                              f"📝 Заголовок: {title[:50]}...\n"
-                                              f"📄 Текст: {len(body)} символов\n"
-                                              f"🎨 Тема: {theme_name}\n\n"
-                                              f"⏳ Создаю сторис...",
-                                              parse_mode="Markdown")
+        msg = await update.message.reply_text(
+            f"📱 **Обработка поста...**\n\n"
+            f"📷 Фото: ✅\n"
+            f"📝 Заголовок: {title[:60]}...\n"
+            f"📄 Текст: {len(body)} символов\n"
+            f"🎨 Тема: {theme_name}\n\n"
+            f"⏳ Создаю сторис...",
+            parse_mode="Markdown"
+        )
         
-        result = create_story(context.user_data["photo"], title, body, dark_mode)
+        # Сразу создаём сторис
+        result = create_story(photo_bytes, title, body, dark_mode)
         result.name = "fider_story.png"
         
         await update.message.reply_photo(
             photo=result,
             caption=f"✨ **Готово!** Сторис создан из пересланного поста\n\n"
-                   f"📱 **{title[:50]}**\n\n"
+                   f"📌 **{title[:80]}**\n\n"
                    f"#fiderby #сторис\n\n"
-                   f"💡 Хочешь другой стиль? Используй /light или /dark",
+                   f"💡 Хочешь другую тему? Используй /light или /dark",
             parse_mode="Markdown"
         )
         
+        # Обновляем статистику
         update_stats(update.effective_user.id)
-        
-        context.user_data.clear()
-        context.user_data["dark_mode"] = dark_mode
-        context.user_data["state"] = None
         
         await msg.delete()
         return True
@@ -571,10 +547,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Если это пересланный пост — обрабатываем сразу
     if update.message.forward_origin:
-        result = await handle_forwarded_post(update, context)
-        if result:
-            return
+        await handle_forwarded_post(update, context)
+        return
     
     state = context.user_data.get("state")
 
@@ -637,7 +613,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    if update.message.text and not update.message.forward_origin:
+    if update.message.text:
         await update.message.reply_text("Нажми /start и отправь фото, или просто перешли сюда любой пост!")
 
 
@@ -670,7 +646,7 @@ def main():
 
     print("✅ FIDER STORY BOT STARTED")
     print("🌓 Поддержка светлой и тёмной темы")
-    print("📱 Поддержка репостов постов")
+    print("📱 Автоматическая обработка репостов постов")
 
     app.run_polling(
         drop_pending_updates=True,

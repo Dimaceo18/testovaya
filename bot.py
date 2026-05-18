@@ -140,7 +140,7 @@ def draw_l_shape_corner(draw, x, y, width, height, thickness, color):
 
 
 def extract_title_and_body(text):
-    """Извлекает заголовок (жирный текст/первая строка) и основной текст из поста"""
+    """Извлекает заголовок и основной текст из поста"""
     lines = text.strip().split('\n')
     
     # Фильтруем пустые строки
@@ -152,13 +152,14 @@ def extract_title_and_body(text):
     # Заголовок - первая строка
     title = lines[0]
     
-    # Убираем возможные маркеры жирности (*текст* или **текст**)
+    # Убираем возможные маркеры жирности
     title = re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', title)
+    title = re.sub(r'[_~`#>|]', '', title)
     
     # Остальное - основной текст
     body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
     
-    # Очищаем от лишних символов, но сохраняем пунктуацию
+    # Очищаем от лишних символов
     title = re.sub(r'[^\w\s\.\,\!\?\-\(\)]', '', title)
     body = re.sub(r'[^\w\s\.\,\!\?\-\(\)\'\"]', '', body)
     
@@ -230,8 +231,7 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         draw.text((80, y), line, font=title_font, fill=text_color)
         y += title_font.size + 10
 
-    # ========== ОСНОВНОЙ ТЕКСТ (без кружков) ==========
-    # Отступ после заголовка перед текстом
+    # ========== ОСНОВНОЙ ТЕКСТ ==========
     y += 25
 
     if body:
@@ -361,8 +361,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/light — светлая тема\n"
         "/dark — тёмная тема\n"
         "/stats — статистика использования\n"
-        "/help — эта справка\n\n"
-        "💡 **Совет:** При репосте бот сам определяет заголовок (первая строка) и основной текст.",
+        "/help — эта справка",
         parse_mode="Markdown"
     )
 
@@ -416,19 +415,44 @@ async def light_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает пересланные посты — сразу делает сторис без дополнительных вопросов"""
+    """Обрабатывает пересланные посты"""
     message = update.message
     
-    # Проверяем, есть ли в пересланном сообщении текст
-    original_text = message.caption or message.text
+    # Получаем текст из разных возможных источников
+    text = None
     
-    if not original_text:
-        await update.message.reply_text("❌ В пересланном сообщении нет текста. Попробуй другой пост.")
+    # Если есть caption (для фото/видео)
+    if message.caption:
+        text = message.caption
+    # Если есть текст
+    elif message.text:
+        text = message.text
+    
+    # Если текст не найден, пробуем найти в оригинальном сообщении через forward_origin
+    if not text and message.forward_origin:
+        try:
+            # Пытаемся получить оригинальное сообщение
+            if hasattr(message.forward_origin, 'message'):
+                original = message.forward_origin.message
+                if original:
+                    text = original.caption or original.text
+        except:
+            pass
+    
+    if not text:
+        await update.message.reply_text(
+            "❌ **Не удалось найти текст в пересланном сообщении**\n\n"
+            "Попробуй:\n"
+            "1. Переслать пост с текстом\n"
+            "2. Или отправь фото и текст отдельно через /start",
+            parse_mode="Markdown"
+        )
         return True
     
     # Ищем фото в сообщении
     photo_bytes = None
     
+    # Сначала проверяем есть ли фото в самом сообщении
     if message.photo:
         photo = message.photo[-1]
         try:
@@ -436,26 +460,46 @@ async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TY
             photo_bytes = await file.download_as_bytearray()
         except Exception as e:
             logger.error(f"Ошибка загрузки фото: {e}")
-            await update.message.reply_text("❌ Не удалось загрузить фото из поста.")
-            return True
     elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
         try:
             file = await context.bot.get_file(message.document.file_id)
             photo_bytes = await file.download_as_bytearray()
         except Exception as e:
             logger.error(f"Ошибка загрузки документа: {e}")
-            await update.message.reply_text("❌ Не удалось загрузить файл.")
-            return True
-    else:
-        await update.message.reply_text("❌ В пересланном сообщении нет фото. Попробуй другой пост.")
+    
+    # Если фото нет в самом сообщении, ищем в пересланном
+    if not photo_bytes and message.forward_origin:
+        try:
+            if hasattr(message.forward_origin, 'message'):
+                original = message.forward_origin.message
+                if original and original.photo:
+                    photo = original.photo[-1]
+                    file = await context.bot.get_file(photo.file_id)
+                    photo_bytes = await file.download_as_bytearray()
+        except Exception as e:
+            logger.error(f"Ошибка загрузки фото из оригинала: {e}")
+    
+    if not photo_bytes:
+        await update.message.reply_text(
+            "❌ **Не удалось найти фото в пересланном сообщении**\n\n"
+            "Попробуй:\n"
+            "1. Переслать пост с фото\n"
+            "2. Или отправь фото и текст отдельно через /start",
+            parse_mode="Markdown"
+        )
         return True
     
-    # Извлекаем заголовок и текст из поста
+    # Извлекаем заголовок и текст
     try:
-        title, body = extract_title_and_body(original_text)
+        title, body = extract_title_and_body(text)
         
         if not title:
-            await update.message.reply_text("❌ Не удалось извлечь заголовок из текста. Попробуй другой пост.")
+            await update.message.reply_text(
+                "❌ **Не удалось извлечь заголовок из текста**\n\n"
+                f"Текст: {text[:100]}...\n\n"
+                "Попробуй другой пост или отправь данные вручную через /start",
+                parse_mode="Markdown"
+            )
             return True
         
         dark_mode = context.user_data.get("dark_mode", False)
@@ -464,21 +508,21 @@ async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TY
         msg = await update.message.reply_text(
             f"📱 **Обработка поста...**\n\n"
             f"📷 Фото: ✅\n"
-            f"📝 Заголовок: {title[:60]}...\n"
+            f"📝 Заголовок: {title[:60]}{'...' if len(title) > 60 else ''}\n"
             f"📄 Текст: {len(body)} символов\n"
             f"🎨 Тема: {theme_name}\n\n"
             f"⏳ Создаю сторис...",
             parse_mode="Markdown"
         )
         
-        # Сразу создаём сторис
+        # Создаём сторис
         result = create_story(photo_bytes, title, body, dark_mode)
         result.name = "fider_story.png"
         
         await update.message.reply_photo(
             photo=result,
             caption=f"✨ **Готово!** Сторис создан из пересланного поста\n\n"
-                   f"📌 **{title[:80]}**\n\n"
+                   f"📌 **{title[:80]}{'...' if len(title) > 80 else ''}**\n\n"
                    f"#fiderby #сторис\n\n"
                    f"💡 Хочешь другую тему? Используй /light или /dark",
             parse_mode="Markdown"
@@ -491,11 +535,19 @@ async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TY
         return True
         
     except ValueError as e:
-        await update.message.reply_text(f"❌ {str(e)}\n\nПопробуй другой пост или отредактируй текст.")
+        await update.message.reply_text(
+            f"❌ **Ошибка:** {str(e)}\n\n"
+            f"Попробуй другой пост или отправь данные вручную через /start",
+            parse_mode="Markdown"
+        )
         return True
     except Exception as e:
         logger.exception(e)
-        await update.message.reply_text(f"❌ Ошибка при обработке поста: {str(e)}")
+        await update.message.reply_text(
+            f"❌ **Ошибка при обработке поста:** {str(e)}\n\n"
+            f"Попробуй ещё раз или отправь данные вручную через /start",
+            parse_mode="Markdown"
+        )
         return True
 
 
@@ -547,8 +599,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Если это пересланный пост — обрабатываем сразу
-    if update.message.forward_origin:
+    # Проверяем, есть ли это пересланное сообщение
+    if update.message.forward_origin or update.message.forward_from or update.message.forward_sender_name:
         await handle_forwarded_post(update, context)
         return
     
@@ -613,8 +665,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
+    # Если нет состояния и не пересланное сообщение
     if update.message.text:
-        await update.message.reply_text("Нажми /start и отправь фото, или просто перешли сюда любой пост!")
+        await update.message.reply_text(
+            "📱 **Привет!**\n\n"
+            "Ты можешь:\n"
+            "• Переслать любой пост — я сделаю из него сторис\n"
+            "• Нажать /start и создать сторис вручную\n"
+            "• Использовать /light или /dark для выбора темы",
+            parse_mode="Markdown"
+        )
 
 
 async def post_init(app):

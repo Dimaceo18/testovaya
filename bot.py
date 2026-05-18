@@ -6,6 +6,7 @@ import threading
 import logging
 import re
 import asyncio
+import httpx
 
 from flask import Flask
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
@@ -20,12 +21,10 @@ from telegram.ext import (
     filters,
 )
 from telegram.error import TimedOut
-from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +33,6 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("Нет BOT_TOKEN")
-
-# DeepSeek клиент
-deepseek_client = AsyncOpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com"
-) if DEEPSEEK_API_KEY else None
 
 web_app = Flask(__name__)
 
@@ -276,13 +269,36 @@ def create_story(photo_bytes, title, body):
     return output
 
 
+# ==================== ФУНКЦИЯ ЗАПРОСА К DeepSeek ====================
+async def call_deepseek(prompt, text):
+    """Вызов DeepSeek API"""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": text}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 1000
+            }
+        )
+        return response.json()
+
+
 # ==================== ОБРАБОТЧИКИ ИИ ====================
 async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текста через DeepSeek AI"""
     query = update.callback_query
     await query.answer()
     
-    if not deepseek_client:
+    if not DEEPSEEK_API_KEY:
         await query.message.reply_text("❌ API DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.")
         return
     
@@ -294,40 +310,36 @@ async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.message.reply_text("🤖 Обрабатываю текст через DeepSeek AI...")
     
     try:
-        response = await deepseek_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": DEEPSEEK_PROMPT},
-                {"role": "user", "content": body}
-            ],
-            temperature=0.7,
-            max_tokens=1000
-        )
+        result = await call_deepseek(DEEPSEEK_PROMPT, body)
         
-        result = response.choices[0].message.content
+        if "error" in result:
+            await query.message.reply_text(f"❌ Ошибка DeepSeek: {result['error'].get('message', 'Unknown error')}")
+            return
+        
+        content = result["choices"][0]["message"]["content"]
         
         # Парсим ответ
         title = ""
         new_body = ""
         
-        if "ЗАГОЛОВОК:" in result.upper() and "ТЕКСТ:" in result.upper():
-            title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', result, re.IGNORECASE | re.DOTALL)
+        if "ЗАГОЛОВОК:" in content.upper() and "ТЕКСТ:" in content.upper():
+            title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', content, re.IGNORECASE | re.DOTALL)
             if title_match:
                 title = title_match.group(1).strip()
             
-            body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', result, re.IGNORECASE | re.DOTALL)
+            body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', content, re.IGNORECASE | re.DOTALL)
             if body_match:
                 new_body = body_match.group(1).strip()
         else:
-            lines = result.strip().split('\n')
+            lines = content.strip().split('\n')
             if len(lines) > 0 and len(lines[0]) < 100:
                 title = lines[0].replace('Заголовок:', '').replace('ЗАГОЛОВОК:', '').strip()
                 new_body = '\n'.join(lines[1:]).strip()
             else:
-                new_body = result.strip()
+                new_body = content.strip()
         
         if not new_body:
-            new_body = result.strip()
+            new_body = content.strip()
         
         if not title and new_body:
             title = new_body[:50] + "..."
@@ -407,7 +419,7 @@ async def ai_reprocess_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def handle_custom_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кастомного запроса к ИИ"""
+    """Обработка кастомного запроса к DeepSeek"""
     if not context.user_data.get("waiting_custom_request"):
         return
     
@@ -424,39 +436,35 @@ async def handle_custom_request(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text("🤖 Обрабатываю с новым запросом...")
     
     try:
-        response = await deepseek_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": body}
-            ],
-            temperature=0.7,
-            max_tokens=1000
-        )
+        result = await call_deepseek(prompt, body)
         
-        result = response.choices[0].message.content
+        if "error" in result:
+            await update.message.reply_text(f"❌ Ошибка DeepSeek: {result['error'].get('message', 'Unknown error')}")
+            return
+        
+        content = result["choices"][0]["message"]["content"]
         
         title = ""
         new_body = ""
         
-        if "ЗАГОЛОВОК:" in result.upper() and "ТЕКСТ:" in result.upper():
-            title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', result, re.IGNORECASE | re.DOTALL)
+        if "ЗАГОЛОВОК:" in content.upper() and "ТЕКСТ:" in content.upper():
+            title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', content, re.IGNORECASE | re.DOTALL)
             if title_match:
                 title = title_match.group(1).strip()
             
-            body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', result, re.IGNORECASE | re.DOTALL)
+            body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', content, re.IGNORECASE | re.DOTALL)
             if body_match:
                 new_body = body_match.group(1).strip()
         else:
-            lines = result.strip().split('\n')
+            lines = content.strip().split('\n')
             if len(lines) > 0 and len(lines[0]) < 100:
                 title = lines[0].strip()
                 new_body = '\n'.join(lines[1:]).strip()
             else:
-                new_body = result.strip()
+                new_body = content.strip()
         
         if not new_body:
-            new_body = result.strip()
+            new_body = content.strip()
         
         if not title and new_body:
             title = new_body[:50] + "..."
@@ -720,7 +728,7 @@ async def continue_without_ai_callback(update: Update, context: ContextTypes.DEF
     await query.message.reply_text(
         f"📰 *Заголовок:* {title}\n\n"
         f"📝 *Текст:*\n{body}\n\n"
-        f"Текст {'можно сократить через ИИ' if len(body) > 650 else 'хорошей длины'}.\n\n"
+        f"Текст {'можно сократить через ИИ до 600-650 символов' if len(body) > 650 else 'хорошей длины'}.\n\n"
         f"Что делаем?",
         parse_mode="Markdown",
         reply_markup=keyboard
@@ -743,16 +751,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "waiting_photo"
 
+    ai_status = "✅ Доступен" if DEEPSEEK_API_KEY else "❌ Не настроен"
+    
     await update.message.reply_text(
-        "🟣 Бот сторис Fider.by\n\n"
-        "✨ ДОСТУПНЫЕ ФУНКЦИИ:\n"
-        "1. Отправь фото\n"
-        "2. Отправь заголовок\n"
-        "3. Отправь основной текст (максимум 900 символов)\n\n"
-        "🤖 ИЛИ:\n"
-        "После отправки текста нажми кнопку 'Обработать через ИИ'\n"
-        "ИИ сократит текст до 600-650 символов и расставит абзацы\n\n"
-        "Я соберу готовую сторис 9:16."
+        f"🟣 Бот сторис Fider.by\n\n"
+        f"✨ ДОСТУПНЫЕ ФУНКЦИИ:\n"
+        f"1. Отправь фото\n"
+        f"2. Отправь заголовок\n"
+        f"3. Отправь основной текст (максимум 900 символов)\n\n"
+        f"🤖 DeepSeek AI: {ai_status}\n"
+        f"После отправки текста нажми кнопку 'Обработать через ИИ'\n"
+        f"ИИ сократит текст до 600-650 символов и расставит абзацы\n\n"
+        f"Я соберу готовую сторис 9:16."
     )
 
 
@@ -927,7 +937,7 @@ def main():
     app.add_handler(CallbackQueryHandler(create_story_final_callback, pattern="create_story_final"))
 
     print("✅ FIDER STORY BOT STARTED")
-    if deepseek_client:
+    if DEEPSEEK_API_KEY:
         print("🤖 DeepSeek AI подключен и готов к работе")
     else:
         print("⚠️ DeepSeek AI не настроен (добавьте DEEPSEEK_API_KEY)")

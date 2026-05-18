@@ -49,9 +49,6 @@ WHITE = (255, 255, 255)
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
 
-# Высота плашки-разделителя
-DIVIDER_HEIGHT = 50
-
 
 def font(path, size):
     try:
@@ -149,8 +146,13 @@ def create_story(photo_bytes, title, body):
     corner_thickness = 12
     draw_l_shape_corner(draw, corner_x, corner_y, corner_width, corner_height, corner_thickness, PURPLE)
 
-    # СНАЧАЛА создаём белый фон с текстом
-    white_bg_start = photo_h + top_line_height
+    # Фиолетовая полоса после фото (15 пикселей)
+    bottom_line_height = 15
+    divider_y = photo_h + top_line_height
+    draw.rectangle((0, divider_y, W, divider_y + bottom_line_height), fill=PURPLE)
+
+    # Белая зона под текстом (начинается после полосы)
+    white_bg_start = divider_y + bottom_line_height
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
     # ========== ЗАГОЛОВОК ==========
@@ -173,7 +175,7 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # ========== ТРИ ТОЧКИ (вместо полосы) ==========
+    # ========== ТРИ ТОЧКИ ==========
     y += 18
     dot_radius = 12
     dot_spacing = 18
@@ -206,53 +208,45 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # ========== ПЛАШКА-РАЗДЕЛИТЕЛЬ ПОВЕРХ ВСЕГО ==========
-    divider_y = photo_h + top_line_height
+    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + ЭЛЛИПС С fider.by ==========
+    footer_y = H - 60
     
-    # Рисуем фиолетовую полосу-разделитель
-    draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
+    # Тонкая фиолетовая полоса
+    thin_line_height = 2
+    draw.rectangle((0, footer_y, W, footer_y + thin_line_height), fill=PURPLE)
     
-    # Добавляем тонкую белую линию посередине плашки для стиля
-    mid_y = divider_y + DIVIDER_HEIGHT // 2
-    draw.rectangle((0, mid_y - 2, W, mid_y + 2), fill=WHITE)
-
-    # ========== ЛОГОТИП ВНИЗУ ПО ЦЕНТРУ ==========
-    logo_font = font(FONT_BOLD, 38)
-    logo_text = "fider.by"
+    # Эллипс слева с буквой f
+    ellipse_radius = 25
+    ellipse_x = 50
+    ellipse_y = footer_y + thin_line_height + 15
     
-    try:
-        bbox = draw.textbbox((0, 0), logo_text, font=logo_font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-    except:
-        text_width = len(logo_text) * 20
-        text_height = 40
-    
-    logo_x = (W - text_width) // 2
-    logo_y = H - 80
-    
-    padding = 20
-    logo_bg_x1 = logo_x - padding
-    logo_bg_y1 = logo_y - 12
-    logo_bg_x2 = logo_x + text_width + padding
-    logo_bg_y2 = logo_y + text_height + 12
-    
-    draw.rounded_rectangle(
-        (logo_bg_x1, logo_bg_y1, logo_bg_x2, logo_bg_y2),
-        radius=18,
+    draw.ellipse(
+        (ellipse_x - ellipse_radius, ellipse_y - ellipse_radius,
+         ellipse_x + ellipse_radius, ellipse_y + ellipse_radius),
         fill=PURPLE
     )
     
+    # Буква f внутри эллипса
+    small_font = font(FONT_BOLD, 24)
+    text_small = "f"
+    bbox = draw.textbbox((0, 0), text_small, font=small_font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
     draw.text(
-        (logo_x, logo_y),
-        logo_text,
-        font=logo_font,
+        (ellipse_x - text_w // 2, ellipse_y - text_h // 2 - 2),
+        text_small,
+        font=small_font,
         fill=WHITE
     )
-
-    # Фиолетовая полоса внизу (15 пикселей)
-    footer_height = 15
-    draw.rectangle((0, H - footer_height, W, H), fill=PURPLE)
+    
+    # Текст fider.by рядом с эллипсом
+    text_font = font(FONT_BOLD, 28)
+    draw.text(
+        (ellipse_x + ellipse_radius + 15, ellipse_y - 12),
+        "fider.by",
+        font=text_font,
+        fill=PURPLE
+    )
 
     output = io.BytesIO()
     canvas.save(output, format="PNG", quality=95)
@@ -270,7 +264,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. Потом отправь заголовок\n"
         "3. Потом отправь основной текст (максимум 900 символов)\n\n"
         "Я соберу готовую сторис 9:16.\n\n"
-        "✨ В левом углу фото появится Г-образная плашка"
+        "✨ Дизайн: полоса сверху 15px, Г-образная плашка, полоса после фото 15px"
     )
 
 
@@ -393,7 +387,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ FIDER STORY BOT STARTED")
-    print("🎨 Г-образная плашка в левом углу фото")
+    print("🎨 Дизайн: полоса сверху 15px | Г-образная плашка | полоса после фото 15px")
 
     app.run_polling(
         drop_pending_updates=True,

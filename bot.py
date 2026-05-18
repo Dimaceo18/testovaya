@@ -16,6 +16,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import TimedOut
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -112,14 +113,11 @@ def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size,
 
 def draw_l_shape_corner(draw, x, y, width, height, thickness, color):
     """Рисует Г-образную плашку в левом верхнем углу"""
-    # Вертикальная полоса
     draw.rectangle((x, y, x + thickness, y + height), fill=color)
-    # Горизонтальная полоса
     draw.rectangle((x, y, x + width, y + thickness), fill=color)
 
 
 def create_story(photo_bytes, title, body):
-    # Проверка длины текста
     if len(body) > 900:
         raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
 
@@ -128,17 +126,17 @@ def create_story(photo_bytes, title, body):
     canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
-    # Фиолетовая линия сверху (15 пикселей)
+    # ========== ВЕРХНЯЯ ПОЛОСА (15px) ==========
     top_line_height = 15
     draw.rectangle((0, 0, W, top_line_height), fill=PURPLE)
 
-    # Высота фото - 40% от высоты сторис
+    # ========== ФОТО ==========
     photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, top_line_height))
 
-    # Рисуем Г-образную плашку поверх фото (левый верхний угол)
+    # ========== Г-ОБРАЗНАЯ ПЛАШКА НА ФОТО ==========
     corner_x = 30
     corner_y = top_line_height + 30
     corner_width = 120
@@ -146,31 +144,23 @@ def create_story(photo_bytes, title, body):
     corner_thickness = 12
     draw_l_shape_corner(draw, corner_x, corner_y, corner_width, corner_height, corner_thickness, PURPLE)
 
-    # Фиолетовая полоса после фото (15 пикселей)
+    # ========== ПОЛОСА ПОСЛЕ ФОТО (15px) ==========
     bottom_line_height = 15
     divider_y = photo_h + top_line_height
     draw.rectangle((0, divider_y, W, divider_y + bottom_line_height), fill=PURPLE)
 
-    # Белая зона под текстом (начинается после полосы)
+    # ========== БЕЛАЯ ЗОНА ==========
     white_bg_start = divider_y + bottom_line_height
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
     # ========== ЗАГОЛОВОК ==========
     title = title.strip()
-
     title_font, title_lines = fit_text(
-        draw,
-        title,
-        FONT_BOLD,
-        max_width=900,
-        max_height=300,
-        start_size=58,
-        min_size=38,
-        gap=8,
+        draw, title, FONT_BOLD, max_width=900, max_height=300,
+        start_size=58, min_size=38, gap=8,
     )
 
     y = white_bg_start + 80
-
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
@@ -179,7 +169,6 @@ def create_story(photo_bytes, title, body):
     y += 18
     dot_radius = 12
     dot_spacing = 18
-    
     start_x = 80
     
     for i in range(3):
@@ -192,33 +181,25 @@ def create_story(photo_bytes, title, body):
     # ========== ОСНОВНОЙ ТЕКСТ ==========
     body = body.strip()
     available_height = H - y - 150
-
     body_font, body_lines = fit_text(
-        draw,
-        body,
-        FONT_REGULAR,
-        max_width=900,
-        max_height=available_height,
-        start_size=33,
-        min_size=16,
-        gap=8,
+        draw, body, FONT_REGULAR, max_width=900, max_height=available_height,
+        start_size=33, min_size=16, gap=8,
     )
 
     for line in body_lines:
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + ЭЛЛИПС С fider.by ==========
-    footer_y = H - 60
-    
-    # Тонкая фиолетовая полоса
+    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + ЭЛЛИПС ПОД НЕЙ ==========
+    # Тонкая фиолетовая полоса (2px)
+    thin_line_y = H - 50
     thin_line_height = 2
-    draw.rectangle((0, footer_y, W, footer_y + thin_line_height), fill=PURPLE)
+    draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
     
-    # Эллипс слева с буквой f
+    # Эллипс под тонкой линией в левом углу
     ellipse_radius = 25
     ellipse_x = 50
-    ellipse_y = footer_y + thin_line_height + 15
+    ellipse_y = thin_line_y + thin_line_height + 15  # Отступ 15px под полосой
     
     draw.ellipse(
         (ellipse_x - ellipse_radius, ellipse_y - ellipse_radius,
@@ -226,7 +207,7 @@ def create_story(photo_bytes, title, body):
         fill=PURPLE
     )
     
-    # Буква f внутри эллипса
+    # Текст внутри эллипса - буква "f"
     small_font = font(FONT_BOLD, 24)
     text_small = "f"
     bbox = draw.textbbox((0, 0), text_small, font=small_font)
@@ -234,18 +215,14 @@ def create_story(photo_bytes, title, body):
     text_h = bbox[3] - bbox[1]
     draw.text(
         (ellipse_x - text_w // 2, ellipse_y - text_h // 2 - 2),
-        text_small,
-        font=small_font,
-        fill=WHITE
+        text_small, font=small_font, fill=WHITE
     )
     
-    # Текст fider.by рядом с эллипсом
+    # Текст "fider.by" рядом с эллипсом
     text_font = font(FONT_BOLD, 28)
     draw.text(
         (ellipse_x + ellipse_radius + 15, ellipse_y - 12),
-        "fider.by",
-        font=text_font,
-        fill=PURPLE
+        "fider.by", font=text_font, fill=PURPLE
     )
 
     output = io.BytesIO()
@@ -263,8 +240,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1. Отправь фото\n"
         "2. Потом отправь заголовок\n"
         "3. Потом отправь основной текст (максимум 900 символов)\n\n"
-        "Я соберу готовую сторис 9:16.\n\n"
-        "✨ Дизайн: полоса сверху 15px, Г-образная плашка, полоса после фото 15px"
+        "Я соберу готовую сторис 9:16."
     )
 
 
@@ -273,14 +249,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нажми /start и отправь фото заново.")
         return
 
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    photo_bytes = await file.download_as_bytearray()
+    try:
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        photo_bytes = await file.download_as_bytearray()
 
-    context.user_data["photo"] = bytes(photo_bytes)
-    context.user_data["state"] = "waiting_title"
+        context.user_data["photo"] = bytes(photo_bytes)
+        context.user_data["state"] = "waiting_title"
 
-    await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
+        await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
+    except TimedOut:
+        await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text("❌ Ошибка при загрузке фото. Попробуй ещё раз.")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -294,13 +276,19 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нужен файл изображения.")
         return
 
-    file = await context.bot.get_file(doc.file_id)
-    photo_bytes = await file.download_as_bytearray()
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        photo_bytes = await file.download_as_bytearray()
 
-    context.user_data["photo"] = bytes(photo_bytes)
-    context.user_data["state"] = "waiting_title"
+        context.user_data["photo"] = bytes(photo_bytes)
+        context.user_data["state"] = "waiting_title"
 
-    await update.message.reply_text("✅ Фото получил в хорошем качестве. Теперь отправь заголовок.")
+        await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
+    except TimedOut:
+        await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text("❌ Ошибка при загрузке файла.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,7 +318,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Что-то потерялось. Нажми /start и начни заново.")
             return
 
-        msg = await update.message.reply_text("🎨 Оформляю сторис...")
+        msg = await update.message.reply_text("🎨 Создаю сторис...")
 
         try:
             result = create_story(photo, title, body)
@@ -346,10 +334,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError as e:
             await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый, более короткий текст.")
             return
-
         except Exception as e:
             logger.exception(e)
-            await update.message.reply_text(f"❌ Ошибка:\n{e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
             context.user_data.clear()
             context.user_data["state"] = "waiting_photo"
 
@@ -374,10 +361,10 @@ def main():
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
-        .connect_timeout(60)
-        .read_timeout(120)
-        .write_timeout(120)
-        .pool_timeout(120)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
         .build()
     )
 
@@ -387,12 +374,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ FIDER STORY BOT STARTED")
-    print("🎨 Дизайн: полоса сверху 15px | Г-образная плашка | полоса после фото 15px")
 
     app.run_polling(
         drop_pending_updates=True,
         poll_interval=2.0,
-        timeout=60,
+        timeout=30,
         allowed_updates=Update.ALL_TYPES,
     )
 

@@ -209,46 +209,45 @@ def create_story(photo_bytes, title, body):
         canvas = canvas.convert("RGB")
         draw = ImageDraw.Draw(canvas)
 
-    # ========== ПОДВАЛ: ТОНКАЯ ЛИНИЯ + ЭЛЛИПС (вытянутый по горизонтали) ==========
-    # Тонкая фиолетовая линия
-    thin_line_y = H - 110
+    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + КНОПКА fider.by СЛЕВА ==========
+    # Тонкая фиолетовая полоса (2px)
+    thin_line_y = H - 100
     thin_line_height = 2
     draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
     
-    # ЭЛЛИПС (вытянутый по горизонтали, а не круг!)
-    ellipse_width = 80   # ширина эллипса
-    ellipse_height = 50  # высота эллипса
-    ellipse_x = 50       # отступ слева
-    ellipse_y = thin_line_y + thin_line_height + 18  # отступ 18px от линии
+    # Кнопка fider.by слева (скруглённый прямоугольник)
+    button_font = font(FONT_BOLD, 28)
+    button_text = "fider.by"
     
-    # Рисуем настоящий эллипс
-    draw.ellipse(
-        (ellipse_x, ellipse_y,
-         ellipse_x + ellipse_width, ellipse_y + ellipse_height),
+    bbox = draw.textbbox((0, 0), button_text, font=button_font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    
+    button_padding_x = 20
+    button_padding_y = 12
+    button_x = 50
+    button_y = thin_line_y + thin_line_height + 20
+    
+    button_bg_x1 = button_x
+    button_bg_y1 = button_y
+    button_bg_x2 = button_x + text_width + button_padding_x * 2
+    button_bg_y2 = button_y + text_height + button_padding_y * 2
+    
+    # Скруглённый прямоугольник (кнопка)
+    draw.rounded_rectangle(
+        (button_bg_x1, button_bg_y1, button_bg_x2, button_bg_y2),
+        radius=25,
         fill=PURPLE
     )
     
-    # Текст внутри эллипса
-    ellipse_font = font(FONT_BOLD, 20)
-    text_ellipse = "f"
-    bbox = draw.textbbox((0, 0), text_ellipse, font=ellipse_font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    # Текст внутри кнопки
+    text_x = button_x + button_padding_x
+    text_y = button_y + button_padding_y
     draw.text(
-        (ellipse_x + (ellipse_width - text_w) // 2,
-         ellipse_y + (ellipse_height - text_h) // 2 - 2),
-        text_ellipse,
-        font=ellipse_font,
+        (text_x, text_y),
+        button_text,
+        font=button_font,
         fill=WHITE
-    )
-    
-    # Текст fider.by рядом с эллипсом
-    text_font = font(FONT_BOLD, 28)
-    draw.text(
-        (ellipse_x + ellipse_width + 15, ellipse_y + (ellipse_height - 35) // 2),
-        "fider.by",
-        font=text_font,
-        fill=PURPLE
     )
 
     output = io.BytesIO()

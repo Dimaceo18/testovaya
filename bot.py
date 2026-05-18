@@ -47,22 +47,24 @@ web_app = Flask(__name__)
 def health():
     return "OK", 200
 
+
 def run_web():
     port = int(os.getenv("PORT", "10000"))
     web_app.run(host="0.0.0.0", port=port)
+
 
 W, H = 1080, 1920
 
 PURPLE = (111, 55, 245)
 BLACK = (20, 22, 32)
 WHITE = (255, 255, 255)
-LIGHT_BG = (255, 255, 255)
-DARK_BG = (7, 7, 10)
-LIGHT_TEXT = (20, 22, 32)
-DARK_TEXT = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
+DIVIDER_PATH = "divider.png"
+
+# Высота плашки-разделителя в пикселях
+DIVIDER_HEIGHT = 50
 
 # Промпт для DeepSeek
 DEEPSEEK_PROMPT = """Ты редактор новостного сайта. У тебя строгий новостной формат. Без обращений на "вы", "ты". Только новостной формат.
@@ -136,138 +138,142 @@ def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size,
     return fnt, lines
 
 
-def draw_l_shape_corner(draw, x, y, width, height, thickness, color):
-    """Рисует Г-образную плашку в левом верхнем углу"""
-    draw.rectangle((x, y, x + thickness, y + height), fill=color)
-    draw.rectangle((x, y, x + width, y + thickness), fill=color)
-
-
-def create_story(photo_bytes, title, body, dark_mode=False):
+def create_story(photo_bytes, title, body):
+    # Проверка длины текста
     if len(body) > 900:
         raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
 
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
 
-    bg_color = DARK_BG if dark_mode else LIGHT_BG
-    text_color = DARK_TEXT if dark_mode else LIGHT_TEXT
-    
-    canvas = Image.new("RGB", (W, H), bg_color)
+    canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
+    # Фиолетовая линия сверху (15 пикселей)
     top_line_height = 15
     draw.rectangle((0, 0, W, top_line_height), fill=PURPLE)
 
+    # Высота фото - 40% от высоты сторис
     photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
-    
-    if dark_mode:
-        photo = ImageEnhance.Brightness(photo).enhance(0.85)
-    else:
-        photo = ImageEnhance.Brightness(photo).enhance(0.92)
-    
+    photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, top_line_height))
 
-    corner_x = 30
-    corner_y = top_line_height + 30
-    corner_width = 120
-    corner_height = 80
-    corner_thickness = 12
-    draw_l_shape_corner(draw, corner_x, corner_y, corner_width, corner_height, corner_thickness, PURPLE)
+    # СНАЧАЛА создаём белый фон с текстом
+    white_bg_start = photo_h + top_line_height
+    draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
-    bottom_line_height = 15
-    divider_y = photo_h + top_line_height
-    draw.rectangle((0, divider_y, W, divider_y + bottom_line_height), fill=PURPLE)
-
-    text_bg_start = divider_y + bottom_line_height
-    draw.rectangle((0, text_bg_start, W, H), fill=bg_color)
-
+    # Заголовок
     title = title.strip()
+
     title_font, title_lines = fit_text(
-        draw, title, FONT_BOLD, max_width=900, max_height=300,
-        start_size=58, min_size=38, gap=8,
+        draw,
+        title,
+        FONT_BOLD,
+        max_width=900,
+        max_height=300,
+        start_size=58,
+        min_size=38,
+        gap=8,
     )
 
-    y = text_bg_start + 80
+    y = white_bg_start + 80
+
     for line in title_lines[:5]:
-        draw.text((80, y), line, font=title_font, fill=text_color)
+        draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    y += 18
-    dot_radius = 12
-    dot_spacing = 18
-    start_x = 80
+    # Три большие точки после заголовка
+    y += 30
+    dot_radius = 15
+    dot_spacing = 20
+    
+    start_x = 80 + 25
     
     for i in range(3):
         x = start_x + i * (dot_radius * 2 + dot_spacing)
-        y_dot = y + 8
+        y_dot = y + 10
         draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
     
-    y += 60
+    y += 85
 
+    # Основной текст
     body = body.strip()
     available_height = H - y - 150
+
     body_font, body_lines = fit_text(
-        draw, body, FONT_REGULAR, max_width=900, max_height=available_height,
-        start_size=33, min_size=16, gap=8,
+        draw,
+        body,
+        FONT_REGULAR,
+        max_width=900,
+        max_height=available_height,
+        start_size=33,
+        min_size=16,
+        gap=8,
     )
 
     for line in body_lines:
-        draw.text((80, y), line, font=body_font, fill=text_color)
+        draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    ellipse_size = 50
-    ellipse_offset = 50
-    draw.ellipse(
-        (ellipse_offset, H - ellipse_offset - ellipse_size,
-         ellipse_offset + ellipse_size, H - ellipse_offset),
+    # Плашка-разделитель
+    divider_y = photo_h + top_line_height
+    
+    if not os.path.exists(DIVIDER_PATH):
+        draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
+    else:
+        divider = Image.open(DIVIDER_PATH).convert("RGBA")
+        divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
+        
+        temp_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        temp_layer.paste(divider, (0, divider_y), divider)
+        
+        canvas = canvas.convert("RGBA")
+        canvas = Image.alpha_composite(canvas, temp_layer)
+        canvas = canvas.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+
+    # Логотип внизу по центру
+    logo_font = font(FONT_BOLD, 38)
+    logo_text = "fider.by"
+    
+    try:
+        bbox = draw.textbbox((0, 0), logo_text, font=logo_font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+    except:
+        text_width = len(logo_text) * 20
+        text_height = 40
+    
+    logo_x = (W - text_width) // 2
+    logo_y = H - 80
+    
+    padding = 20
+    logo_bg_x1 = logo_x - padding
+    logo_bg_y1 = logo_y - 12
+    logo_bg_x2 = logo_x + text_width + padding
+    logo_bg_y2 = logo_y + text_height + 12
+    
+    draw.rounded_rectangle(
+        (logo_bg_x1, logo_bg_y1, logo_bg_x2, logo_bg_y2),
+        radius=18,
         fill=PURPLE
     )
     
-    ellipse_font = font(FONT_BOLD, 18)
-    text_ellipse = "f"
-    bbox = draw.textbbox((0, 0), text_ellipse, font=ellipse_font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
     draw.text(
-        (ellipse_offset + (ellipse_size - text_w) // 2,
-         H - ellipse_offset - ellipse_size + (ellipse_size - text_h) // 2 - 2),
-        text_ellipse,
-        font=ellipse_font,
+        (logo_x, logo_y),
+        logo_text,
+        font=logo_font,
         fill=WHITE
     )
-    
-    text_font = font(FONT_BOLD, 28)
-    draw.text(
-        (ellipse_offset + ellipse_size + 15, H - ellipse_offset - 35),
-        "fider.by",
-        font=text_font,
-        fill=PURPLE
-    )
+
+    # Фиолетовая полоса внизу (15 пикселей)
+    footer_height = 15
+    draw.rectangle((0, H - footer_height, W, H), fill=PURPLE)
 
     output = io.BytesIO()
     canvas.save(output, format="PNG", quality=95)
     output.seek(0)
     return output
-
-
-def remove_emojis(text: str) -> str:
-    """Удаляет эмодзи из текста"""
-    if not text:
-        return ""
-    emoji_pattern = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"
-        "\U0001F300-\U0001F5FF"
-        "\U0001F680-\U0001F6FF"
-        "\U0001F1E0-\U0001F1FF"
-        "\U00002702-\U000027B0"
-        "\U000024C2-\U0001F251"
-        "\U0001F900-\U0001F9FF"
-        "\U0001FA70-\U0001FAFF"
-        "]+",
-        flags=re.UNICODE
-    )
-    return emoji_pattern.sub(r'', text)
 
 
 # ==================== ОБРАБОТЧИКИ ИИ ====================
@@ -326,10 +332,28 @@ async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not title and new_body:
             title = new_body[:50] + "..."
         
+        char_count = len(new_body)
+        
+        # Проверяем длину текста
+        if char_count < 550:
+            await query.message.reply_text(
+                f"⚠️ *Текст получился коротковат:* {char_count} символов (нужно 600-650).\n\n"
+                f"Попробуйте нажать '🔄 Переделать' и попросите увеличить объем.\n\n"
+                f"📝 *Текст:*\n{new_body}",
+                parse_mode="Markdown"
+            )
+            return
+        elif char_count > 700:
+            await query.message.reply_text(
+                f"⚠️ *Текст получился длинноват:* {char_count} символов (нужно 600-650).\n\n"
+                f"Попробуйте нажать '🔄 Переделать' и попросите сократить.\n\n"
+                f"📝 *Текст:*\n{new_body}",
+                parse_mode="Markdown"
+            )
+            return
+        
         context.user_data["temp_title"] = title
         context.user_data["temp_body"] = new_body
-        
-        char_count = len(new_body)
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Использовать", callback_data="use_ai_result")],
@@ -339,7 +363,7 @@ async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         ])
         
         await query.message.reply_text(
-            f"✅ *Текст обработан через ИИ!*\n\n"
+            f"✅ *Текст обработан!*\n\n"
             f"📰 *Заголовок:* {title}\n\n"
             f"📝 *Текст:*\n{new_body}\n\n"
             f"📊 *Длина текста:* {char_count} символов\n\n"
@@ -369,7 +393,7 @@ async def ai_reprocess_callback(update: Update, context: ContextTypes.DEFAULT_TY
         "📝 *Напишите ваш запрос для переделки текста*\n\n"
         "Примеры:\n"
         "• Сделай заголовок броским\n"
-        "• Сократи до 400 символов\n"
+        "• Сделай текст 650 символов\n"
         "• Сделай более официальным\n"
         "• Добавь больше фактов\n\n"
         "Или отправьте /cancel для отмены.",
@@ -437,10 +461,10 @@ async def handle_custom_request(update: Update, context: ContextTypes.DEFAULT_TY
         if not title and new_body:
             title = new_body[:50] + "..."
         
+        char_count = len(new_body)
+        
         context.user_data["temp_title"] = title
         context.user_data["temp_body"] = new_body
-        
-        char_count = len(new_body)
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Использовать", callback_data="use_ai_result")],
@@ -480,9 +504,6 @@ async def use_ai_result_callback(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data["body"] = body
     context.user_data["state"] = "ready_to_create"
     
-    dark_mode = context.user_data.get("dark_mode", False)
-    theme_name = "тёмной" if dark_mode else "светлой"
-    
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
         [InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title_manual")],
@@ -495,7 +516,6 @@ async def use_ai_result_callback(update: Update, context: ContextTypes.DEFAULT_T
         f"✅ *Готово!*\n\n"
         f"📰 *Заголовок:* {title}\n\n"
         f"📝 *Текст:*\n{body}\n\n"
-        f"🎨 *Тема:* {theme_name}\n\n"
         f"Нажмите 'Создать сторис' для генерации изображения.",
         parse_mode="Markdown",
         reply_markup=keyboard
@@ -567,11 +587,8 @@ async def handle_manual_edit(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data["waiting_edit_title"] = False
             await update.message.reply_text(f"✅ Заголовок обновлён:\n\n{new_title}")
             
-            # Показываем текущее состояние
             title = context.user_data.get("title", "")
             body = context.user_data.get("body", "")
-            dark_mode = context.user_data.get("dark_mode", False)
-            theme_name = "тёмной" if dark_mode else "светлой"
             
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
@@ -583,7 +600,6 @@ async def handle_manual_edit(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 f"📰 *Заголовок:* {title}\n\n"
                 f"📝 *Текст:*\n{body}\n\n"
-                f"🎨 *Тема:* {theme_name}\n\n"
                 f"Что дальше?",
                 parse_mode="Markdown",
                 reply_markup=keyboard
@@ -603,8 +619,6 @@ async def handle_manual_edit(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(f"✅ Текст обновлён!\n\n{new_body[:200]}...")
             
             title = context.user_data.get("title", "")
-            dark_mode = context.user_data.get("dark_mode", False)
-            theme_name = "тёмной" if dark_mode else "светлой"
             
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
@@ -616,7 +630,6 @@ async def handle_manual_edit(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 f"📰 *Заголовок:* {title}\n\n"
                 f"📝 *Текст:*\n{new_body}\n\n"
-                f"🎨 *Тема:* {theme_name}\n\n"
                 f"Что дальше?",
                 parse_mode="Markdown",
                 reply_markup=keyboard
@@ -634,27 +647,24 @@ async def create_story_final_callback(update: Update, context: ContextTypes.DEFA
     photo = context.user_data.get("photo")
     title = context.user_data.get("title")
     body = context.user_data.get("body")
-    dark_mode = context.user_data.get("dark_mode", False)
     
     if not photo or not title or not body:
         await query.message.reply_text("❌ Не хватает данных. Нажмите /start.")
         return
     
-    theme_name = "тёмной" if dark_mode else "светлой"
-    msg = await query.message.reply_text(f"🎨 Создаю сторис в {theme_name} теме...")
+    msg = await query.message.reply_text("🎨 Создаю сторис...")
     
     try:
-        result = create_story(photo, title, body, dark_mode)
+        result = create_story(photo, title, body)
         result.name = "fider_story.png"
         
         await query.message.reply_photo(
             photo=result,
-            caption=f"✨ Готово в {theme_name} теме\n\nfider.by"
+            caption="✨ Готово!\n\nfider.by"
         )
         
         context.user_data.clear()
         context.user_data["state"] = "waiting_photo"
-        context.user_data["dark_mode"] = dark_mode
         
     except ValueError as e:
         await query.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый текст.")
@@ -698,8 +708,6 @@ async def continue_without_ai_callback(update: Update, context: ContextTypes.DEF
     context.user_data["body"] = body
     context.user_data["state"] = "ready_to_create"
     
-    dark_mode = context.user_data.get("dark_mode", False)
-    theme_name = "тёмной" if dark_mode else "светлой"
     title = context.user_data.get("title", "")
     
     keyboard = InlineKeyboardMarkup([
@@ -712,8 +720,7 @@ async def continue_without_ai_callback(update: Update, context: ContextTypes.DEF
     await query.message.reply_text(
         f"📰 *Заголовок:* {title}\n\n"
         f"📝 *Текст:*\n{body}\n\n"
-        f"🎨 *Тема:* {theme_name}\n\n"
-        f"Текст {'можно сократить' if len(body) > 650 else 'хорошей длины'}.\n\n"
+        f"Текст {'можно сократить через ИИ' if len(body) > 650 else 'хорошей длины'}.\n\n"
         f"Что делаем?",
         parse_mode="Markdown",
         reply_markup=keyboard
@@ -735,14 +742,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "waiting_photo"
-    context.user_data["dark_mode"] = False
 
     await update.message.reply_text(
         "🟣 Бот сторис Fider.by\n\n"
-        "✨ ДОСТУПНЫЕ ТЕМЫ:\n"
-        "☀️ /light — светлая тема (по умолчанию)\n"
-        "🌙 /dark — тёмная тема\n\n"
-        "КАК СОЗДАТЬ СТОРИС:\n"
+        "✨ ДОСТУПНЫЕ ФУНКЦИИ:\n"
         "1. Отправь фото\n"
         "2. Отправь заголовок\n"
         "3. Отправь основной текст (максимум 900 символов)\n\n"
@@ -751,16 +754,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ИИ сократит текст до 600-650 символов и расставит абзацы\n\n"
         "Я соберу готовую сторис 9:16."
     )
-
-
-async def dark_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["dark_mode"] = True
-    await update.message.reply_text("🌙 Включена тёмная тема\n\nТеперь отправляй фото.")
-
-
-async def light_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["dark_mode"] = False
-    await update.message.reply_text("☀️ Включена светлая тема\n\nТеперь отправляй фото.")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -802,7 +795,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["photo"] = bytes(photo_bytes)
         context.user_data["state"] = "waiting_title"
 
-        await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
+        await update.message.reply_text("✅ Фото получил в хорошем качестве. Теперь отправь заголовок.")
     except TimedOut:
         await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
     except Exception as e:
@@ -871,8 +864,6 @@ async def handle_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["temp_body"] = body
     context.user_data["state"] = "ready_to_create"
     
-    dark_mode = context.user_data.get("dark_mode", False)
-    theme_name = "тёмной" if dark_mode else "светлой"
     title = context.user_data.get("title", "")
     
     keyboard = InlineKeyboardMarkup([
@@ -886,8 +877,7 @@ async def handle_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ *Всё готово!*\n\n"
         f"📰 *Заголовок:* {title}\n\n"
         f"📝 *Текст:*\n{body}\n\n"
-        f"🎨 *Тема:* {theme_name}\n\n"
-        f"Текст {'можно сократить через ИИ' if len(body) > 650 else 'хорошей длины'}.\n\n"
+        f"Текст {'можно сократить через ИИ до 600-650 символов' if len(body) > 650 else 'хорошей длины'}.\n\n"
         f"Что делаем?",
         parse_mode="Markdown",
         reply_markup=keyboard
@@ -905,17 +895,15 @@ def main():
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
-        .connect_timeout(30.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
-        .pool_timeout(30.0)
+        .connect_timeout(60)
+        .read_timeout(120)
+        .write_timeout(120)
+        .pool_timeout(120)
         .build()
     )
 
     # Команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("dark", dark_mode))
-    app.add_handler(CommandHandler("light", light_mode))
     app.add_handler(CommandHandler("cancel", cancel))
     
     # Сообщения
@@ -939,7 +927,6 @@ def main():
     app.add_handler(CallbackQueryHandler(create_story_final_callback, pattern="create_story_final"))
 
     print("✅ FIDER STORY BOT STARTED")
-    print("🌓 Светлая и тёмная тема")
     if deepseek_client:
         print("🤖 DeepSeek AI подключен и готов к работе")
     else:
@@ -948,7 +935,7 @@ def main():
     app.run_polling(
         drop_pending_updates=True,
         poll_interval=2.0,
-        timeout=30,
+        timeout=60,
         allowed_updates=Update.ALL_TYPES,
     )
 

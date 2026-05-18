@@ -49,6 +49,10 @@ WHITE = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
+DIVIDER_PATH = "divider.png"
+
+# Высота плашки-разделителя в пикселях
+DIVIDER_HEIGHT = 50
 
 
 def font(path, size):
@@ -131,7 +135,7 @@ def create_story(photo_bytes, title, body):
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, top_line_height))
 
-    # Белый фон с текстом
+    # СНАЧАЛА создаём белый фон с текстом
     white_bg_start = photo_h + top_line_height
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
@@ -155,7 +159,7 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # Три точки после заголовка
+    # Три большие точки после заголовка
     y += 30
     dot_radius = 15
     dot_spacing = 20
@@ -188,30 +192,51 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # ========== ПОДВАЛ: ТОНКАЯ ЛИНИЯ + ЭЛЛИПС (из вашего файла) ==========
-    # Тонкая фиолетовая линия перед эллипсом
-    thin_line_y = H - 80
+    # ПОСЛЕ ТОГО КАК ВЕСЬ ТЕКСТ НАРИСОВАН, накладываем плашку ПОВЕРХ ВСЕГО
+    divider_y = photo_h + top_line_height
+    
+    if not os.path.exists(DIVIDER_PATH):
+        draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
+    else:
+        divider = Image.open(DIVIDER_PATH).convert("RGBA")
+        divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
+        
+        temp_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        temp_layer.paste(divider, (0, divider_y), divider)
+        
+        canvas = canvas.convert("RGBA")
+        canvas = Image.alpha_composite(canvas, temp_layer)
+        canvas = canvas.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+
+    # ========== ПОДВАЛ: ТОНКАЯ ЛИНИЯ + ЭЛЛИПС (вытянутый по горизонтали) ==========
+    # Тонкая фиолетовая линия
+    thin_line_y = H - 110
     thin_line_height = 2
     draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
     
-    # Эллипс (как в вашем файле)
-    ellipse_size = 50
-    ellipse_offset = 50
+    # ЭЛЛИПС (вытянутый по горизонтали, а не круг!)
+    ellipse_width = 80   # ширина эллипса
+    ellipse_height = 50  # высота эллипса
+    ellipse_x = 50       # отступ слева
+    ellipse_y = thin_line_y + thin_line_height + 18  # отступ 18px от линии
+    
+    # Рисуем настоящий эллипс
     draw.ellipse(
-        (ellipse_offset, H - ellipse_offset - ellipse_size,
-         ellipse_offset + ellipse_size, H - ellipse_offset),
+        (ellipse_x, ellipse_y,
+         ellipse_x + ellipse_width, ellipse_y + ellipse_height),
         fill=PURPLE
     )
     
     # Текст внутри эллипса
-    ellipse_font = font(FONT_BOLD, 18)
+    ellipse_font = font(FONT_BOLD, 20)
     text_ellipse = "f"
     bbox = draw.textbbox((0, 0), text_ellipse, font=ellipse_font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     draw.text(
-        (ellipse_offset + (ellipse_size - text_w) // 2,
-         H - ellipse_offset - ellipse_size + (ellipse_size - text_h) // 2 - 2),
+        (ellipse_x + (ellipse_width - text_w) // 2,
+         ellipse_y + (ellipse_height - text_h) // 2 - 2),
         text_ellipse,
         font=ellipse_font,
         fill=WHITE
@@ -220,7 +245,7 @@ def create_story(photo_bytes, title, body):
     # Текст fider.by рядом с эллипсом
     text_font = font(FONT_BOLD, 28)
     draw.text(
-        (ellipse_offset + ellipse_size + 15, H - ellipse_offset - 35),
+        (ellipse_x + ellipse_width + 15, ellipse_y + (ellipse_height - 35) // 2),
         "fider.by",
         font=text_font,
         fill=PURPLE

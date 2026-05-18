@@ -2,8 +2,12 @@
 
 import os
 import io
+import re
+import json
 import threading
 import logging
+from datetime import datetime
+from pathlib import Path
 
 from flask import Flask
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
@@ -30,6 +34,22 @@ if not BOT_TOKEN:
     raise RuntimeError("Нет BOT_TOKEN")
 
 web_app = Flask(__name__)
+
+# Файл для хранения статистики
+STATS_FILE = Path("user_stats.json")
+
+def load_stats():
+    if STATS_FILE.exists():
+        try:
+            with open(STATS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_stats(stats):
+    with open(STATS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
 
 @web_app.get("/")
 def health():
@@ -119,6 +139,37 @@ def draw_l_shape_corner(draw, x, y, width, height, thickness, color):
     draw.rectangle((x, y, x + width, y + thickness), fill=color)
 
 
+def extract_text_from_post(text):
+    """Извлекает заголовок и основной текст из поста"""
+    lines = text.strip().split('\n')
+    
+    # Фильтруем пустые строки
+    lines = [l.strip() for l in lines if l.strip()]
+    
+    if not lines:
+        return None, None
+    
+    # Первая строка - заголовок
+    title = lines[0]
+    
+    # Остальное - основной текст
+    body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+    
+    # Очищаем от лишних символов
+    title = re.sub(r'[^\w\s\.\,\!\?\-\(\)]', '', title)
+    body = re.sub(r'[^\w\s\.\,\!\?\-\(\)\']', '', body)
+    
+    # Ограничиваем длину
+    if len(title) > 200:
+        title = title[:197] + "..."
+    
+    if len(body) > 900:
+        body = body[:897] + "..."
+        raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
+    
+    return title, body
+
+
 def create_story(photo_bytes, title, body, dark_mode=False):
     if len(body) > 900:
         raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
@@ -164,21 +215,24 @@ def create_story(photo_bytes, title, body, dark_mode=False):
     text_bg_start = divider_y + bottom_line_height
     draw.rectangle((0, text_bg_start, W, H), fill=bg_color)
 
-    # ========== ЗАГОЛОВОК ==========
-    title = title.strip()
+    # ========== ЗАГОЛОВОК (поднят на 20px выше - было 55, стало 35) ==========
     title_font, title_lines = fit_text(
         draw, title, FONT_BOLD, max_width=900, max_height=300,
         start_size=58, min_size=38, gap=8,
     )
 
-    y = text_bg_start + 55
+    y = text_bg_start + 35  # БЫЛО 55, СТАЛО 35 (подняли на 20px)
 
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=text_color)
         y += title_font.size + 10
 
-    # ========== ТРИ ТОЧКИ ==========
-    y += 18
+    # ========== ТРИ ТОЧКИ (на одинаковом расстоянии от заголовка и основного текста) ==========
+    # Запоминаем позицию после заголовка
+    after_title_y = y
+    
+    # Отступ после заголовка (15px)
+    y += 15
     dot_radius = 12
     dot_spacing = 18
     start_x = 80
@@ -188,27 +242,27 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         y_dot = y + 8
         draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
     
-    y += 50
+    # Отступ после точек (15px)
+    y += 40
 
     # ========== ОСНОВНОЙ ТЕКСТ ==========
-    body = body.strip()
-    available_height = H - y - 150
-    body_font, body_lines = fit_text(
-        draw, body, FONT_REGULAR, max_width=900, max_height=available_height,
-        start_size=33, min_size=16, gap=8,
-    )
+    if body:
+        available_height = H - y - 150
+        body_font, body_lines = fit_text(
+            draw, body, FONT_REGULAR, max_width=900, max_height=available_height,
+            start_size=33, min_size=16, gap=8,
+        )
 
-    for line in body_lines:
-        draw.text((80, y), line, font=body_font, fill=text_color)
-        y += body_font.size + 8
+        for line in body_lines:
+            draw.text((80, y), line, font=body_font, fill=text_color)
+            y += body_font.size + 8
 
-    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + КНОПКА fider.by СЛЕВА + НАДПИСЬ СПРАВА ==========
-    # Тонкая фиолетовая полоса (2px)
+    # ========== ПОДВАЛ ==========
     thin_line_y = H - 80
     thin_line_height = 2
     draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
     
-    # Кнопка fider.by слева (скруглённый прямоугольник)
+    # Кнопка fider.by слева
     button_font = font(FONT_BOLD, 28)
     button_text = "fider.by"
     
@@ -226,14 +280,12 @@ def create_story(photo_bytes, title, body, dark_mode=False):
     button_bg_x2 = button_x + text_width + button_padding_x * 2
     button_bg_y2 = button_y + text_height + button_padding_y * 2
     
-    # Скруглённый прямоугольник (кнопка)
     draw.rounded_rectangle(
         (button_bg_x1, button_bg_y1, button_bg_x2, button_bg_y2),
         radius=25,
         fill=PURPLE
     )
     
-    # Текст внутри кнопки
     text_x = button_x + button_padding_x
     text_y = button_y + button_padding_y
     draw.text(
@@ -243,16 +295,15 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         fill=WHITE
     )
     
-    # Надпись справа "ПРИСЫЛАЙТЕ СВОИ НОВОСТИ НАМ В ДИРЕКТ"
-    right_text_font = font(FONT_REGULAR, 18)
-    right_text = "ПРИСЫЛАЙТЕ СВОИ НОВОСТИ НАМ В ДИРЕКТ"
+    # Надпись справа (такого же размера как fider.by - шрифт 28)
+    right_text_font = font(FONT_BOLD, 28)  # БЫЛО 16, СТАЛО 28
+    right_text = "ПРИСЫЛАЙТЕ СВОИ НОВОСТИ В ДИРЕКТ"
     
-    # Размещаем справа, выравнивая по центру кнопки
     right_text_bbox = draw.textbbox((0, 0), right_text, font=right_text_font)
     right_text_width = right_text_bbox[2] - right_text_bbox[0]
     right_text_height = right_text_bbox[3] - right_text_bbox[1]
     
-    right_text_x = W - right_text_width - 50  # Отступ 50px от правого края
+    right_text_x = W - right_text_width - 50
     right_text_y = button_y + (button_padding_y * 2 + text_height - right_text_height) // 2
     
     draw.text(
@@ -268,38 +319,208 @@ def create_story(photo_bytes, title, body, dark_mode=False):
     return output
 
 
+def update_stats(user_id):
+    """Обновляет статистику пользователя"""
+    stats = load_stats()
+    user_id_str = str(user_id)
+    
+    if user_id_str not in stats:
+        stats[user_id_str] = {"count": 0, "last_used": None}
+    
+    stats[user_id_str]["count"] += 1
+    stats[user_id_str]["last_used"] = datetime.now().isoformat()
+    save_stats(stats)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "waiting_photo"
     context.user_data["dark_mode"] = False
 
     await update.message.reply_text(
-        "🟣 Бот сторис Fider.by\n\n"
-        "✨ ДОСТУПНЫЕ ТЕМЫ:\n"
+        "🟣 **Fider.by Story Bot**\n\n"
+        "✨ **ДОСТУПНЫЕ ТЕМЫ:**\n"
         "☀️ /light — светлая тема (по умолчанию)\n"
         "🌙 /dark — тёмная тема\n\n"
-        "КАК СОЗДАТЬ СТОРИС:\n"
-        "1. Отправь фото\n"
-        "2. Потом отправь заголовок\n"
-        "3. Потом отправь основной текст (максимум 900 символов)\n\n"
-        "Я соберу готовую сторис 9:16."
+        "📝 **СПОСОБЫ СОЗДАНИЯ СТОРИС:**\n\n"
+        "**1. РЕПОСТ ПОСТА**\n"
+        "Просто перешли любой пост в этот чат — бот автоматически извлечёт фото, заголовок и текст!\n\n"
+        "**2. РУЧНОЙ ВВОД**\n"
+        "• Отправь фото\n"
+        "• Отправь заголовок\n"
+        "• Отправь основной текст (макс. 900 символов)\n\n"
+        "📊 /stats — твоя статистика\n"
+        "🆘 /help — помощь",
+        parse_mode="Markdown"
     )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🆘 **Помощь по боту Fider.by**\n\n"
+        "**📱 КАК ИСПОЛЬЗОВАТЬ:**\n\n"
+        "**Способ 1 — Репост поста:**\n"
+        "• Найди любой пост в Telegram\n"
+        "• Нажми на него и выбери «Переслать»\n"
+        "• Отправь в этот чат\n"
+        "• Бот сам извлечёт фото, заголовок и текст!\n\n"
+        "**Способ 2 — Ручной ввод:**\n"
+        "1. /start — начать создание\n"
+        "2. Отправь фото\n"
+        "3. Отправь заголовок\n"
+        "4. Отправь основной текст\n\n"
+        "**🎨 КОМАНДЫ:**\n"
+        "/light — светлая тема\n"
+        "/dark — тёмная тема\n"
+        "/stats — статистика использования\n"
+        "/help — эта справка\n\n"
+        "💡 **Совет:** Для лучшего результата используй фото хорошего качества и короткий заголовок до 5 строк.",
+        parse_mode="Markdown"
+    )
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stats = load_stats()
+    user_id_str = str(update.effective_user.id)
+    
+    if user_id_str in stats:
+        count = stats[user_id_str]["count"]
+        last_used = stats[user_id_str]["last_used"]
+        if last_used:
+            last_used = datetime.fromisoformat(last_used).strftime("%d.%m.%Y %H:%M")
+        else:
+            last_used = "неизвестно"
+        
+        await update.message.reply_text(
+            f"📊 **Ваша статистика**\n\n"
+            f"• Создано сторис: **{count}**\n"
+            f"• Последнее использование: {last_used}\n\n"
+            f"Продолжайте создавать качественный контент с Fider.by! ✨",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(
+            "📊 **Ваша статистика**\n\n"
+            "Вы ещё не создали ни одной сторис.\n\n"
+            "Начните прямо сейчас — отправьте /start или перешлите пост! 🚀",
+            parse_mode="Markdown"
+        )
 
 
 async def dark_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["dark_mode"] = True
     await update.message.reply_text(
-        "🌙 Включена тёмная тема\n\n"
-        "Теперь отправляй фото для создания сторис в тёмном оформлении."
+        "🌙 **Включена тёмная тема**\n\n"
+        "Теперь все сторис будут создаваться в тёмном оформлении.\n\n"
+        "Отправляй фото или пересылай посты!",
+        parse_mode="Markdown"
     )
 
 
 async def light_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["dark_mode"] = False
     await update.message.reply_text(
-        "☀️ Включена светлая тема\n\n"
-        "Теперь отправляй фото для создания сторис в светлом оформлении."
+        "☀️ **Включена светлая тема**\n\n"
+        "Теперь все сторис будут создаваться в светлом оформлении.\n\n"
+        "Отправляй фото или пересылай посты!",
+        parse_mode="Markdown"
     )
+
+
+async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает пересланные посты"""
+    message = update.message
+    
+    # Проверяем, есть ли в пересланном сообщении текст и фото
+    if not message.forward_origin:
+        return False
+    
+    # Получаем оригинальное сообщение
+    original_text = message.caption or message.text
+    
+    if not original_text:
+        original_text = message.caption or ""
+    
+    # Ищем фото в сообщении
+    photo = None
+    if message.photo:
+        photo = message.photo[-1]
+    elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+        try:
+            file = await context.bot.get_file(message.document.file_id)
+            photo_bytes = await file.download_as_bytearray()
+            context.user_data["photo"] = bytes(photo_bytes)
+            photo = True
+        except Exception as e:
+            logger.error(f"Ошибка загрузки документа: {e}")
+            return False
+    
+    if not photo:
+        await update.message.reply_text("❌ В пересланном сообщении нет фото. Попробуй другой пост или отправь фото отдельно.")
+        return True
+    
+    if not original_text:
+        await update.message.reply_text("❌ В пересланном сообщении нет текста. Попробуй другой пост или добавь описание.")
+        return True
+    
+    # Извлекаем заголовок и текст из поста
+    try:
+        title, body = extract_text_from_post(original_text)
+        
+        if not title:
+            await update.message.reply_text("❌ Не удалось извлечь заголовок из текста. Попробуй другой пост.")
+            return True
+        
+        if isinstance(photo, bool):
+            pass
+        else:
+            file = await context.bot.get_file(photo.file_id)
+            photo_bytes = await file.download_as_bytearray()
+            context.user_data["photo"] = bytes(photo_bytes)
+        
+        context.user_data["title"] = title
+        context.user_data["body"] = body
+        context.user_data["state"] = "processing"
+        
+        dark_mode = context.user_data.get("dark_mode", False)
+        theme_name = "тёмной" if dark_mode else "светлой"
+        
+        msg = await update.message.reply_text(f"📱 **Обработка поста...**\n\n"
+                                              f"📷 Фото: ✅\n"
+                                              f"📝 Заголовок: {title[:50]}...\n"
+                                              f"📄 Текст: {len(body)} символов\n"
+                                              f"🎨 Тема: {theme_name}\n\n"
+                                              f"⏳ Создаю сторис...",
+                                              parse_mode="Markdown")
+        
+        result = create_story(context.user_data["photo"], title, body, dark_mode)
+        result.name = "fider_story.png"
+        
+        await update.message.reply_photo(
+            photo=result,
+            caption=f"✨ **Готово!** Сторис создан из пересланного поста\n\n"
+                   f"📱 **{title[:50]}**\n\n"
+                   f"#fiderby #сторис\n\n"
+                   f"💡 Хочешь другой стиль? Используй /light или /dark",
+            parse_mode="Markdown"
+        )
+        
+        update_stats(update.effective_user.id)
+        
+        context.user_data.clear()
+        context.user_data["dark_mode"] = dark_mode
+        context.user_data["state"] = None
+        
+        await msg.delete()
+        return True
+        
+    except ValueError as e:
+        await update.message.reply_text(f"❌ {str(e)}\n\nПопробуй другой пост или отредактируй текст.")
+        return True
+    except Exception as e:
+        logger.exception(e)
+        await update.message.reply_text(f"❌ Ошибка при обработке поста: {str(e)}")
+        return True
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -341,7 +562,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["photo"] = bytes(photo_bytes)
         context.user_data["state"] = "waiting_title"
 
-        await update.message.reply_text("✅ Фото получил в хорошем качестве. Теперь отправь заголовок.")
+        await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
     except TimedOut:
         await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
     except Exception as e:
@@ -350,6 +571,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.forward_origin:
+        result = await handle_forwarded_post(update, context)
+        if result:
+            return
+    
     state = context.user_data.get("state")
 
     if state == "waiting_title":
@@ -388,6 +614,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 photo=result,
                 caption=f"✨ Готово в {theme_name} теме\n\nfider.by"
             )
+            
+            update_stats(update.effective_user.id)
+            
             context.user_data.clear()
             context.user_data["state"] = "waiting_photo"
             context.user_data["dark_mode"] = dark_mode
@@ -408,7 +637,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    await update.message.reply_text("Нажми /start и отправь фото.")
+    if update.message.text and not update.message.forward_origin:
+        await update.message.reply_text("Нажми /start и отправь фото, или просто перешли сюда любой пост!")
 
 
 async def post_init(app):
@@ -430,6 +660,8 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("dark", dark_mode))
     app.add_handler(CommandHandler("light", light_mode))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
@@ -438,6 +670,7 @@ def main():
 
     print("✅ FIDER STORY BOT STARTED")
     print("🌓 Поддержка светлой и тёмной темы")
+    print("📱 Поддержка репостов постов")
 
     app.run_polling(
         drop_pending_updates=True,

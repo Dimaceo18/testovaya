@@ -44,8 +44,10 @@ def run_web():
 W, H = 1080, 1920
 
 PURPLE = (111, 55, 245)
-BLACK = (20, 22, 32)
 WHITE = (255, 255, 255)
+BLACK = (7, 7, 10)  # #07070A для тёмной темы
+LIGHT_TEXT = (20, 22, 32)  # тёмный текст на светлом фоне
+DARK_TEXT = (255, 255, 255)  # белый текст на тёмном фоне
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
@@ -117,13 +119,17 @@ def draw_l_shape_corner(draw, x, y, width, height, thickness, color):
     draw.rectangle((x, y, x + width, y + thickness), fill=color)
 
 
-def create_story(photo_bytes, title, body):
+def create_story(photo_bytes, title, body, dark_mode=False):
     if len(body) > 900:
         raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
 
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
 
-    canvas = Image.new("RGB", (W, H), WHITE)
+    # Выбираем цвета в зависимости от темы
+    bg_color = BLACK if dark_mode else WHITE
+    text_color = DARK_TEXT if dark_mode else LIGHT_TEXT
+    
+    canvas = Image.new("RGB", (W, H), bg_color)
     draw = ImageDraw.Draw(canvas)
 
     # ========== ВЕРХНЯЯ ПОЛОСА (15px) ==========
@@ -133,7 +139,13 @@ def create_story(photo_bytes, title, body):
     # ========== ФОТО ==========
     photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
-    photo = ImageEnhance.Brightness(photo).enhance(0.92)
+    
+    # Затемнение в зависимости от темы
+    if dark_mode:
+        photo = ImageEnhance.Brightness(photo).enhance(0.85)
+    else:
+        photo = ImageEnhance.Brightness(photo).enhance(0.92)
+    
     canvas.paste(photo, (0, top_line_height))
 
     # ========== Г-ОБРАЗНАЯ ПЛАШКА НА ФОТО ==========
@@ -149,9 +161,9 @@ def create_story(photo_bytes, title, body):
     divider_y = photo_h + top_line_height
     draw.rectangle((0, divider_y, W, divider_y + bottom_line_height), fill=PURPLE)
 
-    # ========== БЕЛАЯ ЗОНА ==========
-    white_bg_start = divider_y + bottom_line_height
-    draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
+    # ========== ЗОНА С ТЕКСТОМ ==========
+    text_bg_start = divider_y + bottom_line_height
+    draw.rectangle((0, text_bg_start, W, H), fill=bg_color)
 
     # ========== ЗАГОЛОВОК ==========
     title = title.strip()
@@ -160,9 +172,9 @@ def create_story(photo_bytes, title, body):
         start_size=58, min_size=38, gap=8,
     )
 
-    y = white_bg_start + 80
+    y = text_bg_start + 80
     for line in title_lines[:5]:
-        draw.text((80, y), line, font=title_font, fill=BLACK)
+        draw.text((80, y), line, font=title_font, fill=text_color)
         y += title_font.size + 10
 
     # ========== ТРИ ТОЧКИ ==========
@@ -187,7 +199,7 @@ def create_story(photo_bytes, title, body):
     )
 
     for line in body_lines:
-        draw.text((80, y), line, font=body_font, fill=BLACK)
+        draw.text((80, y), line, font=body_font, fill=text_color)
         y += body_font.size + 8
 
     # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + КНОПКА fider.by СЛЕВА ==========
@@ -240,13 +252,34 @@ def create_story(photo_bytes, title, body):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "waiting_photo"
+    context.user_data["dark_mode"] = False
 
     await update.message.reply_text(
         "🟣 Бот сторис Fider.by\n\n"
+        "✨ ДОСТУПНЫЕ ТЕМЫ:\n"
+        "☀️ /light — светлая тема (по умолчанию)\n"
+        "🌙 /dark — тёмная тема\n\n"
+        "КАК СОЗДАТЬ СТОРИС:\n"
         "1. Отправь фото\n"
         "2. Потом отправь заголовок\n"
         "3. Потом отправь основной текст (максимум 900 символов)\n\n"
         "Я соберу готовую сторис 9:16."
+    )
+
+
+async def dark_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["dark_mode"] = True
+    await update.message.reply_text(
+        "🌙 Включена тёмная тема\n\n"
+        "Теперь отправляй фото для создания сторис в тёмном оформлении."
+    )
+
+
+async def light_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["dark_mode"] = False
+    await update.message.reply_text(
+        "☀️ Включена светлая тема\n\n"
+        "Теперь отправляй фото для создания сторис в светлом оформлении."
     )
 
 
@@ -317,6 +350,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = update.message.text.strip()
         photo = context.user_data.get("photo")
         title = context.user_data.get("title")
+        dark_mode = context.user_data.get("dark_mode", False)
 
         if not photo or not title:
             context.user_data.clear()
@@ -324,18 +358,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Что-то потерялось. Нажми /start и начни заново.")
             return
 
-        msg = await update.message.reply_text("🎨 Создаю сторис...")
+        theme_name = "тёмной" if dark_mode else "светлой"
+        msg = await update.message.reply_text(f"🎨 Создаю сторис в {theme_name} теме...")
 
         try:
-            result = create_story(photo, title, body)
+            result = create_story(photo, title, body, dark_mode)
             result.name = "fider_story.png"
 
             await update.message.reply_photo(
                 photo=result,
-                caption="Готово ✨"
+                caption=f"✨ Готово в {theme_name} теме\n\nfider.by"
             )
             context.user_data.clear()
             context.user_data["state"] = "waiting_photo"
+            context.user_data["dark_mode"] = dark_mode
 
         except ValueError as e:
             await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый, более короткий текст.")
@@ -375,11 +411,14 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("dark", dark_mode))
+    app.add_handler(CommandHandler("light", light_mode))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.IMAGE, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ FIDER STORY BOT STARTED")
+    print("🌓 Поддержка светлой и тёмной темы")
 
     app.run_polling(
         drop_pending_updates=True,

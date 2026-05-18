@@ -16,6 +16,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import TimedOut
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -48,10 +49,6 @@ WHITE = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
-DIVIDER_PATH = "divider.png"
-
-# Высота плашки-разделителя в пикселях
-DIVIDER_HEIGHT = 50
 
 
 def font(path, size):
@@ -134,7 +131,7 @@ def create_story(photo_bytes, title, body):
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, top_line_height))
 
-    # СНАЧАЛА создаём белый фон с текстом
+    # Белый фон с текстом
     white_bg_start = photo_h + top_line_height
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
@@ -158,20 +155,19 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # Три большие точки после заголовка (опущены ниже)
-    y += 30  # Увеличил отступ сверху (было 18, стало 30)
+    # Три точки после заголовка
+    y += 30
     dot_radius = 15
     dot_spacing = 20
     
-    # Центрируем точки по горизонтали (относительно левого края 80px)
-    start_x = 80 + 25  # Немного смещаем для лучшего вида
+    start_x = 80 + 25
     
     for i in range(3):
         x = start_x + i * (dot_radius * 2 + dot_spacing)
         y_dot = y + 10
         draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
     
-    y += 85  # Увеличил отступ после точек (было 70, стало 85)
+    y += 85
 
     # Основной текст
     body = body.strip()
@@ -192,60 +188,43 @@ def create_story(photo_bytes, title, body):
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # ПОСЛЕ ТОГО КАК ВЕСЬ ТЕКСТ НАРИСОВАН, накладываем плашку ПОВЕРХ ВСЕГО
-    divider_y = photo_h + top_line_height
+    # ========== ПОДВАЛ: ТОНКАЯ ЛИНИЯ + ЭЛЛИПС (из вашего файла) ==========
+    # Тонкая фиолетовая линия перед эллипсом
+    thin_line_y = H - 80
+    thin_line_height = 2
+    draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
     
-    if not os.path.exists(DIVIDER_PATH):
-        draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
-    else:
-        divider = Image.open(DIVIDER_PATH).convert("RGBA")
-        divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
-        
-        temp_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        temp_layer.paste(divider, (0, divider_y), divider)
-        
-        canvas = canvas.convert("RGBA")
-        canvas = Image.alpha_composite(canvas, temp_layer)
-        canvas = canvas.convert("RGB")
-        draw = ImageDraw.Draw(canvas)
-
-    # Логотип внизу по центру
-    logo_font = font(FONT_BOLD, 38)
-    logo_text = "fider.by"
-    
-    try:
-        bbox = draw.textbbox((0, 0), logo_text, font=logo_font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-    except:
-        text_width = len(logo_text) * 20
-        text_height = 40
-    
-    logo_x = (W - text_width) // 2
-    logo_y = H - 80
-    
-    padding = 20
-    logo_bg_x1 = logo_x - padding
-    logo_bg_y1 = logo_y - 12
-    logo_bg_x2 = logo_x + text_width + padding
-    logo_bg_y2 = logo_y + text_height + 12
-    
-    draw.rounded_rectangle(
-        (logo_bg_x1, logo_bg_y1, logo_bg_x2, logo_bg_y2),
-        radius=18,
+    # Эллипс (как в вашем файле)
+    ellipse_size = 50
+    ellipse_offset = 50
+    draw.ellipse(
+        (ellipse_offset, H - ellipse_offset - ellipse_size,
+         ellipse_offset + ellipse_size, H - ellipse_offset),
         fill=PURPLE
     )
     
+    # Текст внутри эллипса
+    ellipse_font = font(FONT_BOLD, 18)
+    text_ellipse = "f"
+    bbox = draw.textbbox((0, 0), text_ellipse, font=ellipse_font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
     draw.text(
-        (logo_x, logo_y),
-        logo_text,
-        font=logo_font,
+        (ellipse_offset + (ellipse_size - text_w) // 2,
+         H - ellipse_offset - ellipse_size + (ellipse_size - text_h) // 2 - 2),
+        text_ellipse,
+        font=ellipse_font,
         fill=WHITE
     )
-
-    # Фиолетовая полоса внизу (15 пикселей)
-    footer_height = 15
-    draw.rectangle((0, H - footer_height, W, H), fill=PURPLE)
+    
+    # Текст fider.by рядом с эллипсом
+    text_font = font(FONT_BOLD, 28)
+    draw.text(
+        (ellipse_offset + ellipse_size + 15, H - ellipse_offset - 35),
+        "fider.by",
+        font=text_font,
+        fill=PURPLE
+    )
 
     output = io.BytesIO()
     canvas.save(output, format="PNG", quality=95)
@@ -271,14 +250,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нажми /start и отправь фото заново.")
         return
 
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    photo_bytes = await file.download_as_bytearray()
+    try:
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        photo_bytes = await file.download_as_bytearray()
 
-    context.user_data["photo"] = bytes(photo_bytes)
-    context.user_data["state"] = "waiting_title"
+        context.user_data["photo"] = bytes(photo_bytes)
+        context.user_data["state"] = "waiting_title"
 
-    await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
+        await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
+    except TimedOut:
+        await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text("❌ Ошибка при загрузке фото.")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -292,13 +277,19 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нужен файл изображения.")
         return
 
-    file = await context.bot.get_file(doc.file_id)
-    photo_bytes = await file.download_as_bytearray()
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        photo_bytes = await file.download_as_bytearray()
 
-    context.user_data["photo"] = bytes(photo_bytes)
-    context.user_data["state"] = "waiting_title"
+        context.user_data["photo"] = bytes(photo_bytes)
+        context.user_data["state"] = "waiting_title"
 
-    await update.message.reply_text("✅ Фото получил в хорошем качестве. Теперь отправь заголовок.")
+        await update.message.reply_text("✅ Фото получил в хорошем качестве. Теперь отправь заголовок.")
+    except TimedOut:
+        await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text("❌ Ошибка при загрузке файла.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -372,10 +363,10 @@ def main():
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
-        .connect_timeout(60)
-        .read_timeout(120)
-        .write_timeout(120)
-        .pool_timeout(120)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
         .build()
     )
 
@@ -389,7 +380,7 @@ def main():
     app.run_polling(
         drop_pending_updates=True,
         poll_interval=2.0,
-        timeout=60,
+        timeout=30,
         allowed_updates=Update.ALL_TYPES,
     )
 

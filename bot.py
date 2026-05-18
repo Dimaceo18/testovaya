@@ -49,10 +49,6 @@ WHITE = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
-DIVIDER_PATH = "divider.png"
-
-# Высота плашки-разделителя в пикселях
-DIVIDER_HEIGHT = 50
 
 
 def font(path, size):
@@ -115,8 +111,13 @@ def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size,
     return fnt, lines
 
 
+def draw_l_shape_corner(draw, x, y, width, height, thickness, color):
+    """Рисует Г-образную плашку в левом верхнем углу"""
+    draw.rectangle((x, y, x + thickness, y + height), fill=color)
+    draw.rectangle((x, y, x + width, y + thickness), fill=color)
+
+
 def create_story(photo_bytes, title, body):
-    # Проверка длины текста
     if len(body) > 900:
         raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
 
@@ -125,93 +126,73 @@ def create_story(photo_bytes, title, body):
     canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
-    # Фиолетовая линия сверху (15 пикселей)
+    # ========== ВЕРХНЯЯ ПОЛОСА (15px) ==========
     top_line_height = 15
     draw.rectangle((0, 0, W, top_line_height), fill=PURPLE)
 
-    # Высота фото - 40% от высоты сторис
+    # ========== ФОТО ==========
     photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
     photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, top_line_height))
 
-    # СНАЧАЛА создаём белый фон с текстом
-    white_bg_start = photo_h + top_line_height
+    # ========== Г-ОБРАЗНАЯ ПЛАШКА НА ФОТО ==========
+    corner_x = 30
+    corner_y = top_line_height + 30
+    corner_width = 120
+    corner_height = 80
+    corner_thickness = 12
+    draw_l_shape_corner(draw, corner_x, corner_y, corner_width, corner_height, corner_thickness, PURPLE)
+
+    # ========== ПОЛОСА ПОСЛЕ ФОТО (15px) ==========
+    bottom_line_height = 15
+    divider_y = photo_h + top_line_height
+    draw.rectangle((0, divider_y, W, divider_y + bottom_line_height), fill=PURPLE)
+
+    # ========== БЕЛАЯ ЗОНА ==========
+    white_bg_start = divider_y + bottom_line_height
     draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
-    # Заголовок
+    # ========== ЗАГОЛОВОК ==========
     title = title.strip()
-
     title_font, title_lines = fit_text(
-        draw,
-        title,
-        FONT_BOLD,
-        max_width=900,
-        max_height=300,
-        start_size=58,
-        min_size=38,
-        gap=8,
+        draw, title, FONT_BOLD, max_width=900, max_height=300,
+        start_size=58, min_size=38, gap=8,
     )
 
     y = white_bg_start + 80
-
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # Три большие точки после заголовка
-    y += 30
-    dot_radius = 15
-    dot_spacing = 20
-    
-    start_x = 80 + 25
+    # ========== ТРИ ТОЧКИ ==========
+    y += 18
+    dot_radius = 12
+    dot_spacing = 18
+    start_x = 80
     
     for i in range(3):
         x = start_x + i * (dot_radius * 2 + dot_spacing)
-        y_dot = y + 10
+        y_dot = y + 8
         draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
     
-    y += 85
+    y += 60
 
-    # Основной текст
+    # ========== ОСНОВНОЙ ТЕКСТ ==========
     body = body.strip()
     available_height = H - y - 150
-
     body_font, body_lines = fit_text(
-        draw,
-        body,
-        FONT_REGULAR,
-        max_width=900,
-        max_height=available_height,
-        start_size=33,
-        min_size=16,
-        gap=8,
+        draw, body, FONT_REGULAR, max_width=900, max_height=available_height,
+        start_size=33, min_size=16, gap=8,
     )
 
     for line in body_lines:
         draw.text((80, y), line, font=body_font, fill=BLACK)
         y += body_font.size + 8
 
-    # ПОСЛЕ ТОГО КАК ВЕСЬ ТЕКСТ НАРИСОВАН, накладываем плашку ПОВЕРХ ВСЕГО
-    divider_y = photo_h + top_line_height
-    
-    if not os.path.exists(DIVIDER_PATH):
-        draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
-    else:
-        divider = Image.open(DIVIDER_PATH).convert("RGBA")
-        divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
-        
-        temp_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        temp_layer.paste(divider, (0, divider_y), divider)
-        
-        canvas = canvas.convert("RGBA")
-        canvas = Image.alpha_composite(canvas, temp_layer)
-        canvas = canvas.convert("RGB")
-        draw = ImageDraw.Draw(canvas)
-
     # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + КНОПКА fider.by СЛЕВА ==========
     # Тонкая фиолетовая полоса (2px)
-    thin_line_y = H - 100
+    thin_line_y = H - 80
     thin_line_height = 2
     draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
     
@@ -343,7 +324,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Что-то потерялось. Нажми /start и начни заново.")
             return
 
-        msg = await update.message.reply_text("🎨 Оформляю сторис...")
+        msg = await update.message.reply_text("🎨 Создаю сторис...")
 
         try:
             result = create_story(photo, title, body)
@@ -359,10 +340,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError as e:
             await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый, более короткий текст.")
             return
-
         except Exception as e:
             logger.exception(e)
-            await update.message.reply_text(f"❌ Ошибка:\n{e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
             context.user_data.clear()
             context.user_data["state"] = "waiting_photo"
 

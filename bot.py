@@ -44,7 +44,7 @@ def run_web():
 W, H = 1080, 1920
 
 PURPLE = (111, 55, 245)
-BLACK = (7, 7, 10)
+BLACK = (20, 22, 32)
 WHITE = (255, 255, 255)
 LIGHT_BG = (255, 255, 255)
 DARK_BG = (7, 7, 10)
@@ -166,14 +166,14 @@ def create_story(photo_bytes, title, body, dark_mode=False):
     text_bg_start = divider_y + bottom_line_height
     draw.rectangle((0, text_bg_start, W, H), fill=bg_color)
 
-    # ========== ЗАГОЛОВОК (поднят на 20px выше) ==========
+    # ========== ЗАГОЛОВОК ==========
     title = title.strip()
     title_font, title_lines = fit_text(
         draw, title, FONT_BOLD, max_width=900, max_height=300,
         start_size=58, min_size=38, gap=8,
     )
 
-    y = text_bg_start + 60  # Было 80, стало 60 (подняли на 20px)
+    y = text_bg_start + 80
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=text_color)
         y += title_font.size + 10
@@ -203,36 +203,34 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         draw.text((80, y), line, font=body_font, fill=text_color)
         y += body_font.size + 8
 
-    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + ЭЛЛИПС ==========
-    thin_line_y = H - 50
-    thin_line_height = 2
-    draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
-    
-    # ЭЛЛИПС (круг) с буквой f
-    ellipse_radius = 25
-    ellipse_x = 50
-    ellipse_y = thin_line_y + thin_line_height + 15
-    
-    # Рисуем фиолетовый круг
+    # ========== ЭЛЛИПС В ЛЕВОМ НИЖНЕМ УГЛУ (из вашего файла) ==========
+    # Рисуем фиолетовый эллипс
+    ellipse_size = 50
+    ellipse_offset = 50
     draw.ellipse(
-        (ellipse_x - ellipse_radius, ellipse_y - ellipse_radius,
-         ellipse_x + ellipse_radius, ellipse_y + ellipse_radius),
-        fill=PURPLE, outline=None
+        (ellipse_offset, H - ellipse_offset - ellipse_size,
+         ellipse_offset + ellipse_size, H - ellipse_offset),
+        fill=PURPLE
     )
     
-    # Буква f внутри круга
-    small_font = font(FONT_BOLD, 26)
+    # Текст внутри эллипса
+    ellipse_font = font(FONT_BOLD, 18)
+    text_ellipse = "f"
+    bbox = draw.textbbox((0, 0), text_ellipse, font=ellipse_font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
     draw.text(
-        (ellipse_x - 8, ellipse_y - 12),
-        "f",
-        font=small_font,
+        (ellipse_offset + (ellipse_size - text_w) // 2,
+         H - ellipse_offset - ellipse_size + (ellipse_size - text_h) // 2 - 2),
+        text_ellipse,
+        font=ellipse_font,
         fill=WHITE
     )
     
-    # Текст fider.by рядом
+    # Текст fider.by рядом с эллипсом
     text_font = font(FONT_BOLD, 28)
     draw.text(
-        (ellipse_x + ellipse_radius + 10, ellipse_y - 12),
+        (ellipse_offset + ellipse_size + 15, H - ellipse_offset - 35),
         "fider.by",
         font=text_font,
         fill=PURPLE
@@ -264,18 +262,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def dark_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["dark_mode"] = True
-    await update.message.reply_text(
-        "🌙 Включена тёмная тема\n\n"
-        "Теперь отправляй фото для создания сторис в тёмном оформлении."
-    )
+    await update.message.reply_text("🌙 Включена тёмная тема\n\nТеперь отправляй фото.")
 
 
 async def light_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["dark_mode"] = False
-    await update.message.reply_text(
-        "☀️ Включена светлая тема\n\n"
-        "Теперь отправляй фото для создания сторис в светлом оформлении."
-    )
+    await update.message.reply_text("☀️ Включена светлая тема\n\nТеперь отправляй фото.")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -296,7 +288,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке фото. Попробуй ещё раз.")
+        await update.message.reply_text("❌ Ошибка при загрузке фото.")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -332,13 +324,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = update.message.text.strip()
 
         if len(title) < 5:
-            await update.message.reply_text("Заголовок слишком короткий. Отправь нормальный заголовок.")
+            await update.message.reply_text("Заголовок слишком короткий.")
             return
 
         context.user_data["title"] = title
         context.user_data["state"] = "waiting_body"
 
-        await update.message.reply_text("✅ Заголовок получил. Теперь отправь основной текст (максимум 900 символов).")
+        await update.message.reply_text("✅ Заголовок получил. Теперь отправь основной текст (макс. 900 символов).")
         return
 
     if state == "waiting_body":
@@ -350,7 +342,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not photo or not title:
             context.user_data.clear()
             context.user_data["state"] = "waiting_photo"
-            await update.message.reply_text("Что-то потерялось. Нажми /start и начни заново.")
+            await update.message.reply_text("Что-то потерялось. Нажми /start.")
             return
 
         theme_name = "тёмной" if dark_mode else "светлой"
@@ -369,7 +361,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["dark_mode"] = dark_mode
 
         except ValueError as e:
-            await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый, более короткий текст.")
+            await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый текст.")
             return
         except Exception as e:
             logger.exception(e)
@@ -384,7 +376,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    await update.message.reply_text("Нажми /start и отправь фото.")
+    await update.message.reply_text("Нажми /start.")
 
 
 async def post_init(app):
@@ -413,7 +405,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ FIDER STORY BOT STARTED")
-    print("🌓 Светлая и тёмная тема | Эллипс с буквой f")
+    print("🌓 Светлая и тёмная тема")
 
     app.run_polling(
         drop_pending_updates=True,

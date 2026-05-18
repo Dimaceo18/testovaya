@@ -45,9 +45,9 @@ W, H = 1080, 1920
 
 PURPLE = (111, 55, 245)
 WHITE = (255, 255, 255)
-BLACK = (7, 7, 10)  # #07070A для тёмной темы
-LIGHT_TEXT = (20, 22, 32)  # тёмный текст на светлом фоне
-DARK_TEXT = (255, 255, 255)  # белый текст на тёмном фоне
+BLACK = (7, 7, 10)
+LIGHT_TEXT = (20, 22, 32)
+DARK_TEXT = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
@@ -140,7 +140,6 @@ def create_story(photo_bytes, title, body, dark_mode=False):
     photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
     
-    # Затемнение в зависимости от темы
     if dark_mode:
         photo = ImageEnhance.Brightness(photo).enhance(0.85)
     else:
@@ -172,7 +171,8 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         start_size=58, min_size=38, gap=8,
     )
 
-    y = text_bg_start + 80
+    y = text_bg_start + 55
+
     for line in title_lines[:5]:
         draw.text((80, y), line, font=title_font, fill=text_color)
         y += title_font.size + 10
@@ -188,7 +188,7 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         y_dot = y + 8
         draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
     
-    y += 60
+    y += 50
 
     # ========== ОСНОВНОЙ ТЕКСТ ==========
     body = body.strip()
@@ -202,7 +202,7 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         draw.text((80, y), line, font=body_font, fill=text_color)
         y += body_font.size + 8
 
-    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + КНОПКА fider.by СЛЕВА ==========
+    # ========== ПОДВАЛ: ТОНКАЯ ПОЛОСА + КНОПКА fider.by СЛЕВА + НАДПИСЬ СПРАВА ==========
     # Тонкая фиолетовая полоса (2px)
     thin_line_y = H - 80
     thin_line_height = 2
@@ -241,6 +241,25 @@ def create_story(photo_bytes, title, body, dark_mode=False):
         button_text,
         font=button_font,
         fill=WHITE
+    )
+    
+    # Надпись справа "ПРИСЫЛАЙТЕ СВОИ НОВОСТИ НАМ В ДИРЕКТ"
+    right_text_font = font(FONT_REGULAR, 18)
+    right_text = "ПРИСЫЛАЙТЕ СВОИ НОВОСТИ НАМ В ДИРЕКТ"
+    
+    # Размещаем справа, выравнивая по центру кнопки
+    right_text_bbox = draw.textbbox((0, 0), right_text, font=right_text_font)
+    right_text_width = right_text_bbox[2] - right_text_bbox[0]
+    right_text_height = right_text_bbox[3] - right_text_bbox[1]
+    
+    right_text_x = W - right_text_width - 50  # Отступ 50px от правого края
+    right_text_y = button_y + (button_padding_y * 2 + text_height - right_text_height) // 2
+    
+    draw.text(
+        (right_text_x, right_text_y),
+        right_text,
+        font=right_text_font,
+        fill=PURPLE
     )
 
     output = io.BytesIO()

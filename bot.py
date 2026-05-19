@@ -2,21 +2,21 @@
 
 import os
 import io
-import re
-import json
 import threading
 import logging
-from datetime import datetime
-from pathlib import Path
+import re
+import asyncio
+import httpx
 
 from flask import Flask
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -29,27 +29,12 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("Нет BOT_TOKEN")
 
 web_app = Flask(__name__)
-
-# Файл для хранения статистики
-STATS_FILE = Path("user_stats.json")
-
-def load_stats():
-    if STATS_FILE.exists():
-        try:
-            with open(STATS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_stats(stats):
-    with open(STATS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(stats, f, ensure_ascii=False, indent=2)
 
 @web_app.get("/")
 def health():
@@ -64,13 +49,33 @@ def run_web():
 W, H = 1080, 1920
 
 PURPLE = (111, 55, 245)
+BLACK = (20, 22, 32)
 WHITE = (255, 255, 255)
-BLACK = (7, 7, 10)
-LIGHT_TEXT = (20, 22, 32)
-DARK_TEXT = (255, 255, 255)
 
 FONT_BOLD = "Montserrat-Black.ttf"
 FONT_REGULAR = "Montserrat-Bold.ttf"
+DIVIDER_PATH = "divider.png"
+
+# Высота плашки-разделителя в пикселях
+DIVIDER_HEIGHT = 50
+
+# ИСПРАВЛЕННЫЙ ПРОМПТ ДЛЯ DEEPSEEK
+DEEPSEEK_PROMPT = """Ты профессиональный редактор новостного сайта. Твоя задача - ПЕРЕПИСАТЬ длинную новость в короткий новостной формат, сохраняя все важные факты.
+
+СТРОГИЕ ТРЕБОВАНИЯ:
+1. Длина текста ДОЛЖНА БЫТЬ от 600 до 650 символов (считая пробелы)
+2. НЕ ОБРЕЗАЙ текст - ПЕРЕПИШИ его, сохраняя смысл
+3. Удали только явную воду: "подпишись", "читайте также", "переходите по ссылке", смайлики
+4. Сохрани ВСЕ важные факты: кто, что, где, когда, почему, сколько
+5. Сделай заголовок коротким и интересным (40-60 символов)
+6. Обязательно разбей текст на 2-3 логических абзаца (абзацы отделяются пустой строкой)
+
+Важно: Итоговый текст должен быть информативным и читаемым. Не удаляй важные детали, цифры, даты, имена.
+
+Верни строго в формате:
+ЗАГОЛОВОК: (заголовок новости)
+
+ТЕКСТ: (текст новости на 600-650 символов, с абзацами)"""
 
 
 def font(path, size):
@@ -133,173 +138,137 @@ def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size,
     return fnt, lines
 
 
-def draw_l_shape_corner(draw, x, y, width, height, thickness, color):
-    """Рисует Г-образную плашку в левом верхнем углу"""
-    draw.rectangle((x, y, x + thickness, y + height), fill=color)
-    draw.rectangle((x, y, x + width, y + thickness), fill=color)
-
-
-def extract_title_and_body(text):
-    """Извлекает заголовок и основной текст из поста"""
-    lines = text.strip().split('\n')
-    
-    # Фильтруем пустые строки
-    lines = [l.strip() for l in lines if l.strip()]
-    
-    if not lines:
-        return None, None
-    
-    # Заголовок - первая строка
-    title = lines[0]
-    
-    # Убираем возможные маркеры жирности
-    title = re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', title)
-    title = re.sub(r'[_~`#>|]', '', title)
-    
-    # Остальное - основной текст
-    body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
-    
-    # Очищаем от лишних символов
-    title = re.sub(r'[^\w\s\.\,\!\?\-\(\)]', '', title)
-    body = re.sub(r'[^\w\s\.\,\!\?\-\(\)\'\"]', '', body)
-    
-    # Ограничиваем длину
-    if len(title) > 200:
-        title = title[:197] + "..."
-    
-    if len(body) > 900:
-        body = body[:897] + "..."
-        raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
-    
-    return title, body
-
-
-def create_story(photo_bytes, title, body, dark_mode=False):
+def create_story(photo_bytes, title, body):
+    # Проверка длины текста
     if len(body) > 900:
         raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
 
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
 
-    # Выбираем цвета в зависимости от темы
-    bg_color = BLACK if dark_mode else WHITE
-    text_color = DARK_TEXT if dark_mode else LIGHT_TEXT
-    
-    canvas = Image.new("RGB", (W, H), bg_color)
+    canvas = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(canvas)
 
-    # ========== ВЕРХНЯЯ ПОЛОСА (15px) ==========
+    # Фиолетовая линия сверху (15 пикселей)
     top_line_height = 15
     draw.rectangle((0, 0, W, top_line_height), fill=PURPLE)
 
-    # ========== ФОТО ==========
+    # Высота фото - 40% от высоты сторис
     photo_h = int(H * 0.4)
     photo = crop_cover(img, (W, photo_h))
-    
-    if dark_mode:
-        photo = ImageEnhance.Brightness(photo).enhance(0.85)
-    else:
-        photo = ImageEnhance.Brightness(photo).enhance(0.92)
-    
+    photo = ImageEnhance.Brightness(photo).enhance(0.92)
     canvas.paste(photo, (0, top_line_height))
 
-    # ========== Г-ОБРАЗНАЯ ПЛАШКА НА ФОТО ==========
-    corner_x = 30
-    corner_y = top_line_height + 30
-    corner_width = 120
-    corner_height = 80
-    corner_thickness = 12
-    draw_l_shape_corner(draw, corner_x, corner_y, corner_width, corner_height, corner_thickness, PURPLE)
+    # СНАЧАЛА создаём белый фон с текстом
+    white_bg_start = photo_h + top_line_height
+    draw.rectangle((0, white_bg_start, W, H), fill=WHITE)
 
-    # ========== ПОЛОСА ПОСЛЕ ФОТО (15px) ==========
-    bottom_line_height = 15
-    divider_y = photo_h + top_line_height
-    draw.rectangle((0, divider_y, W, divider_y + bottom_line_height), fill=PURPLE)
+    # Заголовок
+    title = title.strip()
 
-    # ========== ЗОНА С ТЕКСТОМ ==========
-    text_bg_start = divider_y + bottom_line_height
-    draw.rectangle((0, text_bg_start, W, H), fill=bg_color)
-
-    # ========== ЗАГОЛОВОК ==========
     title_font, title_lines = fit_text(
-        draw, title, FONT_BOLD, max_width=900, max_height=300,
-        start_size=58, min_size=38, gap=8,
+        draw,
+        title,
+        FONT_BOLD,
+        max_width=900,
+        max_height=300,
+        start_size=58,
+        min_size=38,
+        gap=8,
     )
 
-    y = text_bg_start + 35
+    y = white_bg_start + 80
 
     for line in title_lines[:5]:
-        draw.text((80, y), line, font=title_font, fill=text_color)
+        draw.text((80, y), line, font=title_font, fill=BLACK)
         y += title_font.size + 10
 
-    # ========== ОСНОВНОЙ ТЕКСТ ==========
-    y += 25
+    # Три большие точки после заголовка
+    y += 30
+    dot_radius = 15
+    dot_spacing = 20
+    
+    start_x = 80 + 25
+    
+    for i in range(3):
+        x = start_x + i * (dot_radius * 2 + dot_spacing)
+        y_dot = y + 10
+        draw.ellipse((x - dot_radius, y_dot - dot_radius, x + dot_radius, y_dot + dot_radius), fill=PURPLE)
+    
+    y += 85
 
-    if body:
-        available_height = H - y - 150
-        body_font, body_lines = fit_text(
-            draw, body, FONT_REGULAR, max_width=900, max_height=available_height,
-            start_size=33, min_size=16, gap=8,
-        )
+    # Основной текст
+    body = body.strip()
+    available_height = H - y - 150
 
-        for line in body_lines:
-            draw.text((80, y), line, font=body_font, fill=text_color)
-            y += body_font.size + 8
+    body_font, body_lines = fit_text(
+        draw,
+        body,
+        FONT_REGULAR,
+        max_width=900,
+        max_height=available_height,
+        start_size=33,
+        min_size=16,
+        gap=8,
+    )
 
-    # ========== ПОДВАЛ ==========
-    thin_line_y = H - 80
-    thin_line_height = 2
-    draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
+    for line in body_lines:
+        draw.text((80, y), line, font=body_font, fill=BLACK)
+        y += body_font.size + 8
+
+    # Плашка-разделитель
+    divider_y = photo_h + top_line_height
     
-    # Кнопка fider.by слева
-    button_font = font(FONT_BOLD, 28)
-    button_text = "fider.by"
+    if not os.path.exists(DIVIDER_PATH):
+        draw.rectangle((0, divider_y, W, divider_y + DIVIDER_HEIGHT), fill=PURPLE)
+    else:
+        divider = Image.open(DIVIDER_PATH).convert("RGBA")
+        divider = divider.resize((W, DIVIDER_HEIGHT), Image.LANCZOS)
+        
+        temp_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        temp_layer.paste(divider, (0, divider_y), divider)
+        
+        canvas = canvas.convert("RGBA")
+        canvas = Image.alpha_composite(canvas, temp_layer)
+        canvas = canvas.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+
+    # Логотип внизу по центру
+    logo_font = font(FONT_BOLD, 38)
+    logo_text = "fider.by"
     
-    bbox = draw.textbbox((0, 0), button_text, font=button_font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    try:
+        bbox = draw.textbbox((0, 0), logo_text, font=logo_font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+    except:
+        text_width = len(logo_text) * 20
+        text_height = 40
     
-    button_padding_x = 20
-    button_padding_y = 12
-    button_x = 50
-    button_y = thin_line_y + thin_line_height + 20
+    logo_x = (W - text_width) // 2
+    logo_y = H - 80
     
-    button_bg_x1 = button_x
-    button_bg_y1 = button_y
-    button_bg_x2 = button_x + text_width + button_padding_x * 2
-    button_bg_y2 = button_y + text_height + button_padding_y * 2
+    padding = 20
+    logo_bg_x1 = logo_x - padding
+    logo_bg_y1 = logo_y - 12
+    logo_bg_x2 = logo_x + text_width + padding
+    logo_bg_y2 = logo_y + text_height + 12
     
     draw.rounded_rectangle(
-        (button_bg_x1, button_bg_y1, button_bg_x2, button_bg_y2),
-        radius=25,
+        (logo_bg_x1, logo_bg_y1, logo_bg_x2, logo_bg_y2),
+        radius=18,
         fill=PURPLE
     )
     
-    text_x = button_x + button_padding_x
-    text_y = button_y + button_padding_y
     draw.text(
-        (text_x, text_y),
-        button_text,
-        font=button_font,
+        (logo_x, logo_y),
+        logo_text,
+        font=logo_font,
         fill=WHITE
     )
-    
-    # Надпись справа
-    right_text_font = font(FONT_BOLD, 22)
-    right_text = "ПРИСЫЛАЙТЕ НОВОСТИ В ДИРЕКТ"
-    
-    right_text_bbox = draw.textbbox((0, 0), right_text, font=right_text_font)
-    right_text_width = right_text_bbox[2] - right_text_bbox[0]
-    right_text_height = right_text_bbox[3] - right_text_bbox[1]
-    
-    right_text_x = W - right_text_width - 50
-    right_text_y = button_y + (button_padding_y * 2 + text_height - right_text_height) // 2
-    
-    draw.text(
-        (right_text_x, right_text_y),
-        right_text,
-        font=right_text_font,
-        fill=PURPLE
-    )
+
+    # Фиолетовая полоса внизу (15 пикселей)
+    footer_height = 15
+    draw.rectangle((0, H - footer_height, W, H), fill=PURPLE)
 
     output = io.BytesIO()
     canvas.save(output, format="PNG", quality=95)
@@ -307,248 +276,569 @@ def create_story(photo_bytes, title, body, dark_mode=False):
     return output
 
 
-def update_stats(user_id):
-    """Обновляет статистику пользователя"""
-    stats = load_stats()
-    user_id_str = str(user_id)
-    
-    if user_id_str not in stats:
-        stats[user_id_str] = {"count": 0, "last_used": None}
-    
-    stats[user_id_str]["count"] += 1
-    stats[user_id_str]["last_used"] = datetime.now().isoformat()
-    save_stats(stats)
+# ==================== ФУНКЦИЯ ЗАПРОСА К DeepSeek ====================
+async def call_deepseek(prompt, text):
+    """Вызов DeepSeek API"""
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": f"Перепиши эту новость в формате на 600-650 символов. Сохрани ВСЕ важные факты, цифры, даты, имена. НЕ ОБРЕЗАЙ текст, а ПЕРЕПИШИ его.\n\n{text}"}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 1200
+            }
+        )
+        return response.json()
 
 
+async def call_deepseek_with_fix(prompt, text, original_text=None):
+    """Вызов DeepSeek с автоматической корректировкой длины"""
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        # Первый запрос
+        response = await client.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": f"Перепиши эту новость в формате на 600-650 символов. Сохрани ВСЕ важные факты, цифры, даты, имена. НЕ ОБРЕЗАЙ текст, а ПЕРЕПИШИ его.\n\n{text}"}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 1200
+            }
+        )
+        result = response.json()
+        
+        if "error" in result:
+            return result
+        
+        content = result["choices"][0]["message"]["content"]
+        
+        # Извлекаем текст
+        body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', content, re.IGNORECASE | re.DOTALL)
+        if body_match:
+            body = body_match.group(1).strip()
+        else:
+            lines = content.strip().split('\n')
+            body = '\n'.join(lines[1:]).strip() if len(lines) > 1 else content.strip()
+        
+        char_count = len(body)
+        
+        # Если длина неправильная, делаем второй запрос с корректировкой
+        if char_count < 550 or char_count > 700:
+            correction = "СДЕЛАЙ ТЕКСТ ДЛИННЕЕ (600-650 символов). Добавь больше деталей." if char_count < 550 else "СДЕЛАЙ ТЕКСТ КОРОЧЕ (600-650 символов). Убери лишние слова, но сохрани все важные факты."
+            
+            response2 = await client.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": f"{correction}\n\nПерепиши эту новость заново, соблюдая длину 600-650 символов. Сохрани все важные факты, цифры, даты:\n\n{original_text if original_text else text}"}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 1200
+                }
+            )
+            result = response2.json()
+        
+        return result
+
+
+# ==================== ОБРАБОТЧИКИ ИИ ====================
+async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текста через DeepSeek AI"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not DEEPSEEK_API_KEY:
+        await query.message.reply_text("❌ API DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.")
+        return
+    
+    body = context.user_data.get("temp_body", "")
+    original_body = context.user_data.get("original_body", body)
+    
+    if not body:
+        await query.message.reply_text("❌ Нет текста для обработки")
+        return
+    
+    await query.message.reply_text("🤖 Перерабатываю текст через DeepSeek AI (600-650 символов)...")
+    
+    try:
+        result = await call_deepseek_with_fix(DEEPSEEK_PROMPT, body, original_body)
+        
+        if "error" in result:
+            await query.message.reply_text(f"❌ Ошибка DeepSeek: {result['error'].get('message', 'Unknown error')}")
+            return
+        
+        content = result["choices"][0]["message"]["content"]
+        
+        # Парсим ответ
+        title = ""
+        new_body = ""
+        
+        if "ЗАГОЛОВОК:" in content.upper() and "ТЕКСТ:" in content.upper():
+            title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', content, re.IGNORECASE | re.DOTALL)
+            if title_match:
+                title = title_match.group(1).strip()
+            
+            body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', content, re.IGNORECASE | re.DOTALL)
+            if body_match:
+                new_body = body_match.group(1).strip()
+        else:
+            lines = content.strip().split('\n')
+            if len(lines) > 0 and len(lines[0]) < 100:
+                title = lines[0].replace('Заголовок:', '').replace('ЗАГОЛОВОК:', '').strip()
+                new_body = '\n'.join(lines[1:]).strip()
+            else:
+                new_body = content.strip()
+        
+        if not new_body:
+            new_body = content.strip()
+        
+        if not title and new_body:
+            title = new_body[:50] + "..."
+        
+        char_count = len(new_body)
+        
+        context.user_data["temp_title"] = title
+        context.user_data["temp_body"] = new_body
+        
+        # Определяем статус длины
+        if 600 <= char_count <= 650:
+            status = "✅ Отлично!"
+        elif 550 <= char_count < 600:
+            status = "⚠️ Немного коротковат"
+        elif 650 < char_count <= 700:
+            status = "⚠️ Немного длинноват"
+        else:
+            status = "❌ Не соответствует"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Использовать", callback_data="use_ai_result")],
+            [InlineKeyboardButton("🔄 Переделать", callback_data="ai_reprocess")],
+            [InlineKeyboardButton("✏️ Редактировать вручную", callback_data="edit_manually")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
+        ])
+        
+        await query.message.reply_text(
+            f"✅ *Текст обработан!*\n\n"
+            f"📰 *Заголовок:* {title}\n\n"
+            f"📝 *Текст:*\n{new_body}\n\n"
+            f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+            f"Что делаем дальше?",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"Ошибка DeepSeek: {e}")
+        await query.message.reply_text(f"❌ Ошибка при обработке: {e}")
+
+
+async def ai_reprocess_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Повторная обработка с новым запросом"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data["waiting_custom_request"] = True
+    
+    await query.message.reply_text(
+        "📝 *Напишите ваш запрос для переделки текста*\n\n"
+        "Примеры:\n"
+        "• Сделай заголовок броским\n"
+        "• Сделай текст 650 символов\n"
+        "• Сделай более официальным\n"
+        "• Добавь больше фактов и цифр\n"
+        "• Сохрани все даты и имена\n\n"
+        "Или отправьте /cancel для отмены.",
+        parse_mode="Markdown"
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+
+async def handle_custom_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка кастомного запроса к DeepSeek"""
+    if not context.user_data.get("waiting_custom_request"):
+        return
+    
+    custom_request = update.message.text
+    context.user_data["waiting_custom_request"] = False
+    
+    body = context.user_data.get("temp_body", "")
+    original_body = context.user_data.get("original_body", body)
+    
+    if not body:
+        await update.message.reply_text("❌ Нет текста для обработки")
+        return
+    
+    prompt = f"{DEEPSEEK_PROMPT}\n\nДополнительные требования пользователя: {custom_request}\n\nПеределай новость согласно этим требованиям, сохраняя длину 600-650 символов."
+    
+    await update.message.reply_text("🤖 Обрабатываю с новым запросом...")
+    
+    try:
+        result = await call_deepseek_with_fix(prompt, body, original_body)
+        
+        if "error" in result:
+            await update.message.reply_text(f"❌ Ошибка DeepSeek: {result['error'].get('message', 'Unknown error')}")
+            return
+        
+        content = result["choices"][0]["message"]["content"]
+        
+        title = ""
+        new_body = ""
+        
+        if "ЗАГОЛОВОК:" in content.upper() and "ТЕКСТ:" in content.upper():
+            title_match = re.search(r'(?:ЗАГОЛОВОК:|Заголовок:)\s*(.+?)(?=(?:ТЕКСТ:|$))', content, re.IGNORECASE | re.DOTALL)
+            if title_match:
+                title = title_match.group(1).strip()
+            
+            body_match = re.search(r'(?:ТЕКСТ:|Текст:)\s*(.+?)$', content, re.IGNORECASE | re.DOTALL)
+            if body_match:
+                new_body = body_match.group(1).strip()
+        else:
+            lines = content.strip().split('\n')
+            if len(lines) > 0 and len(lines[0]) < 100:
+                title = lines[0].strip()
+                new_body = '\n'.join(lines[1:]).strip()
+            else:
+                new_body = content.strip()
+        
+        if not new_body:
+            new_body = content.strip()
+        
+        if not title and new_body:
+            title = new_body[:50] + "..."
+        
+        char_count = len(new_body)
+        
+        context.user_data["temp_title"] = title
+        context.user_data["temp_body"] = new_body
+        
+        if 600 <= char_count <= 650:
+            status = "✅ Отлично!"
+        elif 550 <= char_count < 600:
+            status = "⚠️ Немного коротковат"
+        elif 650 < char_count <= 700:
+            status = "⚠️ Немного длинноват"
+        else:
+            status = "❌ Не соответствует"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Использовать", callback_data="use_ai_result")],
+            [InlineKeyboardButton("🔄 Переделать", callback_data="ai_reprocess")],
+            [InlineKeyboardButton("✏️ Редактировать вручную", callback_data="edit_manually")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
+        ])
+        
+        await update.message.reply_text(
+            f"✅ *Текст обработан!*\n\n"
+            f"📰 *Заголовок:* {title}\n\n"
+            f"📝 *Текст:*\n{new_body}\n\n"
+            f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+            f"Что делаем дальше?",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+
+async def use_ai_result_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Использовать результат обработки ИИ"""
+    query = update.callback_query
+    await query.answer()
+    
+    title = context.user_data.get("temp_title", "")
+    body = context.user_data.get("temp_body", "")
+    
+    if not title or not body:
+        await query.message.reply_text("❌ Нет данных. Начните заново.")
+        return
+    
+    context.user_data["title"] = title
+    context.user_data["body"] = body
+    context.user_data["state"] = "ready_to_create"
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
+        [InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title_manual")],
+        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body_manual")],
+        [InlineKeyboardButton("🤖 Обработать снова", callback_data="ai_process")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
+    ])
+    
+    await query.message.reply_text(
+        f"✅ *Готово!*\n\n"
+        f"📰 *Заголовок:* {title}\n\n"
+        f"📝 *Текст:*\n{body}\n\n"
+        f"Нажмите 'Создать сторис' для генерации изображения.",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+
+async def edit_manually_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Редактирование вручную"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data["waiting_edit_body"] = True
+    await query.message.reply_text(
+        "✏️ Отправьте новый текст (макс. 900 символов)\n\n"
+        "Или /cancel для отмены."
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+
+async def edit_title_manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Редактирование заголовка вручную"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data["waiting_edit_title"] = True
+    await query.message.reply_text(
+        "✏️ Отправьте новый заголовок\n\n"
+        "Или /cancel для отмены."
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+
+async def edit_body_manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Редактирование текста вручную"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data["waiting_edit_body"] = True
+    await query.message.reply_text(
+        "✏️ Отправьте новый текст (макс. 900 символов)\n\n"
+        "Или /cancel для отмены."
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+
+async def handle_manual_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ручного редактирования"""
+    if context.user_data.get("waiting_edit_title"):
+        new_title = update.message.text.strip()
+        if new_title and len(new_title) >= 3:
+            context.user_data["title"] = new_title
+            context.user_data["waiting_edit_title"] = False
+            await update.message.reply_text(f"✅ Заголовок обновлён:\n\n{new_title}")
+            
+            title = context.user_data.get("title", "")
+            body = context.user_data.get("body", "")
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
+                [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body_manual")],
+                [InlineKeyboardButton("🤖 Обработать ИИ", callback_data="ai_process")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
+            ])
+            
+            await update.message.reply_text(
+                f"📰 *Заголовок:* {title}\n\n"
+                f"📝 *Текст:*\n{body}\n\n"
+                f"Что дальше?",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        else:
+            await update.message.reply_text("❌ Заголовок слишком короткий (минимум 3 символа)")
+        return
+    
+    if context.user_data.get("waiting_edit_body"):
+        new_body = update.message.text.strip()
+        if new_body:
+            if len(new_body) > 900:
+                await update.message.reply_text("❌ Текст слишком длинный (макс. 900 символов)")
+                return
+            context.user_data["body"] = new_body
+            context.user_data["waiting_edit_body"] = False
+            await update.message.reply_text(f"✅ Текст обновлён!\n\n{new_body[:200]}...")
+            
+            title = context.user_data.get("title", "")
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
+                [InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title_manual")],
+                [InlineKeyboardButton("🤖 Обработать ИИ", callback_data="ai_process")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_input")]
+            ])
+            
+            await update.message.reply_text(
+                f"📰 *Заголовок:* {title}\n\n"
+                f"📝 *Текст:*\n{new_body}\n\n"
+                f"Что дальше?",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        else:
+            await update.message.reply_text("❌ Текст не может быть пустым")
+        return
+
+
+async def create_story_final_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Создание сторис из подготовленных данных"""
+    query = update.callback_query
+    await query.answer()
+    
+    photo = context.user_data.get("photo")
+    title = context.user_data.get("title")
+    body = context.user_data.get("body")
+    
+    if not photo or not title or not body:
+        await query.message.reply_text("❌ Не хватает данных. Нажмите /start.")
+        return
+    
+    msg = await query.message.reply_text("🎨 Создаю сторис...")
+    
+    try:
+        result = create_story(photo, title, body)
+        result.name = "fider_story.png"
+        
+        await query.message.reply_photo(
+            photo=result,
+            caption="✨ Готово!\n\nfider.by"
+        )
+        
+        context.user_data.clear()
+        context.user_data["state"] = "waiting_photo"
+        
+    except ValueError as e:
+        await query.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый текст.")
+        return
+    except Exception as e:
+        logger.exception(e)
+        await query.message.reply_text(f"❌ Ошибка: {str(e)}")
+        context.user_data.clear()
+        context.user_data["state"] = "waiting_photo"
+    
+    try:
+        await msg.delete()
+    except:
+        pass
+
+
+async def back_to_input_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Возврат к вводу текста"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data["state"] = "waiting_body"
+    await query.message.reply_text(
+        "✏️ Отправьте основной текст (макс. 900 символов)\n\n"
+        "Или нажмите /cancel для отмены."
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+
+async def continue_without_ai_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Продолжить без обработки ИИ"""
+    query = update.callback_query
+    await query.answer()
+    
+    body = context.user_data.get("original_body", "")
+    
+    context.user_data["body"] = body
+    context.user_data["state"] = "ready_to_create"
+    
+    title = context.user_data.get("title", "")
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
+        [InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title_manual")],
+        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body_manual")],
+        [InlineKeyboardButton("🤖 Обработать ИИ", callback_data="ai_process")]
+    ])
+    
+    await query.message.reply_text(
+        f"📰 *Заголовок:* {title}\n\n"
+        f"📝 *Текст:*\n{body}\n\n"
+        f"Текст {'можно сократить через ИИ до 600-650 символов' if len(body) > 650 else 'хорошей длины'}.\n\n"
+        f"Что делаем?",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена текущего действия"""
+    context.user_data.clear()
+    await update.message.reply_text("✅ Отменено. Нажмите /start для начала.")
+
+
+# ==================== ОСНОВНЫЕ ОБРАБОТЧИКИ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "waiting_photo"
-    context.user_data["dark_mode"] = False
 
+    ai_status = "✅ Доступен" if DEEPSEEK_API_KEY else "❌ Не настроен"
+    
     await update.message.reply_text(
-        "🟣 **Fider.by Story Bot**\n\n"
-        "✨ **ДОСТУПНЫЕ ТЕМЫ:**\n"
-        "☀️ /light — светлая тема (по умолчанию)\n"
-        "🌙 /dark — тёмная тема\n\n"
-        "📝 **СПОСОБЫ СОЗДАНИЯ СТОРИС:**\n\n"
-        "**1. РЕПОСТ ПОСТА**\n"
-        "Просто перешли любой пост в этот чат — бот автоматически извлечёт фото, заголовок и текст!\n\n"
-        "**2. РУЧНОЙ ВВОД**\n"
-        "• Отправь фото\n"
-        "• Отправь заголовок\n"
-        "• Отправь основной текст (макс. 900 символов)\n\n"
-        "📊 /stats — твоя статистика\n"
-        "🆘 /help — помощь",
-        parse_mode="Markdown"
+        f"🟣 Бот сторис Fider.by\n\n"
+        f"✨ ДОСТУПНЫЕ ФУНКЦИИ:\n"
+        f"1. Отправь фото\n"
+        f"2. Отправь заголовок\n"
+        f"3. Отправь основной текст (максимум 900 символов)\n\n"
+        f"🤖 DeepSeek AI: {ai_status}\n"
+        f"После отправки текста нажми кнопку 'Обработать через ИИ'\n"
+        f"ИИ перепишет текст в новостной формат 600-650 символов\n\n"
+        f"Я соберу готовую сторис 9:16."
     )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🆘 **Помощь по боту Fider.by**\n\n"
-        "**📱 КАК ИСПОЛЬЗОВАТЬ:**\n\n"
-        "**Способ 1 — Репост поста:**\n"
-        "• Найди любой пост в Telegram\n"
-        "• Нажми на него и выбери «Переслать»\n"
-        "• Отправь в этот чат\n"
-        "• Бот сам извлечёт фото, заголовок и текст и сразу сделает сторис!\n\n"
-        "**Способ 2 — Ручной ввод:**\n"
-        "1. /start — начать создание\n"
-        "2. Отправь фото\n"
-        "3. Отправь заголовок\n"
-        "4. Отправь основной текст\n\n"
-        "**🎨 КОМАНДЫ:**\n"
-        "/light — светлая тема\n"
-        "/dark — тёмная тема\n"
-        "/stats — статистика использования\n"
-        "/help — эта справка",
-        parse_mode="Markdown"
-    )
-
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats = load_stats()
-    user_id_str = str(update.effective_user.id)
-    
-    if user_id_str in stats:
-        count = stats[user_id_str]["count"]
-        last_used = stats[user_id_str]["last_used"]
-        if last_used:
-            last_used = datetime.fromisoformat(last_used).strftime("%d.%m.%Y %H:%M")
-        else:
-            last_used = "неизвестно"
-        
-        await update.message.reply_text(
-            f"📊 **Ваша статистика**\n\n"
-            f"• Создано сторис: **{count}**\n"
-            f"• Последнее использование: {last_used}\n\n"
-            f"Продолжайте создавать качественный контент с Fider.by! ✨",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text(
-            "📊 **Ваша статистика**\n\n"
-            "Вы ещё не создали ни одной сторис.\n\n"
-            "Начните прямо сейчас — отправьте /start или перешлите пост! 🚀",
-            parse_mode="Markdown"
-        )
-
-
-async def dark_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["dark_mode"] = True
-    await update.message.reply_text(
-        "🌙 **Включена тёмная тема**\n\n"
-        "Теперь все сторис будут создаваться в тёмном оформлении.\n\n"
-        "Отправляй фото или пересылай посты!",
-        parse_mode="Markdown"
-    )
-
-
-async def light_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["dark_mode"] = False
-    await update.message.reply_text(
-        "☀️ **Включена светлая тема**\n\n"
-        "Теперь все сторис будут создаваться в светлом оформлении.\n\n"
-        "Отправляй фото или пересылай посты!",
-        parse_mode="Markdown"
-    )
-
-
-async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает пересланные посты"""
-    message = update.message
-    
-    # Получаем текст из разных возможных источников
-    text = None
-    
-    # Если есть caption (для фото/видео)
-    if message.caption:
-        text = message.caption
-    # Если есть текст
-    elif message.text:
-        text = message.text
-    
-    # Если текст не найден, пробуем найти в оригинальном сообщении через forward_origin
-    if not text and message.forward_origin:
-        try:
-            # Пытаемся получить оригинальное сообщение
-            if hasattr(message.forward_origin, 'message'):
-                original = message.forward_origin.message
-                if original:
-                    text = original.caption or original.text
-        except:
-            pass
-    
-    if not text:
-        await update.message.reply_text(
-            "❌ **Не удалось найти текст в пересланном сообщении**\n\n"
-            "Попробуй:\n"
-            "1. Переслать пост с текстом\n"
-            "2. Или отправь фото и текст отдельно через /start",
-            parse_mode="Markdown"
-        )
-        return True
-    
-    # Ищем фото в сообщении
-    photo_bytes = None
-    
-    # Сначала проверяем есть ли фото в самом сообщении
-    if message.photo:
-        photo = message.photo[-1]
-        try:
-            file = await context.bot.get_file(photo.file_id)
-            photo_bytes = await file.download_as_bytearray()
-        except Exception as e:
-            logger.error(f"Ошибка загрузки фото: {e}")
-    elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
-        try:
-            file = await context.bot.get_file(message.document.file_id)
-            photo_bytes = await file.download_as_bytearray()
-        except Exception as e:
-            logger.error(f"Ошибка загрузки документа: {e}")
-    
-    # Если фото нет в самом сообщении, ищем в пересланном
-    if not photo_bytes and message.forward_origin:
-        try:
-            if hasattr(message.forward_origin, 'message'):
-                original = message.forward_origin.message
-                if original and original.photo:
-                    photo = original.photo[-1]
-                    file = await context.bot.get_file(photo.file_id)
-                    photo_bytes = await file.download_as_bytearray()
-        except Exception as e:
-            logger.error(f"Ошибка загрузки фото из оригинала: {e}")
-    
-    if not photo_bytes:
-        await update.message.reply_text(
-            "❌ **Не удалось найти фото в пересланном сообщении**\n\n"
-            "Попробуй:\n"
-            "1. Переслать пост с фото\n"
-            "2. Или отправь фото и текст отдельно через /start",
-            parse_mode="Markdown"
-        )
-        return True
-    
-    # Извлекаем заголовок и текст
-    try:
-        title, body = extract_title_and_body(text)
-        
-        if not title:
-            await update.message.reply_text(
-                "❌ **Не удалось извлечь заголовок из текста**\n\n"
-                f"Текст: {text[:100]}...\n\n"
-                "Попробуй другой пост или отправь данные вручную через /start",
-                parse_mode="Markdown"
-            )
-            return True
-        
-        dark_mode = context.user_data.get("dark_mode", False)
-        theme_name = "тёмной" if dark_mode else "светлой"
-        
-        msg = await update.message.reply_text(
-            f"📱 **Обработка поста...**\n\n"
-            f"📷 Фото: ✅\n"
-            f"📝 Заголовок: {title[:60]}{'...' if len(title) > 60 else ''}\n"
-            f"📄 Текст: {len(body)} символов\n"
-            f"🎨 Тема: {theme_name}\n\n"
-            f"⏳ Создаю сторис...",
-            parse_mode="Markdown"
-        )
-        
-        # Создаём сторис
-        result = create_story(photo_bytes, title, body, dark_mode)
-        result.name = "fider_story.png"
-        
-        await update.message.reply_photo(
-            photo=result,
-            caption=f"✨ **Готово!** Сторис создан из пересланного поста\n\n"
-                   f"📌 **{title[:80]}{'...' if len(title) > 80 else ''}**\n\n"
-                   f"#fiderby #сторис\n\n"
-                   f"💡 Хочешь другую тему? Используй /light или /dark",
-            parse_mode="Markdown"
-        )
-        
-        # Обновляем статистику
-        update_stats(update.effective_user.id)
-        
-        await msg.delete()
-        return True
-        
-    except ValueError as e:
-        await update.message.reply_text(
-            f"❌ **Ошибка:** {str(e)}\n\n"
-            f"Попробуй другой пост или отправь данные вручную через /start",
-            parse_mode="Markdown"
-        )
-        return True
-    except Exception as e:
-        logger.exception(e)
-        await update.message.reply_text(
-            f"❌ **Ошибка при обработке поста:** {str(e)}\n\n"
-            f"Попробуй ещё раз или отправь данные вручную через /start",
-            parse_mode="Markdown"
-        )
-        return True
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -590,7 +880,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["photo"] = bytes(photo_bytes)
         context.user_data["state"] = "waiting_title"
 
-        await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
+        await update.message.reply_text("✅ Фото получил в хорошем качестве. Теперь отправь заголовок.")
     except TimedOut:
         await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
     except Exception as e:
@@ -598,83 +888,85 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ошибка при загрузке файла.")
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Проверяем, есть ли это пересланное сообщение
-    if update.message.forward_origin or update.message.forward_from or update.message.forward_sender_name:
-        await handle_forwarded_post(update, context)
+async def handle_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка заголовка"""
+    if context.user_data.get("state") != "waiting_title":
         return
     
-    state = context.user_data.get("state")
+    title = update.message.text.strip()
 
-    if state == "waiting_title":
-        title = update.message.text.strip()
-
-        if len(title) < 5:
-            await update.message.reply_text("Заголовок слишком короткий. Отправь нормальный заголовок.")
-            return
-
-        context.user_data["title"] = title
-        context.user_data["state"] = "waiting_body"
-
-        await update.message.reply_text("✅ Заголовок получил. Теперь отправь основной текст (максимум 900 символов).")
+    if len(title) < 3:
+        await update.message.reply_text("❌ Заголовок слишком короткий (минимум 3 символа).")
         return
 
-    if state == "waiting_body":
-        body = update.message.text.strip()
-        photo = context.user_data.get("photo")
-        title = context.user_data.get("title")
-        dark_mode = context.user_data.get("dark_mode", False)
+    context.user_data["title"] = title
+    context.user_data["state"] = "waiting_body"
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Продолжить без обработки", callback_data="continue_without_ai")],
+        [InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="ai_process")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_title")]
+    ])
+    
+    await update.message.reply_text(
+        f"✅ Заголовок сохранён:\n\n{title}\n\n"
+        f"📝 Теперь отправь основной текст (макс. 900 символов)\n\n"
+        f"Или выбери действие:",
+        reply_markup=keyboard
+    )
 
-        if not photo or not title:
-            context.user_data.clear()
-            context.user_data["state"] = "waiting_photo"
-            await update.message.reply_text("Что-то потерялось. Нажми /start и начни заново.")
-            return
 
-        theme_name = "тёмной" if dark_mode else "светлой"
-        msg = await update.message.reply_text(f"🎨 Создаю сторис в {theme_name} теме...")
+async def back_to_title_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вернуться к вводу заголовка"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data["state"] = "waiting_title"
+    await query.message.reply_text("✏️ Отправьте новый заголовок.")
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
 
-        try:
-            result = create_story(photo, title, body, dark_mode)
-            result.name = "fider_story.png"
 
-            await update.message.reply_photo(
-                photo=result,
-                caption=f"✨ Готово в {theme_name} теме\n\nfider.by"
-            )
-            
-            update_stats(update.effective_user.id)
-            
-            context.user_data.clear()
-            context.user_data["state"] = "waiting_photo"
-            context.user_data["dark_mode"] = dark_mode
-
-        except ValueError as e:
-            await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый, более короткий текст.")
-            return
-        except Exception as e:
-            logger.exception(e)
-            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-            context.user_data.clear()
-            context.user_data["state"] = "waiting_photo"
-
-        try:
-            await msg.delete()
-        except Exception:
-            pass
-
+async def handle_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка основного текста"""
+    if context.user_data.get("state") != "waiting_body":
         return
-
-    # Если нет состояния и не пересланное сообщение
-    if update.message.text:
-        await update.message.reply_text(
-            "📱 **Привет!**\n\n"
-            "Ты можешь:\n"
-            "• Переслать любой пост — я сделаю из него сторис\n"
-            "• Нажать /start и создать сторис вручную\n"
-            "• Использовать /light или /dark для выбора темы",
-            parse_mode="Markdown"
-        )
+    
+    body = update.message.text.strip()
+    
+    if len(body) < 20:
+        await update.message.reply_text("❌ Текст слишком короткий (минимум 20 символов).")
+        return
+    
+    if len(body) > 900:
+        await update.message.reply_text("❌ Текст слишком длинный (макс. 900 символов).")
+        return
+    
+    context.user_data["original_body"] = body
+    context.user_data["temp_body"] = body
+    context.user_data["state"] = "ready_to_create"
+    
+    title = context.user_data.get("title", "")
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎨 Создать сторис", callback_data="create_story_final")],
+        [InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="ai_process")],
+        [InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title_manual")],
+        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body_manual")]
+    ])
+    
+    await update.message.reply_text(
+        f"✅ *Всё готово!*\n\n"
+        f"📰 *Заголовок:* {title}\n\n"
+        f"📝 *Текст:*\n{body}\n\n"
+        f"Текст {'можно сократить через ИИ до 600-650 символов' if len(body) > 650 else 'хорошей длины'}.\n\n"
+        f"Что делаем?",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
 
 
 async def post_init(app):
@@ -688,30 +980,48 @@ def main():
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
-        .connect_timeout(30.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
-        .pool_timeout(30.0)
+        .connect_timeout(60)
+        .read_timeout(120)
+        .write_timeout(120)
+        .pool_timeout(120)
         .build()
     )
 
+    # Команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("dark", dark_mode))
-    app.add_handler(CommandHandler("light", light_mode))
+    app.add_handler(CommandHandler("cancel", cancel))
+    
+    # Сообщения
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.IMAGE, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_title))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_body))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_edit))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_request))
+    
+    # Callback кнопки
+    app.add_handler(CallbackQueryHandler(continue_without_ai_callback, pattern="continue_without_ai"))
+    app.add_handler(CallbackQueryHandler(back_to_title_callback, pattern="back_to_title"))
+    app.add_handler(CallbackQueryHandler(back_to_input_callback, pattern="back_to_input"))
+    app.add_handler(CallbackQueryHandler(ai_process_callback, pattern="ai_process"))
+    app.add_handler(CallbackQueryHandler(ai_reprocess_callback, pattern="ai_reprocess"))
+    app.add_handler(CallbackQueryHandler(use_ai_result_callback, pattern="use_ai_result"))
+    app.add_handler(CallbackQueryHandler(edit_manually_callback, pattern="edit_manually"))
+    app.add_handler(CallbackQueryHandler(edit_title_manual_callback, pattern="edit_title_manual"))
+    app.add_handler(CallbackQueryHandler(edit_body_manual_callback, pattern="edit_body_manual"))
+    app.add_handler(CallbackQueryHandler(create_story_final_callback, pattern="create_story_final"))
 
     print("✅ FIDER STORY BOT STARTED")
-    print("🌓 Поддержка светлой и тёмной темы")
-    print("📱 Автоматическая обработка репостов постов")
+    if DEEPSEEK_API_KEY:
+        print("🤖 DeepSeek AI подключен и готов к работе")
+        print("📏 Текст будет перерабатываться в формат 600-650 символов")
+    else:
+        print("⚠️ DeepSeek AI не настроен (добавьте DEEPSEEK_API_KEY)")
 
     app.run_polling(
         drop_pending_updates=True,
         poll_interval=2.0,
-        timeout=30,
+        timeout=60,
         allowed_updates=Update.ALL_TYPES,
     )
 

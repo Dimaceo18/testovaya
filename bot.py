@@ -1,720 +1,3090 @@
-# -*- coding: utf-8 -*-
-
+import asyncio
+import sqlite3
+import csv
 import os
-import io
 import re
+import io
 import json
-import threading
-import logging
-from datetime import datetime
-from pathlib import Path
+import uuid
+from io import StringIO
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
 
-from flask import Flask
+from fastapi import FastAPI
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import httpx
+from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from openai import AsyncOpenAI
 
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
-from telegram.error import TimedOut
-
-logging.basicConfig(level=logging.INFO)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
-
-logger = logging.getLogger(__name__)
-
+# ==================== НАСТРОЙКИ ====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/grodno_news")
+SUGGEST_LINK = os.getenv("SUGGEST_LINK", "https://t.me/grodno_news_bot?start=suggest")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+CSV_URL = "https://rss.app/feeds/eblnvNTLpd5syIbd.csv"
+DB_PATH = "news.db"
 
-if not BOT_TOKEN:
-    raise RuntimeError("Нет BOT_TOKEN")
+# ==================== НАСТРОЙКИ МОНИТОРИНГА ====================
+MONITOR_CHANNEL_ID = os.getenv("MONITOR_CHANNEL_ID", CHANNEL_ID)
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
-web_app = Flask(__name__)
+REGIONS = {
+    "Гродно": [r"гродн[оа]?", r"гродненск", r"гродненский", r"гродненская"],
+    "Гомель": [r"гомел[ьа]?", r"гомельск", r"гомельский", r"гомельская"],
+    "Витебск": [r"витебск", r"витебский", r"витебская"],
+    "Могилев": [r"могил[её]в", r"могилевский", r"могилевская"],
+    "Брест": [r"брест", r"брестский", r"брестская"],
+}
 
-# Файл для хранения статистики
-STATS_FILE = Path("user_stats.json")
+COMPILED_REGIONS = {}
+for region, patterns in REGIONS.items():
+    combined = "|".join(patterns)
+    COMPILED_REGIONS[region] = re.compile(combined, re.IGNORECASE)
 
-def load_stats():
-    if STATS_FILE.exists():
-        try:
-            with open(STATS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
+# Каналы для публикации
+CHANNELS = {
+    "main": {
+        "name": "Основной канал",
+        "channel_id": CHANNEL_ID,
+        "link": CHANNEL_LINK
+    },
+    "grodno": {
+        "name": "Фидер Гродно",
+        "channel_id": os.getenv("CHANNEL_ID_GRODNO"),
+        "link": os.getenv("CHANNEL_LINK_GRODNO", "https://t.me/grodno_news")
+    },
+    "baranovichi": {
+        "name": "Фидер Барановичи",
+        "channel_id": os.getenv("CHANNEL_ID_BARANOVICHI"),
+        "link": os.getenv("CHANNEL_LINK_BARANOVICHI", "https://t.me/baranovichi_news")
+    },
+    "borisov": {
+        "name": "Фидер Борисов",
+        "channel_id": os.getenv("CHANNEL_ID_BORISOV"),
+        "link": os.getenv("CHANNEL_LINK_BORISOV", "https://t.me/borisov_news")
+    },
+    "vitebsk": {
+        "name": "Фидер Витебск",
+        "channel_id": os.getenv("CHANNEL_ID_VITEBSK"),
+        "link": os.getenv("CHANNEL_LINK_VITEBSK", "https://t.me/vitebsk_news")
+    },
+    "brest": {
+        "name": "Фидер Брест",
+        "channel_id": os.getenv("CHANNEL_ID_BREST"),
+        "link": os.getenv("CHANNEL_LINK_BREST", "https://t.me/brest_news")
+    }
+}
 
-def save_stats(stats):
-    with open(STATS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(stats, f, ensure_ascii=False, indent=2)
+deepseek_client = AsyncOpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com"
+) if DEEPSEEK_API_KEY else None
 
-@web_app.get("/")
-def health():
-    return "OK", 200
+pending_news: Dict[str, Dict] = {}
+user_sessions: Dict[int, Dict] = {}
 
+# Промпт для DeepSeek
+DEEPSEEK_PROMPT = """Перепиши новость в формате на 600-650 символов.
 
-def run_web():
-    port = int(os.getenv("PORT", "10000"))
-    web_app.run(host="0.0.0.0", port=port)
+Правила:
+- Удали смайлики и рекламу
+- Разбей на 2-3 абзаца (пустая строка между абзацами)
+- Сохрани главные факты
+- Заголовок короткий и информативный
 
+ВАЖНО: НЕ пиши слова "Заголовок:" и "Текст:". Просто напиши сначала заголовок, потом пустую строку, потом текст.
 
-W, H = 1080, 1920
+Пример правильного ответа:
+Новый парк открыли в Гродно
 
-PURPLE = (111, 55, 245)
-WHITE = (255, 255, 255)
-BLACK = (7, 7, 10)
-LIGHT_TEXT = (20, 22, 32)
-DARK_TEXT = (255, 255, 255)
+В центре Гродно состоялось торжественное открытие нового парка культуры и отдыха. На мероприятии присутствовали городские власти и жители.
 
-FONT_BOLD = "Montserrat-Black.ttf"
-FONT_REGULAR = "Montserrat-Bold.ttf"
+Парк занимает площадь 5 гектаров. Здесь установлены скамейки, фонари и детская площадка. Полностью завершить благоустройство планируют к концу года."""
 
+# Промпт для Тридс
+TRIDS_PROMPT = """Перепиши новость в формате до 400 символов для Тридс.
 
-def font(path, size):
-    try:
-        return ImageFont.truetype(path, size)
-    except:
-        return ImageFont.load_default()
+Правила:
+- Удали смайлики и рекламу
+- Разбей на 2-3 абзаца (пустая строка между абзацами)
+- Сохрани главные факты
+- Заголовок короткий и информативный
+- Текст должен быть динамичным и вовлекающим
 
+ВАЖНО: НЕ пиши слова "Заголовок:" и "Текст:". Просто напиши сначала заголовок, потом пустую строку, потом текст.
 
-def crop_cover(img, size):
-    target_w, target_h = size
-    img_w, img_h = img.size
-    scale = max(target_w / img_w, target_h / img_h)
+Пример правильного ответа:
+Новый парк открыли в Гродно
 
-    img = img.resize((int(img_w * scale), int(img_h * scale)), Image.LANCZOS)
+В центре Гродно состоялось торжественное открытие нового парка культуры и отдыха. На мероприятии присутствовали городские власти и жители.
 
-    left = (img.width - target_w) // 2
-    top = (img.height - target_h) // 2
+Парк занимает площадь 5 гектаров. Здесь установлены скамейки, фонари и детская площадка. Полностью завершить благоустройство планируют к концу года."""
 
-    return img.crop((left, top, left + target_w, top + target_h))
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+def remove_emojis(text: str) -> str:
+    if not text:
+        return ""
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F1E0-\U0001F1FF"
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA70-\U0001FAFF"
+        "]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub(r'', text)
 
+# ==================== ФУНКЦИИ МОНИТОРИНГА ====================
+def find_region(text: str) -> Optional[str]:
+    if not text:
+        return None
+    for region, pattern in COMPILED_REGIONS.items():
+        if pattern.search(text):
+            return region
+    return None
 
-def wrap_text(draw, text, fnt, max_width):
+def create_post_link(channel_id: int, message_id: int) -> str:
+    channel_id_str = str(channel_id).replace("-100", "")
+    return f"https://t.me/c/{channel_id_str}/{message_id}"
+
+def format_caption(title: str, body: str) -> str:
+    title = remove_emojis(title) if title else ""
+    body = remove_emojis(body) if body else ""
+    
+    if not title and not body:
+        return ""
+    if title and not body:
+        return f"<b>{title}</b>"
+    if not title and body:
+        return body
+    return f"<b>{title}</b>\n{body}"
+
+def wrap_text_auto(text: str, font, max_width: int, max_lines: int = 6) -> List[str]:
     words = text.split()
     lines = []
-    line = ""
-
+    current_line = []
     for word in words:
-        test = line + " " + word if line else word
-        box = draw.textbbox((0, 0), test, font=fnt)
-
-        if box[2] <= max_width:
-            line = test
+        test_line = ' '.join(current_line + [word])
+        try:
+            bbox = font.getbbox(test_line)
+            width = bbox[2] - bbox[0]
+        except:
+            width = len(test_line) * 20
+        if width <= max_width:
+            current_line.append(word)
         else:
-            if line:
-                lines.append(line)
-            line = word
-
-    if line:
-        lines.append(line)
-
+            if current_line:
+                lines.append(' '.join(current_line))
+                current_line = [word]
+            else:
+                lines.append(word)
+        if len(lines) >= max_lines:
+            break
+    if current_line and len(lines) < max_lines:
+        lines.append(' '.join(current_line))
     return lines
 
-
-def fit_text(draw, text, font_path, max_width, max_height, start_size, min_size, gap):
-    size = start_size
-
-    while size >= min_size:
-        fnt = font(font_path, size)
-        lines = wrap_text(draw, text, fnt, max_width)
-        total_h = len(lines) * (size + gap)
-
-        if total_h <= max_height:
-            return fnt, lines
-
-        size -= 2
-
-    fnt = font(font_path, min_size)
-    lines = wrap_text(draw, text, fnt, max_width)
-    return fnt, lines
-
-
-def draw_l_shape_corner(draw, x, y, width, height, thickness, color):
-    """Рисует Г-образную плашку в левом верхнем углу"""
-    draw.rectangle((x, y, x + thickness, y + height), fill=color)
-    draw.rectangle((x, y, x + width, y + thickness), fill=color)
-
-
-def extract_title_and_body(text):
-    """Извлекает заголовок и основной текст из поста"""
-    lines = text.strip().split('\n')
-    
-    # Фильтруем пустые строки
-    lines = [l.strip() for l in lines if l.strip()]
-    
-    if not lines:
-        return None, None
-    
-    # Заголовок - первая строка
-    title = lines[0]
-    
-    # Убираем возможные маркеры жирности
-    title = re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', title)
-    title = re.sub(r'[_~`#>|]', '', title)
-    
-    # Остальное - основной текст
-    body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
-    
-    # Очищаем от лишних символов
-    title = re.sub(r'[^\w\s\.\,\!\?\-\(\)]', '', title)
-    body = re.sub(r'[^\w\s\.\,\!\?\-\(\)\'\"]', '', body)
-    
-    # Ограничиваем длину
-    if len(title) > 200:
-        title = title[:197] + "..."
-    
-    if len(body) > 900:
-        body = body[:897] + "..."
-        raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
-    
-    return title, body
-
-
-def create_story(photo_bytes, title, body, dark_mode=False):
-    if len(body) > 900:
-        raise ValueError("Текст слишком длинный, сделайте его короче (максимум 900 символов)")
-
+def process_photo(photo_bytes: bytes, title_text: str) -> io.BytesIO:
+    if not photo_bytes or len(photo_bytes) == 0:
+        raise ValueError("Фото пустое")
+    print(f"🖼️ Обработка фото, размер: {len(photo_bytes) / 1024:.1f}KB")
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
-
-    # Выбираем цвета в зависимости от темы
-    bg_color = BLACK if dark_mode else WHITE
-    text_color = DARK_TEXT if dark_mode else LIGHT_TEXT
-    
-    canvas = Image.new("RGB", (W, H), bg_color)
-    draw = ImageDraw.Draw(canvas)
-
-    # ========== ВЕРХНЯЯ ПОЛОСА (15px) ==========
-    top_line_height = 15
-    draw.rectangle((0, 0, W, top_line_height), fill=PURPLE)
-
-    # ========== ФОТО ==========
-    photo_h = int(H * 0.4)
-    photo = crop_cover(img, (W, photo_h))
-    
-    if dark_mode:
-        photo = ImageEnhance.Brightness(photo).enhance(0.85)
+    w, h = img.size
+    target_ratio = 4 / 5
+    cur_ratio = w / h
+    if cur_ratio > target_ratio:
+        new_w = int(h * target_ratio)
+        left = (w - new_w) // 2
+        img = img.crop((left, 0, left + new_w, h))
     else:
-        photo = ImageEnhance.Brightness(photo).enhance(0.92)
+        new_h = int(w / target_ratio)
+        top = (h - new_h) // 2
+        img = img.crop((0, top, w, top + new_h))
+    img = img.resize((1080, 1350), Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.85)
+    w, h = img.size
+    gh = int(h * 0.48)
+    if gh > 0:
+        overlay_alpha = Image.new("L", (w, h), 0)
+        grad = Image.new("L", (1, gh), 0)
+        for y in range(gh):
+            a = int(220 * (y / max(1, gh - 1)))
+            grad.putpixel((0, y), a)
+        grad = grad.resize((w, gh))
+        overlay_alpha.paste(grad, (0, h - gh))
+        black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+        base = img.convert("RGBA")
+        overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+        img = Image.alpha_composite(base, overlay).convert("RGB")
+    draw = ImageDraw.Draw(img)
     
-    canvas.paste(photo, (0, top_line_height))
-
-    # ========== Г-ОБРАЗНАЯ ПЛАШКА НА ФОТО ==========
-    corner_x = 30
-    corner_y = top_line_height + 30
-    corner_width = 120
-    corner_height = 80
-    corner_thickness = 12
-    draw_l_shape_corner(draw, corner_x, corner_y, corner_width, corner_height, corner_thickness, PURPLE)
-
-    # ========== ПОЛОСА ПОСЛЕ ФОТО (15px) ==========
-    bottom_line_height = 15
-    divider_y = photo_h + top_line_height
-    draw.rectangle((0, divider_y, W, divider_y + bottom_line_height), fill=PURPLE)
-
-    # ========== ЗОНА С ТЕКСТОМ ==========
-    text_bg_start = divider_y + bottom_line_height
-    draw.rectangle((0, text_bg_start, W, H), fill=bg_color)
-
-    # ========== ЗАГОЛОВОК ==========
-    title_font, title_lines = fit_text(
-        draw, title, FONT_BOLD, max_width=900, max_height=300,
-        start_size=58, min_size=38, gap=8,
-    )
-
-    y = text_bg_start + 35
-
-    for line in title_lines[:5]:
-        draw.text((80, y), line, font=title_font, fill=text_color)
-        y += title_font.size + 10
-
-    # ========== ОСНОВНОЙ ТЕКСТ ==========
-    y += 25
-
-    if body:
-        available_height = H - y - 150
-        body_font, body_lines = fit_text(
-            draw, body, FONT_REGULAR, max_width=900, max_height=available_height,
-            start_size=33, min_size=16, gap=8,
-        )
-
-        for line in body_lines:
-            draw.text((80, y), line, font=body_font, fill=text_color)
-            y += body_font.size + 8
-
-    # ========== ПОДВАЛ ==========
-    thin_line_y = H - 80
-    thin_line_height = 2
-    draw.rectangle((0, thin_line_y, W, thin_line_y + thin_line_height), fill=PURPLE)
+    font = None
+    font_size = 68
     
-    # Кнопка fider.by слева
-    button_font = font(FONT_BOLD, 28)
-    button_text = "fider.by"
+    font_paths = [
+        "Montserrat-Black.ttf",
+        "fonts/Montserrat-Black.ttf",
+        "/app/Montserrat-Black.ttf",
+        "Montserrat-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
     
-    bbox = draw.textbbox((0, 0), button_text, font=button_font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    for font_path in font_paths:
+        try:
+            if os.path.exists(font_path):
+                font = ImageFont.truetype(font_path, font_size)
+                print(f"✅ Загружен шрифт: {font_path}")
+                break
+        except:
+            continue
     
-    button_padding_x = 20
-    button_padding_y = 12
-    button_x = 50
-    button_y = thin_line_y + thin_line_height + 20
+    if font is None:
+        font = ImageFont.load_default()
+        print("⚠️ Шрифт не найден, использую стандартный")
     
-    button_bg_x1 = button_x
-    button_bg_y1 = button_y
-    button_bg_x2 = button_x + text_width + button_padding_x * 2
-    button_bg_y2 = button_y + text_height + button_padding_y * 2
+    margin_x = int(img.width * 0.05)
+    margin_bottom = int(img.height * 0.08)
+    max_text_width = img.width - 2 * margin_x
+    title = title_text.upper()
+    lines = wrap_text_auto(title, font, max_text_width, max_lines=6)
     
-    draw.rounded_rectangle(
-        (button_bg_x1, button_bg_y1, button_bg_x2, button_bg_y2),
-        radius=25,
-        fill=PURPLE
-    )
+    if font == ImageFont.load_default():
+        line_height = 35
+        spacing = 10
+    else:
+        line_height = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
+        spacing = int(line_height * 0.25)
     
-    text_x = button_x + button_padding_x
-    text_y = button_y + button_padding_y
-    draw.text(
-        (text_x, text_y),
-        button_text,
-        font=button_font,
-        fill=WHITE
-    )
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * spacing
+    y = img.height - margin_bottom - total_text_height
     
-    # Надпись справа
-    right_text_font = font(FONT_BOLD, 22)
-    right_text = "ПРИСЫЛАЙТЕ НОВОСТИ В ДИРЕКТ"
+    for line in lines:
+        if font == ImageFont.load_default():
+            line_width = len(line) * 20
+        else:
+            bbox = font.getbbox(line)
+            line_width = bbox[2] - bbox[0]
+        x = (img.width - line_width) // 2
+        
+        offsets = [(-2, -2), (-2, 2), (2, -2), (2, 2), (0, -2), (0, 2), (-2, 0), (2, 0)]
+        for dx, dy in offsets:
+            draw.text((x + dx, y + dy), line, font=font, fill=(0, 0, 0, 255))
+        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+        y += line_height + spacing
     
-    right_text_bbox = draw.textbbox((0, 0), right_text, font=right_text_font)
-    right_text_width = right_text_bbox[2] - right_text_bbox[0]
-    right_text_height = right_text_bbox[3] - right_text_bbox[1]
-    
-    right_text_x = W - right_text_width - 50
-    right_text_y = button_y + (button_padding_y * 2 + text_height - right_text_height) // 2
-    
-    draw.text(
-        (right_text_x, right_text_y),
-        right_text,
-        font=right_text_font,
-        fill=PURPLE
-    )
-
     output = io.BytesIO()
-    canvas.save(output, format="PNG", quality=95)
+    quality = 85
+    while quality >= 60:
+        output.seek(0)
+        output.truncate()
+        img.save(output, format="JPEG", quality=quality, subsampling=0, optimize=True)
+        size = output.tell() / (1024 * 1024)
+        if size <= 15:
+            break
+        quality -= 10
     output.seek(0)
+    if output.getbuffer().nbytes == 0:
+        raise ValueError("Результирующий файл пустой")
+    print(f"✅ Фото готово: {output.getbuffer().nbytes / (1024 * 1024):.2f}MB, строк: {len(lines)}")
     return output
 
+# ==================== БАЗА ДАННЫХ ====================
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS published_news (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT UNIQUE,
+                title TEXT,
+                published_at TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT,
+                photo_bytes BLOB,
+                schedule_time TIMESTAMP,
+                created_at TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT,
+                video_bytes BLOB,
+                schedule_time TIMESTAMP,
+                created_at TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_multi_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT,
+                photo_bytes BLOB,
+                channels TEXT,
+                schedule_time TIMESTAMP,
+                created_at TIMESTAMP
+            )
+        """)
+    print("✅ База данных готова")
 
-def update_stats(user_id):
-    """Обновляет статистику пользователя"""
-    stats = load_stats()
-    user_id_str = str(user_id)
-    
-    if user_id_str not in stats:
-        stats[user_id_str] = {"count": 0, "last_used": None}
-    
-    stats[user_id_str]["count"] += 1
-    stats[user_id_str]["last_used"] = datetime.now().isoformat()
-    save_stats(stats)
+def save_scheduled_post(text: str, photo_bytes: bytes, schedule_time: datetime):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO scheduled_posts (text, photo_bytes, schedule_time, created_at) VALUES (?, ?, ?, ?)",
+            (text, photo_bytes, schedule_time, datetime.now())
+        )
 
+def save_scheduled_video(text: str, video_bytes: bytes, schedule_time: datetime):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO scheduled_videos (text, video_bytes, schedule_time, created_at) VALUES (?, ?, ?, ?)",
+            (text, video_bytes, schedule_time, datetime.now())
+        )
 
+def save_scheduled_multi_post(text: str, photo_bytes: bytes, channels: List[str], schedule_time: datetime):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO scheduled_multi_posts (text, photo_bytes, channels, schedule_time, created_at) VALUES (?, ?, ?, ?, ?)",
+            (text, photo_bytes, json.dumps(channels), schedule_time, datetime.now())
+        )
+
+def get_pending_scheduled_posts() -> List[Dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        result = conn.execute(
+            "SELECT id, text, photo_bytes, schedule_time FROM scheduled_posts WHERE schedule_time <= ?",
+            (datetime.now(),)
+        ).fetchall()
+        return [dict(row) for row in result]
+
+def get_pending_scheduled_videos() -> List[Dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        result = conn.execute(
+            "SELECT id, text, video_bytes, schedule_time FROM scheduled_videos WHERE schedule_time <= ?",
+            (datetime.now(),)
+        ).fetchall()
+        return [dict(row) for row in result]
+
+def get_pending_scheduled_multi_posts() -> List[Dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        result = conn.execute(
+            "SELECT id, text, photo_bytes, channels, schedule_time FROM scheduled_multi_posts WHERE schedule_time <= ?",
+            (datetime.now(),)
+        ).fetchall()
+        posts = []
+        for row in result:
+            post = dict(row)
+            post['channels'] = json.loads(post['channels'])
+            posts.append(post)
+        return posts
+
+def delete_scheduled_post(post_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM scheduled_posts WHERE id = ?", (post_id,))
+
+def delete_scheduled_video(video_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM scheduled_videos WHERE id = ?", (video_id,))
+
+def delete_scheduled_multi_post(post_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM scheduled_multi_posts WHERE id = ?", (post_id,))
+
+def is_already_published(url: str) -> bool:
+    with sqlite3.connect(DB_PATH) as conn:
+        result = conn.execute("SELECT 1 FROM published_news WHERE url = ?", (url,)).fetchone()
+        return result is not None
+
+def save_published(url: str, title: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO published_news (url, title, published_at) VALUES (?, ?, ?)",
+            (url, title, datetime.now())
+        )
+
+# ==================== ПАРСЕРЫ ====================
+async def fetch_news_from_csv(limit: int = 10) -> List[Dict]:
+    news_list = []
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(CSV_URL, headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; GrodnoBot/1.0)'
+            })
+            response.raise_for_status()
+            reader = csv.DictReader(StringIO(response.text))
+            for row in reader:
+                news_list.append({
+                    'url': row['Link'],
+                    'title': row.get('Title', ''),
+                    'published_at': row.get('Date', datetime.now().isoformat()),
+                })
+            return news_list[:limit]
+    except Exception as e:
+        print(f"❌ Ошибка при чтении CSV: {e}")
+        return []
+
+async def fetch_article_image(url: str) -> Optional[bytes]:
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            image_url = og_image['content']
+            if image_url.startswith('//'):
+                image_url = 'https:' + image_url
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(image_url)
+                if resp.status_code == 200:
+                    return resp.content
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка поиска фото: {e}")
+        return None
+
+async def fetch_article_text(url: str) -> str:
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+        for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+            tag.decompose()
+        article = soup.find('article') or soup.find('div', class_=re.compile(r'(content|post-content|entry-content)'))
+        paragraphs = article.find_all('p') if article else soup.find_all('p')
+        text_parts = []
+        for p in paragraphs:
+            text = p.get_text(strip=True)
+            if len(text) > 40:
+                text_parts.append(text)
+        full_text = '\n\n'.join(text_parts[:15]) if text_parts else "Текст статьи не найден."
+        if len(full_text) > 600:
+            full_text = full_text[:600] + "\n\n...(продолжение на сайте)"
+        return full_text
+    except Exception as e:
+        print(f"❌ Ошибка получения текста: {e}")
+        return "Не удалось загрузить текст статьи."
+
+# ==================== КНОПКИ ====================
+def get_main_keyboard():
+    keyboard = [[InlineKeyboardButton("📰 Начать парсинг (10 новостей)", callback_data="start_parsing")]]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_news_keyboard(news_id: str):
+    keyboard = [[
+        InlineKeyboardButton("✅ Опубликовать в канал", callback_data=f"publish_news:{news_id}"),
+        InlineKeyboardButton("❌ Пропустить", callback_data=f"skip_news:{news_id}")
+    ]]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_post_preview_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("🎨 Оформить пост", callback_data="design_post")],
+        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text")],
+        [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process")],
+        [InlineKeyboardButton("📱 Сделать для Тридс", callback_data="trids_process")],
+        [InlineKeyboardButton("📤 Опубликовать без оформления", callback_data="publish_raw")],
+        [InlineKeyboardButton("🌍 Опубликовать во все каналы", callback_data="publish_to_all_channels")],
+        [InlineKeyboardButton("🎯 Выбрать канал", callback_data="select_channel_menu")],
+        [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_video_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_video_text")],
+        [InlineKeyboardButton("🤖 Обработать текст (ИИ)", callback_data="ai_process_video")],
+        [InlineKeyboardButton("📱 Сделать для Тридс", callback_data="trids_process_video")],
+        [InlineKeyboardButton("📹 Опубликовать видео", callback_data="publish_video")],
+        [InlineKeyboardButton("🌍 Опубликовать во все каналы", callback_data="publish_video_to_all_channels")],
+        [InlineKeyboardButton("🎯 Выбрать канал", callback_data="select_channel_menu_video")],
+        [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_video_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_designed_post_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("✅ Опубликовать в основной канал", callback_data="publish_designed")],
+        [InlineKeyboardButton("🌍 Опубликовать во все каналы", callback_data="publish_to_all_channels")],
+        [InlineKeyboardButton("🎯 Выбрать канал", callback_data="select_channel_menu_designed")],
+        [InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_designed_text")],
+        [InlineKeyboardButton("⏰ Отложить публикацию", callback_data="schedule_designed")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_ai_result_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("✅ Опубликовать в основной канал", callback_data="publish_raw")],
+        [InlineKeyboardButton("🌍 Опубликовать во все каналы", callback_data="publish_to_all_channels")],
+        [InlineKeyboardButton("🎯 Выбрать канал", callback_data="select_channel_menu_ai")],
+        [InlineKeyboardButton("🎨 Оформить пост", callback_data="design_post")],
+        [InlineKeyboardButton("🔄 Переделать текст", callback_data="ai_reprocess")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_preview")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_video_ai_result_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📹 Опубликовать видео", callback_data="publish_video")],
+        [InlineKeyboardButton("🌍 Опубликовать во все каналы", callback_data="publish_video_to_all_channels")],
+        [InlineKeyboardButton("🎯 Выбрать канал", callback_data="select_channel_menu_video")],
+        [InlineKeyboardButton("✏️ Редактировать вручную", callback_data="edit_video_text")],
+        [InlineKeyboardButton("🔄 Переделать текст", callback_data="ai_reprocess_video")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_video_preview")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_trids_result_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("✅ Опубликовать в основной канал", callback_data="publish_raw")],
+        [InlineKeyboardButton("🌍 Опубликовать во все каналы", callback_data="publish_to_all_channels")],
+        [InlineKeyboardButton("🎯 Выбрать канал", callback_data="select_channel_menu_trids")],
+        [InlineKeyboardButton("🎨 Оформить пост", callback_data="design_post")],
+        [InlineKeyboardButton("🔄 Переделать для Тридс", callback_data="trids_reprocess")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_preview")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_trids_video_result_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📹 Опубликовать видео", callback_data="publish_video")],
+        [InlineKeyboardButton("🌍 Опубликовать во все каналы", callback_data="publish_video_to_all_channels")],
+        [InlineKeyboardButton("🎯 Выбрать канал", callback_data="select_channel_menu_video_trids")],
+        [InlineKeyboardButton("✏️ Редактировать вручную", callback_data="edit_video_text")],
+        [InlineKeyboardButton("🔄 Переделать для Тридс", callback_data="trids_reprocess_video")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_video_preview")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_schedule_keyboard():
+    schedule_times = [
+        ("Через 30 мин", "30min"),
+        ("9:05", "9:05"), ("10:05", "10:05"), ("11:05", "11:05"),
+        ("12:05", "12:05"), ("13:05", "13:05"), ("14:05", "14:05"),
+        ("15:05", "15:05"), ("16:05", "16:05"), ("17:05", "17:05"),
+        ("18:05", "18:05"), ("19:05", "19:05"), ("20:05", "20:05"),
+        ("21:05", "21:05"), ("22:05", "22:05")
+    ]
+    keyboard = []
+    row = []
+    for i, (label, value) in enumerate(schedule_times):
+        row.append(InlineKeyboardButton(label, callback_data=f"schedule_time:{value}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_preview")])
+    return InlineKeyboardMarkup(keyboard)
+
+def get_video_schedule_keyboard():
+    schedule_times = [
+        ("Через 30 мин", "30min"),
+        ("9:05", "9:05"), ("10:05", "10:05"), ("11:05", "11:05"),
+        ("12:05", "12:05"), ("13:05", "13:05"), ("14:05", "14:05"),
+        ("15:05", "15:05"), ("16:05", "16:05"), ("17:05", "17:05"),
+        ("18:05", "18:05"), ("19:05", "19:05"), ("20:05", "20:05"),
+        ("21:05", "21:05"), ("22:05", "22:05")
+    ]
+    keyboard = []
+    row = []
+    for i, (label, value) in enumerate(schedule_times):
+        row.append(InlineKeyboardButton(label, callback_data=f"schedule_video_time:{value}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_video_preview")])
+    return InlineKeyboardMarkup(keyboard)
+
+def get_channel_list_keyboard(source: str = "post"):
+    keyboard = []
+    for key, channel in CHANNELS.items():
+        if channel["channel_id"]:
+            keyboard.append([InlineKeyboardButton(f"📢 {channel['name']}", callback_data=f"publish_to_channel:{key}:{source}")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data=f"back_to_{source}")])
+    return InlineKeyboardMarkup(keyboard)
+
+def get_post_publish_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_LINK)],
+        [InlineKeyboardButton("📝 Прислать нам новость", url=SUGGEST_LINK)]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ==================== ОБРАБОТЧИКИ ПОЛУЧЕНИЯ МЕДИА ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    context.user_data["state"] = "waiting_photo"
-    context.user_data["dark_mode"] = False
-
     await update.message.reply_text(
-        "🟣 **Fider.by Story Bot**\n\n"
-        "✨ **ДОСТУПНЫЕ ТЕМЫ:**\n"
-        "☀️ /light — светлая тема (по умолчанию)\n"
-        "🌙 /dark — тёмная тема\n\n"
-        "📝 **СПОСОБЫ СОЗДАНИЯ СТОРИС:**\n\n"
-        "**1. РЕПОСТ ПОСТА**\n"
-        "Просто перешли любой пост в этот чат — бот автоматически извлечёт фото, заголовок и текст!\n\n"
-        "**2. РУЧНОЙ ВВОД**\n"
-        "• Отправь фото\n"
-        "• Отправь заголовок\n"
-        "• Отправь основной текст (макс. 900 символов)\n\n"
-        "📊 /stats — твоя статистика\n"
-        "🆘 /help — помощь",
-        parse_mode="Markdown"
+        "🤖 *Бот для публикации новостей*\n\n"
+        "📸 *Отправьте мне фото с подписью* - я помогу оформить и опубликовать\n"
+        "📹 *Отправьте видео с подписью* - опубликую в канал\n"
+        "📰 *Нажмите кнопку \"Начать парсинг\"* - получу свежие новости\n\n"
+        "*Доступные функции:*\n"
+        "• 🎨 Оформление постов с текстом на фото\n"
+        "• ✏️ Редактирование текста\n"
+        "• 🤖 Обработка текста через ИИ (DeepSeek)\n"
+        "• 📱 Создание постов для Тридс (400 символов)\n"
+        "• 🌍 Публикация в несколько каналов\n"
+        "• ⏰ Отложенная публикация\n\n"
+        "👇 *Нажмите кнопку*",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
     )
 
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🆘 **Помощь по боту Fider.by**\n\n"
-        "**📱 КАК ИСПОЛЬЗОВАТЬ:**\n\n"
-        "**Способ 1 — Репост поста:**\n"
-        "• Найди любой пост в Telegram\n"
-        "• Нажми на него и выбери «Переслать»\n"
-        "• Отправь в этот чат\n"
-        "• Бот сам извлечёт фото, заголовок и текст и сразу сделает сторис!\n\n"
-        "**Способ 2 — Ручной ввод:**\n"
-        "1. /start — начать создание\n"
-        "2. Отправь фото\n"
-        "3. Отправь заголовок\n"
-        "4. Отправь основной текст\n\n"
-        "**🎨 КОМАНДЫ:**\n"
-        "/light — светлая тема\n"
-        "/dark — тёмная тема\n"
-        "/stats — статистика использования\n"
-        "/help — эта справка",
-        parse_mode="Markdown"
-    )
-
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats = load_stats()
-    user_id_str = str(update.effective_user.id)
-    
-    if user_id_str in stats:
-        count = stats[user_id_str]["count"]
-        last_used = stats[user_id_str]["last_used"]
-        if last_used:
-            last_used = datetime.fromisoformat(last_used).strftime("%d.%m.%Y %H:%M")
-        else:
-            last_used = "неизвестно"
-        
-        await update.message.reply_text(
-            f"📊 **Ваша статистика**\n\n"
-            f"• Создано сторис: **{count}**\n"
-            f"• Последнее использование: {last_used}\n\n"
-            f"Продолжайте создавать качественный контент с Fider.by! ✨",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text(
-            "📊 **Ваша статистика**\n\n"
-            "Вы ещё не создали ни одной сторис.\n\n"
-            "Начните прямо сейчас — отправьте /start или перешлите пост! 🚀",
-            parse_mode="Markdown"
-        )
-
-
-async def dark_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["dark_mode"] = True
-    await update.message.reply_text(
-        "🌙 **Включена тёмная тема**\n\n"
-        "Теперь все сторис будут создаваться в тёмном оформлении.\n\n"
-        "Отправляй фото или пересылай посты!",
-        parse_mode="Markdown"
-    )
-
-
-async def light_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["dark_mode"] = False
-    await update.message.reply_text(
-        "☀️ **Включена светлая тема**\n\n"
-        "Теперь все сторис будут создаваться в светлом оформлении.\n\n"
-        "Отправляй фото или пересылай посты!",
-        parse_mode="Markdown"
-    )
-
-
-async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает пересланные посты"""
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
+    user_id = message.from_user.id
     
-    # Получаем текст из разных возможных источников
-    text = None
+    if not message.photo:
+        return
     
-    # Если есть caption (для фото/видео)
-    if message.caption:
-        text = message.caption
-    # Если есть текст
-    elif message.text:
-        text = message.text
+    caption = message.caption or ""
+    photo = message.photo[-1]
     
-    # Если текст не найден, пробуем найти в оригинальном сообщении через forward_origin
-    if not text and message.forward_origin:
+    try:
+        file = await context.bot.get_file(photo.file_id)
+        photo_bytes = await file.download_as_bytearray()
+        
+        user_sessions[user_id] = {
+            "type": "photo",
+            "text": remove_emojis(caption),
+            "photo_bytes": photo_bytes,
+            "photo_file_id": photo.file_id,
+            "video_bytes": None,
+            "original_text_for_reprocess": remove_emojis(caption)
+        }
+        
+        await message.reply_photo(
+            photo=photo.file_id,
+            caption="✅ Пост получен!" if len(caption) > 900 else (f"✅ Пост получен!\n\n{caption}" if caption else "✅ Пост получен!"),
+            reply_markup=get_post_preview_keyboard()
+        )
+        
+        if len(caption) > 900:
+            await message.reply_text(
+                f"📝 *Текст поста:*\n\n{caption}",
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await message.reply_text(f"❌ Ошибка загрузки фото: {e}")
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    user_id = message.from_user.id
+    
+    if not message.video:
+        return
+    
+    caption = message.caption or ""
+    video = message.video
+    
+    try:
+        file = await context.bot.get_file(video.file_id)
+        video_bytes = await file.download_as_bytearray()
+        
+        user_sessions[user_id] = {
+            "type": "video",
+            "text": remove_emojis(caption),
+            "photo_bytes": None,
+            "video_bytes": video_bytes,
+            "video_file_id": video.file_id,
+            "original_text_for_reprocess": remove_emojis(caption)
+        }
+        
+        await message.reply_video(
+            video=video.file_id,
+            caption="✅ Видео получено!" if len(caption) > 900 else (f"✅ Видео получено!\n\n{caption}" if caption else "✅ Видео получено!"),
+            reply_markup=get_video_keyboard()
+        )
+        
+        if len(caption) > 900:
+            await message.reply_text(
+                f"📝 *Текст видео:*\n\n{caption}",
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await message.reply_text(f"❌ Ошибка загрузки видео: {e}")
+
+# ==================== РЕДАКТИРОВАНИЕ ТЕКСТА ====================
+async def edit_text_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["waiting_for_edit"] = "photo"
+    await query.message.reply_text("✏️ Отправьте новый текст для поста. Или /cancel для отмены.")
+
+async def edit_video_text_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["waiting_for_edit"] = "video"
+    await query.message.reply_text("✏️ Отправьте новый текст для видео. Или /cancel для отмены.")
+
+async def edit_designed_text_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["waiting_for_edit"] = "designed"
+    await query.message.reply_text("✏️ Отправьте новый текст для поста. Или /cancel для отмены.")
+
+async def handle_edited_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    edit_type = context.user_data.get("waiting_for_edit")
+    
+    if not edit_type:
+        return
+    
+    new_text = update.message.text
+    session = user_sessions.get(user_id)
+    
+    if session:
+        session["text"] = new_text
+        session["original_text_for_reprocess"] = new_text
+        
+        if edit_type == "photo":
+            await update.message.reply_text(
+                f"✅ Текст обновлён!\n\n{new_text}",
+                reply_markup=get_post_preview_keyboard()
+            )
+            if session.get("photo_bytes"):
+                await update.message.reply_photo(
+                    photo=InputFile(io.BytesIO(session["photo_bytes"]), filename="post.jpg"),
+                    caption="🖼️ *Фото к посту*",
+                    parse_mode="Markdown"
+                )
+        elif edit_type == "video":
+            await update.message.reply_text(
+                f"✅ Текст обновлён!\n\n{new_text}",
+                reply_markup=get_video_keyboard()
+            )
+            if session.get("video_bytes"):
+                await update.message.reply_video(
+                    video=InputFile(io.BytesIO(session["video_bytes"]), filename="video.mp4"),
+                    caption="🎬 *Видео к посту*",
+                    parse_mode="Markdown"
+                )
+        elif edit_type == "designed":
+            if session.get("photo_bytes"):
+                await update.message.reply_photo(
+                    photo=InputFile(io.BytesIO(session["photo_bytes"]), filename="post.jpg"),
+                    caption=f"{new_text}\n\n✅ Текст обновлён!",
+                    reply_markup=get_designed_post_keyboard()
+                )
+            else:
+                await update.message.reply_text(
+                    f"{new_text}\n\n✅ Текст обновлён!",
+                    reply_markup=get_designed_post_keyboard()
+                )
+    
+    context.user_data["waiting_for_edit"] = None
+
+async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["waiting_for_edit"] = None
+    await update.message.reply_text("✅ Редактирование отменено.")
+
+# ==================== ОФОРМЛЕНИЕ ПОСТА ====================
+async def design_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session or session.get("type") != "photo":
+        await query.message.reply_text("❌ Оформить можно только фото")
+        return
+    
+    full_text = session.get("text", "")
+    if not full_text:
+        await query.message.reply_text("❌ Нет текста")
+        return
+    
+    lines = full_text.split('\n')
+    title_for_photo = lines[0][:150] if lines else "Пост"
+    
+    if not session.get("photo_bytes"):
+        await query.message.reply_text("❌ Нет фото")
+        return
+    
+    try:
+        await query.message.reply_text("🎨 Оформляю пост...")
+        
+        photo_io = process_photo(session["photo_bytes"], title_for_photo)
+        processed_bytes = photo_io.getvalue()
+        
+        session["photo_bytes"] = processed_bytes
+        session["designed"] = True
+        
+        await query.message.reply_photo(
+            photo=InputFile(io.BytesIO(processed_bytes), filename="post.jpg"),
+            caption=f"{full_text}\n\n✅ Пост оформлен!",
+            reply_markup=get_designed_post_keyboard()
+        )
+        
         try:
-            # Пытаемся получить оригинальное сообщение
-            if hasattr(message.forward_origin, 'message'):
-                original = message.forward_origin.message
-                if original:
-                    text = original.caption or original.text
+            await query.message.delete()
+        except:
+            pass
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await query.message.reply_text(f"⚠️ Ошибка оформления: {e}")
+
+# ==================== ФУНКЦИИ DEEPSEEK ====================
+async def call_deepseek_with_retry(prompt, text, max_attempts=2):
+    async def make_request(current_prompt, current_text):
+        try:
+            response = await deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": current_prompt},
+                    {"role": "user", "content": f"Перепиши эту новость в формате на 600-650 символов. Сохрани ВСЕ важные факты, цифры, даты, имена. НЕ ОБРЕЗАЙ текст, а ПЕРЕПИШИ его, сохраняя смысл. НЕ пиши слова ЗАГОЛОВОК и ТЕКСТ. Просто напиши сначала заголовок, потом пустую строку, потом текст.\n\n{current_text}"}
+                ],
+                temperature=0.7,
+                max_tokens=1000
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Ошибка запроса к DeepSeek: {e}")
+            raise e
+    
+    for attempt in range(max_attempts):
+        try:
+            content = await make_request(prompt, text)
+            
+            if not content or len(content.strip()) < 50:
+                print(f"Попытка {attempt + 1}: Получен пустой или слишком короткий ответ")
+                if attempt == max_attempts - 1:
+                    return content
+                continue
+            
+            char_count = len(content)
+            print(f"Попытка {attempt + 1}: Получен текст длиной {char_count} символов")
+            
+            if 550 <= char_count <= 700 or attempt == max_attempts - 1:
+                return content
+            
+            if char_count < 550:
+                text = f"СДЕЛАЙ ТЕКСТ ДЛИННЕЕ (сейчас {char_count} символов, нужно 600-650). Добавь больше деталей, фактов, цифр. Вот исходный текст:\n\n{text}"
+            else:
+                text = f"СДЕЛАЙ ТЕКСТ КОРОЧЕ (сейчас {char_count} символов, нужно 600-650). Убери лишние слова, но сохрани все важные факты. Вот исходный текст:\n\n{text}"
+        except Exception as e:
+            print(f"Ошибка при попытке {attempt + 1}: {e}")
+            if attempt == max_attempts - 1:
+                return ""
+    
+    return ""
+
+async def call_deepseek_with_retry_trids(prompt, text, max_attempts=2):
+    async def make_request(current_prompt, current_text):
+        try:
+            response = await deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": current_prompt},
+                    {"role": "user", "content": f"Перепиши эту новость в формате на 400 символов для Тридс. Сохрани ВСЕ важные факты, цифры, даты, имена. НЕ ОБРЕЗАЙ текст, а ПЕРЕПИШИ его, сохраняя смысл. НЕ пиши слова ЗАГОЛОВОК и ТЕКСТ. Просто напиши сначала заголовок, потом пустую строку, потом текст.\n\n{current_text}"}
+                ],
+                temperature=0.7,
+                max_tokens=1000
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Ошибка запроса к DeepSeek: {e}")
+            raise e
+    
+    for attempt in range(max_attempts):
+        try:
+            content = await make_request(prompt, text)
+            
+            if not content or len(content.strip()) < 30:
+                print(f"Попытка {attempt + 1}: Получен пустой или слишком короткий ответ")
+                if attempt == max_attempts - 1:
+                    return content
+                continue
+            
+            char_count = len(content)
+            print(f"Попытка {attempt + 1}: Получен текст длиной {char_count} символов")
+            
+            if 450 <= char_count <= 510 or attempt == max_attempts - 1:
+                return content
+            
+            if char_count < 450:
+                text = f"СДЕЛАЙ ТЕКСТ ДЛИННЕЕ (сейчас {char_count} символов, нужно 400). Добавь больше деталей, фактов, цифр. Вот исходный текст:\n\n{text}"
+            else:
+                text = f"СДЕЛАЙ ТЕКСТ КОРОЧЕ (сейчас {char_count} символов, нужно 400). Убери лишние слова, но сохрани все важные факты. Вот исходный текст:\n\n{text}"
+        except Exception as e:
+            print(f"Ошибка при попытке {attempt + 1}: {e}")
+            if attempt == max_attempts - 1:
+                return ""
+    
+    return ""
+
+# ==================== ОБРАБОТКА ИИ ====================
+async def ai_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if not deepseek_client:
+        await query.message.reply_text("❌ API DeepSeek не настроен.")
+        return
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных")
+        return
+    
+    text = session.get("text", "")
+    if not text:
+        await query.message.reply_text("❌ Нет текста для обработки")
+        return
+    
+    if "original_text_for_reprocess" not in session:
+        session["original_text_for_reprocess"] = text
+    
+    status_msg = await query.message.reply_text("🤖 Перерабатываю текст через DeepSeek AI (600-650 символов)...")
+    
+    try:
+        processed_text = await call_deepseek_with_retry(DEEPSEEK_PROMPT, text)
+        
+        if not processed_text or len(processed_text.strip()) < 50:
+            await status_msg.edit_text("❌ DeepSeek вернул пустой ответ. Попробуйте ещё раз.")
+            return
+        
+        processed_text = processed_text.strip()
+        
+        lines = processed_text.split('\n')
+        clean_lines = []
+        for line in lines:
+            line_clean = line.strip()
+            if line_clean.lower().startswith("заголовок:") or line_clean.lower().startswith("текст:"):
+                continue
+            clean_lines.append(line)
+        
+        processed_text = '\n'.join(clean_lines).strip()
+        
+        parts = processed_text.split('\n\n', 1)
+        if len(parts) == 2:
+            title = parts[0].strip()
+            body = parts[1].strip()
+        else:
+            first_newline = processed_text.find('\n')
+            if first_newline != -1 and first_newline < 100:
+                title = processed_text[:first_newline].strip()
+                body = processed_text[first_newline:].strip()
+            else:
+                if len(processed_text) < 200:
+                    title = processed_text[:70].strip()
+                    body = processed_text[70:].strip() if len(processed_text) > 70 else processed_text
+                else:
+                    first_line = processed_text.split('\n')[0]
+                    if len(first_line) < 100:
+                        title = first_line
+                        body = '\n'.join(processed_text.split('\n')[1:]).strip()
+                    else:
+                        body = processed_text
+        
+        title = re.sub(r'^[#*\-_\s]+', '', title).strip()
+        body = re.sub(r'^[#*\-_\s]+', '', body).strip()
+        
+        if not title and body:
+            title = body[:70].strip()
+            body = body[70:].strip() if len(body) > 70 else body
+        
+        if not body and title:
+            body = title
+            title = ""
+        
+        char_count = len(body)
+        
+        if title:
+            new_text = f"{title}\n\n{body}"
+        else:
+            new_text = body
+        
+        session["text"] = new_text
+        
+        if 600 <= char_count <= 650:
+            status = "✅ Отлично!"
+        elif 550 <= char_count < 600:
+            status = "⚠️ Немного коротковат (нужно 600-650)"
+        elif 650 < char_count <= 700:
+            status = "⚠️ Немного длинноват (нужно 600-650)"
+        else:
+            status = f"⚠️ Не соответствует (нужно 600-650)"
+        
+        await status_msg.delete()
+        
+        if session.get("photo_file_id"):
+            await query.message.reply_photo(
+                photo=session["photo_file_id"],
+                caption=f"✅ *Текст обработан!*\n\n"
+                        f"📰 *{title}*\n\n"
+                        f"📝 {body}\n\n"
+                        f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+                        f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_ai_result_keyboard()
+            )
+        else:
+            await query.message.reply_text(
+                f"✅ *Текст обработан!*\n\n"
+                f"📰 *{title}*\n\n"
+                f"📝 {body}\n\n"
+                f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+                f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_ai_result_keyboard()
+            )
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"❌ Ошибка DeepSeek: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+
+async def ai_process_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if not deepseek_client:
+        await query.message.reply_text("❌ API DeepSeek не настроен.")
+        return
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных")
+        return
+    
+    text = session.get("text", "")
+    if not text:
+        await query.message.reply_text("❌ Нет текста для обработки")
+        return
+    
+    if "original_text_for_reprocess" not in session:
+        session["original_text_for_reprocess"] = text
+    
+    status_msg = await query.message.reply_text("🤖 Перерабатываю текст через DeepSeek AI (600-650 символов)...")
+    
+    try:
+        processed_text = await call_deepseek_with_retry(DEEPSEEK_PROMPT, text)
+        
+        if not processed_text or len(processed_text.strip()) < 50:
+            await status_msg.edit_text("❌ DeepSeek вернул пустой ответ. Попробуйте ещё раз.")
+            return
+        
+        processed_text = processed_text.strip()
+        
+        lines = processed_text.split('\n')
+        clean_lines = []
+        for line in lines:
+            line_clean = line.strip()
+            if line_clean.lower().startswith("заголовок:") or line_clean.lower().startswith("текст:"):
+                continue
+            clean_lines.append(line)
+        
+        processed_text = '\n'.join(clean_lines).strip()
+        
+        parts = processed_text.split('\n\n', 1)
+        if len(parts) == 2:
+            title = parts[0].strip()
+            body = parts[1].strip()
+        else:
+            first_newline = processed_text.find('\n')
+            if first_newline != -1 and first_newline < 100:
+                title = processed_text[:first_newline].strip()
+                body = processed_text[first_newline:].strip()
+            else:
+                if len(processed_text) < 200:
+                    title = processed_text[:70].strip()
+                    body = processed_text[70:].strip() if len(processed_text) > 70 else processed_text
+                else:
+                    first_line = processed_text.split('\n')[0]
+                    if len(first_line) < 100:
+                        title = first_line
+                        body = '\n'.join(processed_text.split('\n')[1:]).strip()
+                    else:
+                        body = processed_text
+        
+        title = re.sub(r'^[#*\-_\s]+', '', title).strip()
+        body = re.sub(r'^[#*\-_\s]+', '', body).strip()
+        
+        if not title and body:
+            title = body[:70].strip()
+            body = body[70:].strip() if len(body) > 70 else body
+        
+        if not body and title:
+            body = title
+            title = ""
+        
+        char_count = len(body)
+        
+        if title:
+            new_text = f"{title}\n\n{body}"
+        else:
+            new_text = body
+        
+        session["text"] = new_text
+        
+        if 600 <= char_count <= 650:
+            status = "✅ Отлично!"
+        elif 550 <= char_count < 600:
+            status = "⚠️ Немного коротковат (нужно 600-650)"
+        elif 650 < char_count <= 700:
+            status = "⚠️ Немного длинноват (нужно 600-650)"
+        else:
+            status = f"⚠️ Не соответствует (нужно 600-650)"
+        
+        await status_msg.delete()
+        
+        if session.get("video_file_id"):
+            await query.message.reply_video(
+                video=session["video_file_id"],
+                caption=f"✅ *Текст обработан!*\n\n"
+                        f"📰 *{title}*\n\n"
+                        f"📝 {body}\n\n"
+                        f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+                        f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_video_ai_result_keyboard()
+            )
+        else:
+            await query.message.reply_text(
+                f"✅ *Текст обработан!*\n\n"
+                f"📰 *{title}*\n\n"
+                f"📝 {body}\n\n"
+                f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+                f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_video_ai_result_keyboard()
+            )
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"❌ Ошибка DeepSeek: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+
+async def ai_reprocess_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для обработки")
+        return
+    
+    original_text = session.get("original_text_for_reprocess", session.get("text", ""))
+    
+    await query.message.reply_text(
+        "🤖 Отправляю повторный запрос к DeepSeek...\n\n"
+        "Требования:\n"
+        "• Длина текста: 700 символов\n"
+        "• Новостной формат\n"
+        "• Сохранить все важные факты\n"
+        "• Без смайликов и рекламы\n\n"
+        "Ожидайте...",
+        parse_mode="Markdown"
+    )
+    
+    try:
+        reprocess_prompt = """Перепиши эту новость в новостном формате на 700 символов.
+
+СТРОГИЕ ТРЕБОВАНИЯ:
+1. Длина текста ДОЛЖНА БЫТЬ 700 символов (считая пробелы)
+2. Сохрани ВСЕ важные факты из оригинального текста
+3. Разбей текст на 2-3 логических абзаца (пустая строка между абзацами)
+4. Удали смайлики, рекламу, обращения
+5. Заголовок сделай коротким и информативным
+
+ВАЖНО: НЕ пиши слова "Заголовок:" и "Текст:". Просто напиши сначала заголовок, потом пустую строку, потом текст.
+
+Верни только готовую новость."""
+        
+        response = await deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": reprocess_prompt},
+                {"role": "user", "content": f"Переделай этот текст в новость на 700 символов. Сохрани все важные факты:\n\n{original_text}"}
+            ],
+            temperature=0.7,
+            max_tokens=1200
+        )
+        
+        processed_text = response.choices[0].message.content
+        
+        processed_text = processed_text.strip()
+        
+        lines = processed_text.split('\n')
+        clean_lines = []
+        for line in lines:
+            line_clean = line.strip()
+            if line_clean.lower().startswith("заголовок:") or line_clean.lower().startswith("текст:"):
+                continue
+            clean_lines.append(line)
+        
+        processed_text = '\n'.join(clean_lines).strip()
+        
+        parts = processed_text.split('\n\n', 1)
+        if len(parts) == 2:
+            title = parts[0].strip()
+            body = parts[1].strip()
+        else:
+            first_newline = processed_text.find('\n')
+            if first_newline != -1 and first_newline < 100:
+                title = processed_text[:first_newline].strip()
+                body = processed_text[first_newline:].strip()
+            else:
+                title = processed_text[:70].strip()
+                body = processed_text[70:].strip() if len(processed_text) > 70 else processed_text
+        
+        title = re.sub(r'^[#*\-_\s]+', '', title).strip()
+        body = re.sub(r'^[#*\-_\s]+', '', body).strip()
+        
+        char_count = len(body)
+        
+        new_text = f"{title}\n\n{body}"
+        session["text"] = new_text
+        session["original_text_for_reprocess"] = original_text
+        
+        await query.message.reply_text(
+            f"✅ *Текст переделан!*\n\n"
+            f"📰 *{title}*\n\n"
+            f"📝 {body}\n\n"
+            f"📊 *Длина текста:* {char_count} символов (цель: 700)\n\n"
+            f"Выберите действие:",
+            parse_mode="Markdown",
+            reply_markup=get_ai_result_keyboard()
+        )
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await query.message.reply_text(f"❌ Ошибка при переделке: {e}")
+
+async def ai_reprocess_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для обработки")
+        return
+    
+    original_text = session.get("original_text_for_reprocess", session.get("text", ""))
+    
+    await query.message.reply_text(
+        "🤖 Отправляю повторный запрос к DeepSeek...\n\n"
+        "Требования:\n"
+        "• Длина текста: 700 символов\n"
+        "• Новостной формат\n"
+        "• Сохранить все важные факты\n"
+        "• Без смайликов и рекламы\n\n"
+        "Ожидайте...",
+        parse_mode="Markdown"
+    )
+    
+    try:
+        reprocess_prompt = """Перепиши эту новость в новостном формате на 700 символов.
+
+СТРОГИЕ ТРЕБОВАНИЯ:
+1. Длина текста ДОЛЖНА БЫТЬ 700 символов (считая пробелы)
+2. Сохрани ВСЕ важные факты из оригинального текста
+3. Разбей текст на 2-3 логических абзаца (пустая строка между абзацами)
+4. Удали смайлики, рекламу, обращения
+5. Заголовок сделай коротким и информативным
+
+ВАЖНО: НЕ пиши слова "Заголовок:" и "Текст:". Просто напиши сначала заголовок, потом пустую строку, потом текст.
+
+Верни только готовую новость."""
+        
+        response = await deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": reprocess_prompt},
+                {"role": "user", "content": f"Переделай этот текст в новость на 700 символов. Сохрани все важные факты:\n\n{original_text}"}
+            ],
+            temperature=0.7,
+            max_tokens=1200
+        )
+        
+        processed_text = response.choices[0].message.content
+        
+        processed_text = processed_text.strip()
+        
+        lines = processed_text.split('\n')
+        clean_lines = []
+        for line in lines:
+            line_clean = line.strip()
+            if line_clean.lower().startswith("заголовок:") or line_clean.lower().startswith("текст:"):
+                continue
+            clean_lines.append(line)
+        
+        processed_text = '\n'.join(clean_lines).strip()
+        
+        parts = processed_text.split('\n\n', 1)
+        if len(parts) == 2:
+            title = parts[0].strip()
+            body = parts[1].strip()
+        else:
+            first_newline = processed_text.find('\n')
+            if first_newline != -1 and first_newline < 100:
+                title = processed_text[:first_newline].strip()
+                body = processed_text[first_newline:].strip()
+            else:
+                title = processed_text[:70].strip()
+                body = processed_text[70:].strip() if len(processed_text) > 70 else processed_text
+        
+        title = re.sub(r'^[#*\-_\s]+', '', title).strip()
+        body = re.sub(r'^[#*\-_\s]+', '', body).strip()
+        
+        char_count = len(body)
+        
+        new_text = f"{title}\n\n{body}"
+        session["text"] = new_text
+        session["original_text_for_reprocess"] = original_text
+        
+        if session.get("video_file_id"):
+            await query.message.reply_video(
+                video=session["video_file_id"],
+                caption=f"✅ *Текст переделан!*\n\n"
+                        f"📰 *{title}*\n\n"
+                        f"📝 {body}\n\n"
+                        f"📊 *Длина текста:* {char_count} символов (цель: 700)\n\n"
+                        f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_video_ai_result_keyboard()
+            )
+        else:
+            await query.message.reply_text(
+                f"✅ *Текст переделан!*\n\n"
+                f"📰 *{title}*\n\n"
+                f"📝 {body}\n\n"
+                f"📊 *Длина текста:* {char_count} символов (цель: 700)\n\n"
+                f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_video_ai_result_keyboard()
+            )
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await query.message.reply_text(f"❌ Ошибка при переделке: {e}")
+
+# ==================== ОБРАБОТКА ТРИДС ====================
+async def trids_process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if not deepseek_client:
+        await query.message.reply_text("❌ API DeepSeek не настроен.")
+        return
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных")
+        return
+    
+    text = session.get("text", "")
+    if not text:
+        await query.message.reply_text("❌ Нет текста для обработки")
+        return
+    
+    if "original_text_for_reprocess" not in session:
+        session["original_text_for_reprocess"] = text
+    
+    status_msg = await query.message.reply_text("🤖 Перерабатываю текст для Тридс через DeepSeek AI (400 символов)...")
+    
+    try:
+        processed_text = await call_deepseek_with_retry_trids(TRIDS_PROMPT, text)
+        
+        if not processed_text or len(processed_text.strip()) < 30:
+            await status_msg.edit_text("❌ DeepSeek вернул пустой ответ. Попробуйте ещё раз.")
+            return
+        
+        processed_text = processed_text.strip()
+        
+        lines = processed_text.split('\n')
+        clean_lines = []
+        for line in lines:
+            line_clean = line.strip()
+            if line_clean.lower().startswith("заголовок:") or line_clean.lower().startswith("текст:"):
+                continue
+            clean_lines.append(line)
+        
+        processed_text = '\n'.join(clean_lines).strip()
+        
+        parts = processed_text.split('\n\n', 1)
+        if len(parts) == 2:
+            title = parts[0].strip()
+            body = parts[1].strip()
+        else:
+            first_newline = processed_text.find('\n')
+            if first_newline != -1 and first_newline < 100:
+                title = processed_text[:first_newline].strip()
+                body = processed_text[first_newline:].strip()
+            else:
+                if len(processed_text) < 200:
+                    title = processed_text[:70].strip()
+                    body = processed_text[70:].strip() if len(processed_text) > 70 else processed_text
+                else:
+                    first_line = processed_text.split('\n')[0]
+                    if len(first_line) < 100:
+                        title = first_line
+                        body = '\n'.join(processed_text.split('\n')[1:]).strip()
+                    else:
+                        body = processed_text
+        
+        title = re.sub(r'^[#*\-_\s]+', '', title).strip()
+        body = re.sub(r'^[#*\-_\s]+', '', body).strip()
+        
+        if not title and body:
+            title = body[:70].strip()
+            body = body[70:].strip() if len(body) > 70 else body
+        
+        if not body and title:
+            body = title
+            title = ""
+        
+        char_count = len(body)
+        
+        if title:
+            new_text = f"{title}\n\n{body}"
+        else:
+            new_text = body
+        
+        session["text"] = new_text
+        
+        if 450 <= char_count <= 510:
+            status = "✅ Отлично!"
+        elif 400 <= char_count < 450:
+            status = "⚠️ Немного коротковат (нужно 400)"
+        elif 510 < char_count <= 550:
+            status = "⚠️ Немного длинноват (нужно 400)"
+        else:
+            status = f"⚠️ Не соответствует (нужно 400)"
+        
+        await status_msg.delete()
+        
+        if session.get("photo_file_id"):
+            await query.message.reply_photo(
+                photo=session["photo_file_id"],
+                caption=f"✅ *Текст для Тридс готов!*\n\n"
+                        f"📰 *{title}*\n\n"
+                        f"📝 {body}\n\n"
+                        f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+                        f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_trids_result_keyboard()
+            )
+        else:
+            await query.message.reply_text(
+                f"✅ *Текст для Тридс готов!*\n\n"
+                f"📰 *{title}*\n\n"
+                f"📝 {body}\n\n"
+                f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+                f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_trids_result_keyboard()
+            )
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"❌ Ошибка DeepSeek: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+
+async def trids_process_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if not deepseek_client:
+        await query.message.reply_text("❌ API DeepSeek не настроен.")
+        return
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных")
+        return
+    
+    text = session.get("text", "")
+    if not text:
+        await query.message.reply_text("❌ Нет текста для обработки")
+        return
+    
+    if "original_text_for_reprocess" not in session:
+        session["original_text_for_reprocess"] = text
+    
+    status_msg = await query.message.reply_text("🤖 Перерабатываю текст для Тридс через DeepSeek AI (400 символов)...")
+    
+    try:
+        processed_text = await call_deepseek_with_retry_trids(TRIDS_PROMPT, text)
+        
+        if not processed_text or len(processed_text.strip()) < 30:
+            await status_msg.edit_text("❌ DeepSeek вернул пустой ответ. Попробуйте ещё раз.")
+            return
+        
+        processed_text = processed_text.strip()
+        
+        lines = processed_text.split('\n')
+        clean_lines = []
+        for line in lines:
+            line_clean = line.strip()
+            if line_clean.lower().startswith("заголовок:") or line_clean.lower().startswith("текст:"):
+                continue
+            clean_lines.append(line)
+        
+        processed_text = '\n'.join(clean_lines).strip()
+        
+        parts = processed_text.split('\n\n', 1)
+        if len(parts) == 2:
+            title = parts[0].strip()
+            body = parts[1].strip()
+        else:
+            first_newline = processed_text.find('\n')
+            if first_newline != -1 and first_newline < 100:
+                title = processed_text[:first_newline].strip()
+                body = processed_text[first_newline:].strip()
+            else:
+                if len(processed_text) < 200:
+                    title = processed_text[:70].strip()
+                    body = processed_text[70:].strip() if len(processed_text) > 70 else processed_text
+                else:
+                    first_line = processed_text.split('\n')[0]
+                    if len(first_line) < 100:
+                        title = first_line
+                        body = '\n'.join(processed_text.split('\n')[1:]).strip()
+                    else:
+                        body = processed_text
+        
+        title = re.sub(r'^[#*\-_\s]+', '', title).strip()
+        body = re.sub(r'^[#*\-_\s]+', '', body).strip()
+        
+        if not title and body:
+            title = body[:70].strip()
+            body = body[70:].strip() if len(body) > 70 else body
+        
+        if not body and title:
+            body = title
+            title = ""
+        
+        char_count = len(body)
+        
+        if title:
+            new_text = f"{title}\n\n{body}"
+        else:
+            new_text = body
+        
+        session["text"] = new_text
+        
+        if 450 <= char_count <= 510:
+            status = "✅ Отлично!"
+        elif 400 <= char_count < 450:
+            status = "⚠️ Немного коротковат (нужно 400)"
+        elif 510 < char_count <= 550:
+            status = "⚠️ Немного длинноват (нужно 400)"
+        else:
+            status = f"⚠️ Не соответствует (нужно 400)"
+        
+        await status_msg.delete()
+        
+        if session.get("video_file_id"):
+            await query.message.reply_video(
+                video=session["video_file_id"],
+                caption=f"✅ *Текст для Тридс готов!*\n\n"
+                        f"📰 *{title}*\n\n"
+                        f"📝 {body}\n\n"
+                        f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+                        f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_trids_video_result_keyboard()
+            )
+        else:
+            await query.message.reply_text(
+                f"✅ *Текст для Тридс готов!*\n\n"
+                f"📰 *{title}*\n\n"
+                f"📝 {body}\n\n"
+                f"📊 *Длина текста:* {char_count} символов {status}\n\n"
+                f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_trids_video_result_keyboard()
+            )
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"❌ Ошибка DeepSeek: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+
+async def trids_reprocess_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для обработки")
+        return
+    
+    original_text = session.get("original_text_for_reprocess", session.get("text", ""))
+    
+    await query.message.reply_text(
+        "🤖 Отправляю повторный запрос к DeepSeek для Тридс...\n\n"
+        "Требования:\n"
+        "• Длина текста: 400 символов\n"
+        "• Новостной формат\n"
+        "• Сохранить все важные факты\n"
+        "• Без смайликов и рекламы\n\n"
+        "Ожидайте...",
+        parse_mode="Markdown"
+    )
+    
+    try:
+        reprocess_prompt = """Перепиши эту новость в новостном формате до 400 символов для Тридс.
+
+СТРОГИЕ ТРЕБОВАНИЯ:
+1. Длина текста ДОЛЖНА БЫТЬ 400 символов (считая пробелы)
+2. Сохрани ВСЕ важные факты из оригинального текста
+3. Разбей текст на 2-3 логических абзаца (пустая строка между абзацами)
+4. Удали смайлики, рекламу, обращения
+5. Заголовок сделай коротким и информативным
+6. Текст должен быть динамичным и вовлекающим
+
+ВАЖНО: НЕ пиши слова "Заголовок:" и "Текст:". Просто напиши сначала заголовок, потом пустую строку, потом текст.
+
+Верни только готовую новость."""
+        
+        response = await deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": reprocess_prompt},
+                {"role": "user", "content": f"Переделай этот текст в новость на 400 символов для Тридс. Сохрани все важные факты:\n\n{original_text}"}
+            ],
+            temperature=0.7,
+            max_tokens=1200
+        )
+        
+        processed_text = response.choices[0].message.content
+        
+        processed_text = processed_text.strip()
+        
+        lines = processed_text.split('\n')
+        clean_lines = []
+        for line in lines:
+            line_clean = line.strip()
+            if line_clean.lower().startswith("заголовок:") or line_clean.lower().startswith("текст:"):
+                continue
+            clean_lines.append(line)
+        
+        processed_text = '\n'.join(clean_lines).strip()
+        
+        parts = processed_text.split('\n\n', 1)
+        if len(parts) == 2:
+            title = parts[0].strip()
+            body = parts[1].strip()
+        else:
+            first_newline = processed_text.find('\n')
+            if first_newline != -1 and first_newline < 100:
+                title = processed_text[:first_newline].strip()
+                body = processed_text[first_newline:].strip()
+            else:
+                title = processed_text[:70].strip()
+                body = processed_text[70:].strip() if len(processed_text) > 70 else processed_text
+        
+        title = re.sub(r'^[#*\-_\s]+', '', title).strip()
+        body = re.sub(r'^[#*\-_\s]+', '', body).strip()
+        
+        char_count = len(body)
+        
+        new_text = f"{title}\n\n{body}"
+        session["text"] = new_text
+        session["original_text_for_reprocess"] = original_text
+        
+        await query.message.reply_text(
+            f"✅ *Текст для Тридс переделан!*\n\n"
+            f"📰 *{title}*\n\n"
+            f"📝 {body}\n\n"
+            f"📊 *Длина текста:* {char_count} символов (цель: 400)\n\n"
+            f"Выберите действие:",
+            parse_mode="Markdown",
+            reply_markup=get_trids_result_keyboard()
+        )
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await query.message.reply_text(f"❌ Ошибка при переделке: {e}")
+
+async def trids_reprocess_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для обработки")
+        return
+    
+    original_text = session.get("original_text_for_reprocess", session.get("text", ""))
+    
+    await query.message.reply_text(
+        "🤖 Отправляю повторный запрос к DeepSeek для Тридс...\n\n"
+        "Требования:\n"
+        "• Длина текста: 400 символов\n"
+        "• Новостной формат\n"
+        "• Сохранить все важные факты\n"
+        "• Без смайликов и рекламы\n\n"
+        "Ожидайте...",
+        parse_mode="Markdown"
+    )
+    
+    try:
+        reprocess_prompt = """Перепиши эту новость в новостном формате на 400 символов для Тридс.
+
+СТРОГИЕ ТРЕБОВАНИЯ:
+1. Длина текста ДОЛЖНА БЫТЬ 400 символов (считая пробелы)
+2. Сохрани ВСЕ важные факты из оригинального текста
+3. Разбей текст на 2-3 логических абзаца (пустая строка между абзацами)
+4. Удали смайлики, рекламу, обращения
+5. Заголовок сделай коротким и информативным
+6. Текст должен быть динамичным и вовлекающим
+
+ВАЖНО: НЕ пиши слова "Заголовок:" и "Текст:". Просто напиши сначала заголовок, потом пустую строку, потом текст.
+
+Верни только готовую новость."""
+        
+        response = await deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": reprocess_prompt},
+                {"role": "user", "content": f"Переделай этот текст в новость на 400 символов для Тридс. Сохрани все важные факты:\n\n{original_text}"}
+            ],
+            temperature=0.7,
+            max_tokens=1200
+        )
+        
+        processed_text = response.choices[0].message.content
+        
+        processed_text = processed_text.strip()
+        
+        lines = processed_text.split('\n')
+        clean_lines = []
+        for line in lines:
+            line_clean = line.strip()
+            if line_clean.lower().startswith("заголовок:") or line_clean.lower().startswith("текст:"):
+                continue
+            clean_lines.append(line)
+        
+        processed_text = '\n'.join(clean_lines).strip()
+        
+        parts = processed_text.split('\n\n', 1)
+        if len(parts) == 2:
+            title = parts[0].strip()
+            body = parts[1].strip()
+        else:
+            first_newline = processed_text.find('\n')
+            if first_newline != -1 and first_newline < 100:
+                title = processed_text[:first_newline].strip()
+                body = processed_text[first_newline:].strip()
+            else:
+                title = processed_text[:70].strip()
+                body = processed_text[70:].strip() if len(processed_text) > 70 else processed_text
+        
+        title = re.sub(r'^[#*\-_\s]+', '', title).strip()
+        body = re.sub(r'^[#*\-_\s]+', '', body).strip()
+        
+        char_count = len(body)
+        
+        new_text = f"{title}\n\n{body}"
+        session["text"] = new_text
+        session["original_text_for_reprocess"] = original_text
+        
+        if session.get("video_file_id"):
+            await query.message.reply_video(
+                video=session["video_file_id"],
+                caption=f"✅ *Текст для Тридс переделан!*\n\n"
+                        f"📰 *{title}*\n\n"
+                        f"📝 {body}\n\n"
+                        f"📊 *Длина текста:* {char_count} символов (цель: 400)\n\n"
+                        f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_trids_video_result_keyboard()
+            )
+        else:
+            await query.message.reply_text(
+                f"✅ *Текст для Тридс переделан!*\n\n"
+                f"📰 *{title}*\n\n"
+                f"📝 {body}\n\n"
+                f"📊 *Длина текста:* {char_count} символов (цель: 400)\n\n"
+                f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=get_trids_video_result_keyboard()
+            )
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await query.message.reply_text(f"❌ Ошибка при переделке: {e}")
+
+async def handle_ai_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        return
+    
+    if context.user_data.get("waiting_for_ai_request"):
+        request = update.message.text
+        context.user_data["waiting_for_ai_request"] = False
+        await update.message.reply_text(f"✅ Запрос: *{request}*\n🤖 Обрабатываю...", parse_mode="Markdown")
+        class FakeQuery:
+            def __init__(self, message, from_user):
+                self.message = message
+                self.from_user = from_user
+            async def answer(self):
+                pass
+        fake_query = FakeQuery(update.message, update.message.from_user)
+        update.callback_query = fake_query
+        await ai_reprocess_callback(update, context)
+        return
+    
+    if context.user_data.get("waiting_for_ai_request_video"):
+        request = update.message.text
+        context.user_data["waiting_for_ai_request_video"] = False
+        await update.message.reply_text(f"✅ Запрос: *{request}*\n🤖 Обрабатываю...", parse_mode="Markdown")
+        class FakeQuery:
+            def __init__(self, message, from_user):
+                self.message = message
+                self.from_user = from_user
+            async def answer(self):
+                pass
+        fake_query = FakeQuery(update.message, update.message.from_user)
+        update.callback_query = fake_query
+        await ai_reprocess_video_callback(update, context)
+        return
+
+# ==================== ПУБЛИКАЦИЯ ====================
+async def publish_to_channel(bot, channel_id, text, photo_bytes, video_bytes=None, is_video=False):
+    if len(text) > 1000:
+        text = text[:1000] + "..."
+    
+    lines = text.split('\n')
+    title = lines[0] if lines else ""
+    body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+    caption = format_caption(title, body)
+    
+    if is_video and video_bytes:
+        if caption:
+            return await bot.send_video(
+                chat_id=channel_id,
+                video=InputFile(io.BytesIO(video_bytes), filename="video.mp4"),
+                caption=caption,
+                parse_mode="HTML"
+            )
+        else:
+            return await bot.send_video(
+                chat_id=channel_id,
+                video=InputFile(io.BytesIO(video_bytes), filename="video.mp4")
+            )
+    elif photo_bytes:
+        if caption:
+            return await bot.send_photo(
+                chat_id=channel_id,
+                photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg"),
+                caption=caption,
+                parse_mode="HTML"
+            )
+        else:
+            return await bot.send_photo(
+                chat_id=channel_id,
+                photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg")
+            )
+    else:
+        return await bot.send_message(
+            chat_id=channel_id,
+            text=caption if caption else "."
+        )
+
+async def publish_raw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session or session.get("type") != "photo":
+        await query.message.reply_text("❌ Нет поста для публикации")
+        return
+    
+    status_msg = await query.message.reply_text("⏳ Публикую в основной канал...")
+    
+    try:
+        text = session.get("text", "")
+        photo_bytes = session.get("photo_bytes")
+        
+        await publish_to_channel(
+            context.bot,
+            CHANNEL_ID,
+            text,
+            photo_bytes,
+            None,
+            False
+        )
+        
+        await status_msg.edit_text("✅ Пост опубликован в основной канал!")
+        user_sessions.pop(user_id, None)
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+
+async def publish_designed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет оформленного поста")
+        return
+    
+    status_msg = await query.message.reply_text("⏳ Публикую в основной канал...")
+    
+    try:
+        text = session.get("text", "")
+        photo_bytes = session.get("photo_bytes")
+        
+        await publish_to_channel(
+            context.bot,
+            CHANNEL_ID,
+            text,
+            photo_bytes,
+            None,
+            False
+        )
+        
+        await status_msg.edit_text("✅ Пост опубликован в основной канал!")
+        user_sessions.pop(user_id, None)
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+
+async def publish_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session or session.get("type") != "video":
+        await query.message.reply_text("❌ Нет видео")
+        return
+    
+    status_msg = await query.message.reply_text("⏳ Публикую видео...")
+    
+    try:
+        text = session.get("text", "")
+        video_bytes = session.get("video_bytes")
+        
+        await publish_to_channel(
+            context.bot,
+            CHANNEL_ID,
+            text,
+            None,
+            video_bytes,
+            True
+        )
+        
+        await status_msg.edit_text("✅ Видео опубликовано!")
+        user_sessions.pop(user_id, None)
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+
+# ==================== ПУБЛИКАЦИЯ ВО ВСЕ КАНАЛЫ ====================
+async def publish_to_all_channels_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных")
+        return
+    
+    active_channels = [(k, v) for k, v in CHANNELS.items() if v["channel_id"]]
+    
+    if not active_channels:
+        await query.message.reply_text("❌ Нет настроенных каналов")
+        return
+    
+    status_msg = await query.message.reply_text(f"⏳ Публикую во все {len(active_channels)} каналов...")
+    
+    text = session.get("text", "")
+    photo_bytes = session.get("photo_bytes")
+    video_bytes = session.get("video_bytes")
+    is_video = session.get("type") == "video"
+    
+    success = 0
+    errors = []
+    
+    for channel_key, channel_info in active_channels:
+        try:
+            await publish_to_channel(
+                context.bot,
+                channel_info["channel_id"],
+                text,
+                photo_bytes,
+                video_bytes,
+                is_video
+            )
+            success += 1
+            print(f"✅ Опубликовано в {channel_info['name']}")
+        except Exception as e:
+            errors.append(f"{channel_info['name']}: {str(e)[:30]}")
+            print(f"❌ Ошибка в {channel_info['name']}: {e}")
+    
+    report = f"✅ *Результат публикации*\n\n📊 Успешно: {success}/{len(active_channels)}"
+    if errors:
+        report += f"\n\n❌ Ошибки:\n" + "\n".join(f"• {e}" for e in errors)
+    
+    await status_msg.edit_text(report, parse_mode="Markdown")
+    
+    if success == len(active_channels):
+        user_sessions.pop(user_id, None)
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def publish_video_to_all_channels_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await publish_to_all_channels_callback(update, context)
+
+# ==================== ВЫБОР КАНАЛА ====================
+async def select_channel_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для публикации")
+        return
+    
+    context.user_data["temp_session"] = session
+    context.user_data["temp_source"] = "post"
+    
+    await query.message.reply_text(
+        "🌍 *Выберите канал для публикации*\n\n"
+        "Нажмите на нужный канал, и пост будет опубликован туда.",
+        parse_mode="Markdown",
+        reply_markup=get_channel_list_keyboard("post")
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def select_channel_menu_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для публикации")
+        return
+    
+    context.user_data["temp_session"] = session
+    context.user_data["temp_source"] = "video"
+    
+    await query.message.reply_text(
+        "🌍 *Выберите канал для публикации видео*\n\n"
+        "Нажмите на нужный канал, и видео будет опубликовано туда.",
+        parse_mode="Markdown",
+        reply_markup=get_channel_list_keyboard("video")
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def select_channel_menu_designed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для публикации")
+        return
+    
+    context.user_data["temp_session"] = session
+    context.user_data["temp_source"] = "designed"
+    
+    await query.message.reply_text(
+        "🌍 *Выберите канал для публикации*\n\n"
+        "Нажмите на нужный канал, и пост будет опубликован туда.",
+        parse_mode="Markdown",
+        reply_markup=get_channel_list_keyboard("designed")
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def select_channel_menu_ai_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для публикации")
+        return
+    
+    context.user_data["temp_session"] = session
+    context.user_data["temp_source"] = "ai"
+    
+    await query.message.reply_text(
+        "🌍 *Выберите канал для публикации*\n\n"
+        "Нажмите на нужный канал, и пост будет опубликован туда.",
+        parse_mode="Markdown",
+        reply_markup=get_channel_list_keyboard("ai")
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def select_channel_menu_trids_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для публикации")
+        return
+    
+    context.user_data["temp_session"] = session
+    context.user_data["temp_source"] = "trids"
+    
+    await query.message.reply_text(
+        "🌍 *Выберите канал для публикации*\n\n"
+        "Нажмите на нужный канал, и пост будет опубликован туда.",
+        parse_mode="Markdown",
+        reply_markup=get_channel_list_keyboard("trids")
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def select_channel_menu_video_trids_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для публикации")
+        return
+    
+    context.user_data["temp_session"] = session
+    context.user_data["temp_source"] = "video_trids"
+    
+    await query.message.reply_text(
+        "🌍 *Выберите канал для публикации видео*\n\n"
+        "Нажмите на нужный канал, и видео будет опубликовано туда.",
+        parse_mode="Markdown",
+        reply_markup=get_channel_list_keyboard("video_trids")
+    )
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def publish_to_channel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        _, channel_key, source = query.data.split(":")
+    except ValueError:
+        await query.message.reply_text("❌ Ошибка формата данных")
+        return
+    
+    session = context.user_data.get("temp_session")
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных для публикации. Отправьте пост заново.")
+        return
+    
+    channel_info = CHANNELS.get(channel_key)
+    if not channel_info or not channel_info["channel_id"]:
+        await query.message.reply_text("❌ Канал не настроен")
+        return
+    
+    status_msg = await query.message.reply_text(f"⏳ Публикую в {channel_info['name']}...")
+    
+    try:
+        text = session.get("text", "")
+        photo_bytes = session.get("photo_bytes")
+        video_bytes = session.get("video_bytes")
+        is_video = session.get("type") == "video"
+        
+        await publish_to_channel(
+            context.bot,
+            channel_info["channel_id"],
+            text,
+            photo_bytes,
+            video_bytes,
+            is_video
+        )
+        
+        await status_msg.edit_text(f"✅ Опубликовано в {channel_info['name']}!")
+        
+        user_id = query.from_user.id
+        user_sessions.pop(user_id, None)
+        context.user_data.pop("temp_session", None)
+        context.user_data.pop("temp_source", None)
+        
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+
+# ==================== ОТЛОЖЕННАЯ ПУБЛИКАЦИЯ ====================
+async def schedule_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_reply_markup(reply_markup=get_schedule_keyboard())
+
+async def schedule_time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных")
+        return
+    
+    time_value = query.data.split(":")[1]
+    
+    now = datetime.now()
+    if time_value == "30min":
+        publish_time = now + timedelta(minutes=30)
+        time_str = "через 30 минут"
+    else:
+        hour, minute = map(int, time_value.split(":"))
+        publish_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if publish_time <= now:
+            publish_time += timedelta(days=1)
+        time_str = publish_time.strftime("%H:%M (%d.%m)")
+    
+    save_scheduled_post(
+        session.get("text", ""),
+        session.get("photo_bytes"),
+        publish_time
+    )
+    
+    await query.message.reply_text(
+        f"✅ Пост запланирован на {time_str}\n\n"
+        f"Он будет автоматически опубликован в основной канал."
+    )
+    
+    user_sessions.pop(user_id, None)
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def schedule_video_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_reply_markup(reply_markup=get_video_schedule_keyboard())
+
+async def schedule_video_time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных")
+        return
+    
+    time_value = query.data.split(":")[1]
+    
+    now = datetime.now()
+    if time_value == "30min":
+        publish_time = now + timedelta(minutes=30)
+        time_str = "через 30 минут"
+    else:
+        hour, minute = map(int, time_value.split(":"))
+        publish_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if publish_time <= now:
+            publish_time += timedelta(days=1)
+        time_str = publish_time.strftime("%H:%M (%d.%m)")
+    
+    save_scheduled_video(
+        session.get("text", ""),
+        session.get("video_bytes"),
+        publish_time
+    )
+    
+    await query.message.reply_text(
+        f"✅ Видео запланировано на {time_str}\n\n"
+        f"Оно будет автоматически опубликовано в основной канал."
+    )
+    
+    user_sessions.pop(user_id, None)
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+async def schedule_designed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_reply_markup(reply_markup=get_schedule_keyboard())
+    context.user_data["scheduling_designed"] = True
+
+async def schedule_designed_time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await query.message.reply_text("❌ Нет данных")
+        return
+    
+    time_value = query.data.split(":")[1]
+    
+    now = datetime.now()
+    if time_value == "30min":
+        publish_time = now + timedelta(minutes=30)
+        time_str = "через 30 минут"
+    else:
+        hour, minute = map(int, time_value.split(":"))
+        publish_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if publish_time <= now:
+            publish_time += timedelta(days=1)
+        time_str = publish_time.strftime("%H:%M (%d.%m)")
+    
+    save_scheduled_post(
+        session.get("text", ""),
+        session.get("photo_bytes"),
+        publish_time
+    )
+    
+    await query.message.reply_text(
+        f"✅ Оформленный пост запланирован на {time_str}\n\n"
+        f"Он будет автоматически опубликован в основной канал."
+    )
+    
+    user_sessions.pop(user_id, None)
+    context.user_data["scheduling_designed"] = False
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+# ==================== НАВИГАЦИЯ ====================
+async def back_to_preview_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if session and session.get("photo_bytes"):
+        text = session.get("text", "")
+        photo_bytes = session.get("photo_bytes")
+        
+        await query.message.reply_photo(
+            photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg"),
+            caption=text if text else "Пост",
+            reply_markup=get_post_preview_keyboard()
+        )
+        try:
+            await query.message.delete()
+        except:
+            pass
+
+async def back_to_video_preview_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if session and session.get("video_bytes"):
+        text = session.get("text", "")
+        video_bytes = session.get("video_bytes")
+        
+        await query.message.reply_video(
+            video=InputFile(io.BytesIO(video_bytes), filename="video.mp4"),
+            caption=text if text else "Видео",
+            reply_markup=get_video_keyboard()
+        )
+        try:
+            await query.message.delete()
+        except:
+            pass
+
+async def back_to_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    session = context.user_data.get("temp_session")
+    
+    if session and session.get("photo_bytes"):
+        text = session.get("text", "")
+        photo_bytes = session.get("photo_bytes")
+        
+        await query.message.reply_photo(
+            photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg"),
+            caption=text if text else "Пост",
+            reply_markup=get_post_preview_keyboard()
+        )
+        try:
+            await query.message.delete()
         except:
             pass
     
-    if not text:
-        await update.message.reply_text(
-            "❌ **Не удалось найти текст в пересланном сообщении**\n\n"
-            "Попробуй:\n"
-            "1. Переслать пост с текстом\n"
-            "2. Или отправь фото и текст отдельно через /start",
-            parse_mode="Markdown"
+    context.user_data.pop("temp_session", None)
+    context.user_data.pop("temp_source", None)
+
+async def back_to_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    session = context.user_data.get("temp_session")
+    
+    if session and session.get("video_bytes"):
+        text = session.get("text", "")
+        video_bytes = session.get("video_bytes")
+        
+        await query.message.reply_video(
+            video=InputFile(io.BytesIO(video_bytes), filename="video.mp4"),
+            caption=text if text else "Видео",
+            reply_markup=get_video_keyboard()
         )
-        return True
-    
-    # Ищем фото в сообщении
-    photo_bytes = None
-    
-    # Сначала проверяем есть ли фото в самом сообщении
-    if message.photo:
-        photo = message.photo[-1]
         try:
-            file = await context.bot.get_file(photo.file_id)
-            photo_bytes = await file.download_as_bytearray()
-        except Exception as e:
-            logger.error(f"Ошибка загрузки фото: {e}")
-    elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
-        try:
-            file = await context.bot.get_file(message.document.file_id)
-            photo_bytes = await file.download_as_bytearray()
-        except Exception as e:
-            logger.error(f"Ошибка загрузки документа: {e}")
-    
-    # Если фото нет в самом сообщении, ищем в пересланном
-    if not photo_bytes and message.forward_origin:
-        try:
-            if hasattr(message.forward_origin, 'message'):
-                original = message.forward_origin.message
-                if original and original.photo:
-                    photo = original.photo[-1]
-                    file = await context.bot.get_file(photo.file_id)
-                    photo_bytes = await file.download_as_bytearray()
-        except Exception as e:
-            logger.error(f"Ошибка загрузки фото из оригинала: {e}")
-    
-    if not photo_bytes:
-        await update.message.reply_text(
-            "❌ **Не удалось найти фото в пересланном сообщении**\n\n"
-            "Попробуй:\n"
-            "1. Переслать пост с фото\n"
-            "2. Или отправь фото и текст отдельно через /start",
-            parse_mode="Markdown"
-        )
-        return True
-    
-    # Извлекаем заголовок и текст
-    try:
-        title, body = extract_title_and_body(text)
-        
-        if not title:
-            await update.message.reply_text(
-                "❌ **Не удалось извлечь заголовок из текста**\n\n"
-                f"Текст: {text[:100]}...\n\n"
-                "Попробуй другой пост или отправь данные вручную через /start",
-                parse_mode="Markdown"
-            )
-            return True
-        
-        dark_mode = context.user_data.get("dark_mode", False)
-        theme_name = "тёмной" if dark_mode else "светлой"
-        
-        msg = await update.message.reply_text(
-            f"📱 **Обработка поста...**\n\n"
-            f"📷 Фото: ✅\n"
-            f"📝 Заголовок: {title[:60]}{'...' if len(title) > 60 else ''}\n"
-            f"📄 Текст: {len(body)} символов\n"
-            f"🎨 Тема: {theme_name}\n\n"
-            f"⏳ Создаю сторис...",
-            parse_mode="Markdown"
-        )
-        
-        # Создаём сторис
-        result = create_story(photo_bytes, title, body, dark_mode)
-        result.name = "fider_story.png"
-        
-        await update.message.reply_photo(
-            photo=result,
-            caption=f"✨ **Готово!** Сторис создан из пересланного поста\n\n"
-                   f"📌 **{title[:80]}{'...' if len(title) > 80 else ''}**\n\n"
-                   f"#fiderby #сторис\n\n"
-                   f"💡 Хочешь другую тему? Используй /light или /dark",
-            parse_mode="Markdown"
-        )
-        
-        # Обновляем статистику
-        update_stats(update.effective_user.id)
-        
-        await msg.delete()
-        return True
-        
-    except ValueError as e:
-        await update.message.reply_text(
-            f"❌ **Ошибка:** {str(e)}\n\n"
-            f"Попробуй другой пост или отправь данные вручную через /start",
-            parse_mode="Markdown"
-        )
-        return True
-    except Exception as e:
-        logger.exception(e)
-        await update.message.reply_text(
-            f"❌ **Ошибка при обработке поста:** {str(e)}\n\n"
-            f"Попробуй ещё раз или отправь данные вручную через /start",
-            parse_mode="Markdown"
-        )
-        return True
-
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("state") != "waiting_photo":
-        await update.message.reply_text("Нажми /start и отправь фото заново.")
-        return
-
-    try:
-        photo = update.message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        photo_bytes = await file.download_as_bytearray()
-
-        context.user_data["photo"] = bytes(photo_bytes)
-        context.user_data["state"] = "waiting_title"
-
-        await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
-    except TimedOut:
-        await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке фото.")
-
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("state") != "waiting_photo":
-        await update.message.reply_text("Нажми /start и отправь фото заново.")
-        return
-
-    doc = update.message.document
-
-    if not doc.mime_type or not doc.mime_type.startswith("image/"):
-        await update.message.reply_text("Нужен файл изображения.")
-        return
-
-    try:
-        file = await context.bot.get_file(doc.file_id)
-        photo_bytes = await file.download_as_bytearray()
-
-        context.user_data["photo"] = bytes(photo_bytes)
-        context.user_data["state"] = "waiting_title"
-
-        await update.message.reply_text("✅ Фото получил. Теперь отправь заголовок.")
-    except TimedOut:
-        await update.message.reply_text("⏱️ Превышено время ожидания. Попробуй ещё раз.")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке файла.")
-
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Проверяем, есть ли это пересланное сообщение
-    if update.message.forward_origin or update.message.forward_from or update.message.forward_sender_name:
-        await handle_forwarded_post(update, context)
-        return
-    
-    state = context.user_data.get("state")
-
-    if state == "waiting_title":
-        title = update.message.text.strip()
-
-        if len(title) < 5:
-            await update.message.reply_text("Заголовок слишком короткий. Отправь нормальный заголовок.")
-            return
-
-        context.user_data["title"] = title
-        context.user_data["state"] = "waiting_body"
-
-        await update.message.reply_text("✅ Заголовок получил. Теперь отправь основной текст (максимум 900 символов).")
-        return
-
-    if state == "waiting_body":
-        body = update.message.text.strip()
-        photo = context.user_data.get("photo")
-        title = context.user_data.get("title")
-        dark_mode = context.user_data.get("dark_mode", False)
-
-        if not photo or not title:
-            context.user_data.clear()
-            context.user_data["state"] = "waiting_photo"
-            await update.message.reply_text("Что-то потерялось. Нажми /start и начни заново.")
-            return
-
-        theme_name = "тёмной" if dark_mode else "светлой"
-        msg = await update.message.reply_text(f"🎨 Создаю сторис в {theme_name} теме...")
-
-        try:
-            result = create_story(photo, title, body, dark_mode)
-            result.name = "fider_story.png"
-
-            await update.message.reply_photo(
-                photo=result,
-                caption=f"✨ Готово в {theme_name} теме\n\nfider.by"
-            )
-            
-            update_stats(update.effective_user.id)
-            
-            context.user_data.clear()
-            context.user_data["state"] = "waiting_photo"
-            context.user_data["dark_mode"] = dark_mode
-
-        except ValueError as e:
-            await update.message.reply_text(f"❌ {str(e)}\n\nОтправьте новый, более короткий текст.")
-            return
-        except Exception as e:
-            logger.exception(e)
-            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-            context.user_data.clear()
-            context.user_data["state"] = "waiting_photo"
-
-        try:
-            await msg.delete()
-        except Exception:
+            await query.message.delete()
+        except:
             pass
+    
+    context.user_data.pop("temp_session", None)
+    context.user_data.pop("temp_source", None)
 
-        return
-
-    # Если нет состояния и не пересланное сообщение
-    if update.message.text:
-        await update.message.reply_text(
-            "📱 **Привет!**\n\n"
-            "Ты можешь:\n"
-            "• Переслать любой пост — я сделаю из него сторис\n"
-            "• Нажать /start и создать сторис вручную\n"
-            "• Использовать /light или /dark для выбора темы",
-            parse_mode="Markdown"
+async def back_to_designed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    session = context.user_data.get("temp_session")
+    
+    if session and session.get("photo_bytes"):
+        text = session.get("text", "")
+        photo_bytes = session.get("photo_bytes")
+        
+        await query.message.reply_photo(
+            photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg"),
+            caption=f"{text}\n\n✅ Пост оформлен!" if text else "Пост оформлен!",
+            reply_markup=get_designed_post_keyboard()
         )
+        try:
+            await query.message.delete()
+        except:
+            pass
+    
+    context.user_data.pop("temp_session", None)
+    context.user_data.pop("temp_source", None)
 
+async def back_to_ai_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    session = context.user_data.get("temp_session")
+    
+    if session and session.get("photo_bytes"):
+        text = session.get("text", "")
+        photo_bytes = session.get("photo_bytes")
+        
+        await query.message.reply_photo(
+            photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg"),
+            caption=f"✅ *Текст обработан!*\n\n{text}",
+            parse_mode="Markdown",
+            reply_markup=get_ai_result_keyboard()
+        )
+        try:
+            await query.message.delete()
+        except:
+            pass
+    
+    context.user_data.pop("temp_session", None)
+    context.user_data.pop("temp_source", None)
 
-async def post_init(app):
-    await app.bot.delete_webhook(drop_pending_updates=True)
+async def back_to_trids_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    session = context.user_data.get("temp_session")
+    
+    if session and session.get("photo_bytes"):
+        text = session.get("text", "")
+        photo_bytes = session.get("photo_bytes")
+        
+        await query.message.reply_photo(
+            photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg"),
+            caption=f"✅ *Текст для Тридс готов!*\n\n{text}",
+            parse_mode="Markdown",
+            reply_markup=get_trids_result_keyboard()
+        )
+        try:
+            await query.message.delete()
+        except:
+            pass
+    
+    context.user_data.pop("temp_session", None)
+    context.user_data.pop("temp_source", None)
 
+async def back_to_trids_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    session = context.user_data.get("temp_session")
+    
+    if session and session.get("video_bytes"):
+        text = session.get("text", "")
+        video_bytes = session.get("video_bytes")
+        
+        await query.message.reply_video(
+            video=InputFile(io.BytesIO(video_bytes), filename="video.mp4"),
+            caption=f"✅ *Текст для Тридс готов!*\n\n{text}",
+            parse_mode="Markdown",
+            reply_markup=get_trids_video_result_keyboard()
+        )
+        try:
+            await query.message.delete()
+        except:
+            pass
+    
+    context.user_data.pop("temp_session", None)
+    context.user_data.pop("temp_source", None)
 
-def main():
-    threading.Thread(target=run_web, daemon=True).start()
-
-    app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .connect_timeout(30.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
-        .pool_timeout(30.0)
-        .build()
+# ==================== КОМАНДЫ МОНИТОРИНГА ====================
+async def monitor_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📊 *Статус мониторинга канала*\n\n"
+        f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
+        f"📨 Уведомления: {'✅ Включены' if ADMIN_CHAT_ID else '❌ Не настроены'}\n"
+        f"📍 Отслеживаемые регионы:\n" + "\n".join(f"• {region}" for region in REGIONS.keys()) + "\n\n"
+        "✅ Бот следит за новыми постами",
+        parse_mode="HTML"
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("dark", dark_mode))
-    app.add_handler(CommandHandler("light", light_mode))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.Document.IMAGE, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+# ==================== ОБРАБОТЧИК МОНИТОРИНГА КАНАЛА ====================
+async def monitor_channel_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        message = update.channel_post
+        
+        if not message:
+            return
+        
+        if str(message.chat.id) != str(MONITOR_CHANNEL_ID):
+            return
+        
+        if not message.text and not message.caption:
+            return
+        
+        text = message.text or message.caption or ""
+        
+        if not text.strip():
+            return
+        
+        region = find_region(text)
+        if not region:
+            return
+        
+        if not ADMIN_CHAT_ID:
+            print("⚠️ ADMIN_CHAT_ID не настроен для уведомлений")
+            return
+        
+        post_link = create_post_link(message.chat.id, message.message_id)
+        
+        notification = (
+            f"📍 <b>Вышел пост про {region}!</b>\n"
+            f"🔗 <a href='{post_link}'>Перейти к посту</a>\n"
+            f"📝 <i>Найдено в тексте поста</i>\n\n"
+            f"📄 <b>Превью:</b>\n"
+            f"{text[:200]}{'...' if len(text) > 200 else ''}"
+        )
+        
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=notification,
+            parse_mode="HTML",
+            disable_web_page_preview=False
+        )
+        
+        print(f"📍 Найден регион {region} в посте {message.message_id}")
+        
+    except Exception as e:
+        print(f"❌ Ошибка при обработке поста: {e}")
 
-    print("✅ FIDER STORY BOT STARTED")
-    print("🌓 Поддержка светлой и тёмной темы")
-    print("📱 Автоматическая обработка репостов постов")
+# ==================== ПАРСИНГ НОВОСТЕЙ ====================
+async def start_parsing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text("⏳ Парсинг новостей...")
+    
+    news_items = await fetch_news_from_csv(10)
+    if not news_items:
+        await query.message.reply_text("❌ Не удалось загрузить новости", reply_markup=get_main_keyboard())
+        return
+    
+    pending_news.clear()
+    
+    for i, item in enumerate(news_items):
+        if is_already_published(item['url']):
+            continue
+        
+        image_bytes = await fetch_article_image(item['url'])
+        article_text = await fetch_article_text(item['url'])
+        
+        news_id = f"{i}_{abs(hash(item['url']))}"
+        
+        caption = f"📰 *{item['title']}*\n\n{article_text[:500]}...\n\n🔗 [Читать]({item['url']})"
+        
+        if image_bytes:
+            await query.message.reply_photo(
+                photo=InputFile(io.BytesIO(image_bytes), filename="news.jpg"),
+                caption=caption,
+                parse_mode="Markdown",
+                reply_markup=get_news_keyboard(news_id)
+            )
+        else:
+            await query.message.reply_text(
+                caption,
+                parse_mode="Markdown",
+                reply_markup=get_news_keyboard(news_id)
+            )
+        
+        await asyncio.sleep(0.3)
+    
+    await query.message.reply_text("✅ Готово!", reply_markup=get_main_keyboard())
 
-    app.run_polling(
+async def publish_news_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    news_id = query.data.split(":")[1]
+    news = pending_news.get(news_id)
+    
+    if not news:
+        await query.message.reply_text("❌ Новость не найдена")
+        return
+    
+    try:
+        news_text = news['text']
+        if len(news_text) > 1000:
+            news_text = news_text[:1000] + "..."
+        
+        caption = format_caption(news['title'], f"{news_text}\n\n🔗 {news['url']}")
+        
+        if news.get('photo'):
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=InputFile(io.BytesIO(news['photo']), filename="news.jpg"),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=get_post_publish_keyboard()
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=caption,
+                parse_mode="HTML",
+                reply_markup=get_post_publish_keyboard()
+            )
+        
+        save_published(news['url'], news['title'])
+        await query.message.reply_text("✅ Опубликовано!")
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await query.message.reply_text(f"❌ Ошибка: {e}")
+
+async def skip_news_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    news_id = query.data.split(":")[1]
+    pending_news.pop(news_id, None)
+    
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+# ==================== ПЛАНИРОВЩИК ====================
+async def check_scheduled_posts(app: Application):
+    while True:
+        try:
+            posts = get_pending_scheduled_posts()
+            for post in posts:
+                text = post["text"]
+                photo_bytes = post["photo_bytes"]
+                
+                lines = text.split('\n')
+                title = lines[0] if lines else ""
+                body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+                caption = format_caption(title, body)
+                
+                if caption:
+                    await app.bot.send_photo(
+                        chat_id=CHANNEL_ID,
+                        photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg"),
+                        caption=caption,
+                        parse_mode="HTML",
+                        reply_markup=get_post_publish_keyboard()
+                    )
+                else:
+                    await app.bot.send_photo(
+                        chat_id=CHANNEL_ID,
+                        photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg"),
+                        reply_markup=get_post_publish_keyboard()
+                    )
+                
+                delete_scheduled_post(post["id"])
+                print(f"✅ Опубликован отложенный пост")
+            
+            videos = get_pending_scheduled_videos()
+            for video in videos:
+                text = video["text"]
+                video_bytes = video["video_bytes"]
+                
+                lines = text.split('\n')
+                title = lines[0] if lines else ""
+                body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+                caption = format_caption(title, body)
+                
+                if caption:
+                    await app.bot.send_video(
+                        chat_id=CHANNEL_ID,
+                        video=InputFile(io.BytesIO(video_bytes), filename="video.mp4"),
+                        caption=caption,
+                        parse_mode="HTML",
+                        reply_markup=get_post_publish_keyboard()
+                    )
+                else:
+                    await app.bot.send_video(
+                        chat_id=CHANNEL_ID,
+                        video=InputFile(io.BytesIO(video_bytes), filename="video.mp4"),
+                        reply_markup=get_post_publish_keyboard()
+                    )
+                
+                delete_scheduled_video(video["id"])
+                print(f"✅ Опубликовано отложенное видео")
+            
+            multi_posts = get_pending_scheduled_multi_posts()
+            for post in multi_posts:
+                text = post["text"]
+                photo_bytes = post["photo_bytes"]
+                channels = post["channels"]
+                
+                lines = text.split('\n')
+                title = lines[0] if lines else ""
+                body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+                caption = format_caption(title, body)
+                
+                success_count = 0
+                for channel_key in channels:
+                    channel_info = CHANNELS.get(channel_key)
+                    if not channel_info or not channel_info["channel_id"]:
+                        continue
+                    
+                    try:
+                        if caption:
+                            await app.bot.send_photo(
+                                chat_id=channel_info["channel_id"],
+                                photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg"),
+                                caption=caption,
+                                parse_mode="HTML"
+                            )
+                        else:
+                            await app.bot.send_photo(
+                                chat_id=channel_info["channel_id"],
+                                photo=InputFile(io.BytesIO(photo_bytes), filename="post.jpg")
+                            )
+                        success_count += 1
+                        print(f"✅ Опубликован отложенный пост в {channel_info['name']}")
+                    except Exception as e:
+                        print(f"❌ Ошибка в {channel_info['name']}: {e}")
+                
+                print(f"📊 Мультиканальный пост: успешно {success_count}/{len(channels)}")
+                delete_scheduled_multi_post(post["id"])
+                
+        except Exception as e:
+            print(f"❌ Ошибка в планировщике: {e}")
+        
+        await asyncio.sleep(60)
+
+# ==================== ВЕБ-СЕРВЕР ====================
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "bot": "Grodno News Bot"}
+
+@app.get("/health")
+async def health():
+    return {"status": "alive"}
+
+# ==================== ЗАПУСК ====================
+async def run_bot():
+    init_db()
+    
+    bot = Bot(token=BOT_TOKEN)
+    
+    for i in range(3):
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            print(f"✅ Webhook удалён (попытка {i+1})")
+            break
+        except Exception as e:
+            print(f"⚠️ Ошибка при удалении webhook (попытка {i+1}): {e}")
+            await asyncio.sleep(1)
+    
+    await asyncio.sleep(2)
+    
+    try:
+        webhook_info = await bot.get_webhook_info()
+        if webhook_info.url:
+            print(f"⚠️ Вебхук всё ещё активен: {webhook_info.url}")
+            await bot.delete_webhook(drop_pending_updates=True)
+            await asyncio.sleep(1)
+        else:
+            print("✅ Вебхук успешно удалён")
+    except Exception as e:
+        print(f"⚠️ Не удалось проверить вебхук: {e}")
+    
+    if deepseek_client:
+        print("✅ DeepSeek API подключен")
+        print("📏 Текст будет перерабатываться в формат 600-650 символов")
+        print("📏 Для Тридс: 400 символов")
+    else:
+        print("⚠️ DeepSeek API не настроен")
+    
+    active = sum(1 for ch in CHANNELS.values() if ch["channel_id"])
+    print(f"✅ Активных каналов: {active}")
+    for key, ch in CHANNELS.items():
+        if ch["channel_id"]:
+            print(f"   • {ch['name']}: {ch['channel_id']}")
+    
+    print(f"📊 Мониторинг канала: {MONITOR_CHANNEL_ID}")
+    print(f"📨 Уведомления для админа: {ADMIN_CHAT_ID}")
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Команды
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("cancel", cancel_edit))
+    application.add_handler(CommandHandler("monitor_status", monitor_status))
+    
+    # Обработчики сообщений
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edited_text))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_request))
+    
+    # Колбэки парсинга
+    application.add_handler(CallbackQueryHandler(start_parsing_callback, pattern="start_parsing"))
+    application.add_handler(CallbackQueryHandler(publish_news_callback, pattern="publish_news:"))
+    application.add_handler(CallbackQueryHandler(skip_news_callback, pattern="skip_news:"))
+    
+    # Оформление и редактирование
+    application.add_handler(CallbackQueryHandler(design_post_callback, pattern="design_post"))
+    application.add_handler(CallbackQueryHandler(edit_text_callback, pattern="edit_text"))
+    application.add_handler(CallbackQueryHandler(edit_video_text_callback, pattern="edit_video_text"))
+    application.add_handler(CallbackQueryHandler(edit_designed_text_callback, pattern="edit_designed_text"))
+    
+    # Обработка ИИ
+    application.add_handler(CallbackQueryHandler(ai_process_callback, pattern="ai_process"))
+    application.add_handler(CallbackQueryHandler(ai_process_video_callback, pattern="ai_process_video"))
+    application.add_handler(CallbackQueryHandler(ai_reprocess_callback, pattern="ai_reprocess"))
+    application.add_handler(CallbackQueryHandler(ai_reprocess_video_callback, pattern="ai_reprocess_video"))
+    
+    # Обработка Тридс
+    application.add_handler(CallbackQueryHandler(trids_process_callback, pattern="trids_process"))
+    application.add_handler(CallbackQueryHandler(trids_process_video_callback, pattern="trids_process_video"))
+    application.add_handler(CallbackQueryHandler(trids_reprocess_callback, pattern="trids_reprocess"))
+    application.add_handler(CallbackQueryHandler(trids_reprocess_video_callback, pattern="trids_reprocess_video"))
+    
+    # Публикация
+    application.add_handler(CallbackQueryHandler(publish_raw_callback, pattern="publish_raw"))
+    application.add_handler(CallbackQueryHandler(publish_designed_callback, pattern="publish_designed"))
+    application.add_handler(CallbackQueryHandler(publish_video_callback, pattern="publish_video"))
+    
+    # Публикация во все каналы
+    application.add_handler(CallbackQueryHandler(publish_to_all_channels_callback, pattern="publish_to_all_channels"))
+    application.add_handler(CallbackQueryHandler(publish_video_to_all_channels_callback, pattern="publish_video_to_all_channels"))
+    
+    # Выбор канала
+    application.add_handler(CallbackQueryHandler(select_channel_menu_callback, pattern="select_channel_menu$"))
+    application.add_handler(CallbackQueryHandler(select_channel_menu_video_callback, pattern="select_channel_menu_video"))
+    application.add_handler(CallbackQueryHandler(select_channel_menu_designed_callback, pattern="select_channel_menu_designed"))
+    application.add_handler(CallbackQueryHandler(select_channel_menu_ai_callback, pattern="select_channel_menu_ai"))
+    application.add_handler(CallbackQueryHandler(select_channel_menu_trids_callback, pattern="select_channel_menu_trids"))
+    application.add_handler(CallbackQueryHandler(select_channel_menu_video_trids_callback, pattern="select_channel_menu_video_trids"))
+    application.add_handler(CallbackQueryHandler(publish_to_channel_callback, pattern="publish_to_channel:"))
+    
+    # Отложенная публикация
+    application.add_handler(CallbackQueryHandler(schedule_menu_callback, pattern="schedule_menu"))
+    application.add_handler(CallbackQueryHandler(schedule_video_menu_callback, pattern="schedule_video_menu"))
+    application.add_handler(CallbackQueryHandler(schedule_designed_callback, pattern="schedule_designed"))
+    application.add_handler(CallbackQueryHandler(schedule_time_callback, pattern="schedule_time:"))
+    application.add_handler(CallbackQueryHandler(schedule_video_time_callback, pattern="schedule_video_time:"))
+    application.add_handler(CallbackQueryHandler(schedule_designed_time_callback, pattern="schedule_designed_time:"))
+    
+    # Навигация
+    application.add_handler(CallbackQueryHandler(back_to_preview_callback, pattern="back_to_preview"))
+    application.add_handler(CallbackQueryHandler(back_to_video_preview_callback, pattern="back_to_video_preview"))
+    application.add_handler(CallbackQueryHandler(back_to_post_callback, pattern="back_to_post"))
+    application.add_handler(CallbackQueryHandler(back_to_video_callback, pattern="back_to_video"))
+    application.add_handler(CallbackQueryHandler(back_to_designed_callback, pattern="back_to_designed"))
+    application.add_handler(CallbackQueryHandler(back_to_ai_callback, pattern="back_to_ai"))
+    application.add_handler(CallbackQueryHandler(back_to_trids_callback, pattern="back_to_trids"))
+    application.add_handler(CallbackQueryHandler(back_to_trids_video_callback, pattern="back_to_trids_video"))
+    
+    # МОНИТОРИНГ КАНАЛА (добавляем в самом конце)
+    application.add_handler(MessageHandler(
+        filters.ALL & filters.Chat(chat_id=int(MONITOR_CHANNEL_ID)),
+        monitor_channel_posts
+    ))
+    
+    await application.initialize()
+    await application.start()
+    
+    asyncio.create_task(check_scheduled_posts(application))
+    
+    await application.updater.start_polling(
+        allowed_updates=["message", "callback_query"],
         drop_pending_updates=True,
-        poll_interval=2.0,
-        timeout=30,
-        allowed_updates=Update.ALL_TYPES,
+        poll_interval=1.0,
+        timeout=30
     )
-
+    
+    print("✅ Бот запущен!")
 
 if __name__ == "__main__":
-    main()
+    import threading
+    import uvicorn
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    loop.create_task(run_bot())
+    
+    port = int(os.getenv("PORT", 10000))
+    server_thread = threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=port))
+    server_thread.start()
+    
+    loop.run_forever()

@@ -6,9 +6,9 @@ import re
 import logging
 import sys
 from io import BytesIO
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
-# Устанавливаем requests для скачивания шрифтов
+# Устанавливаем requests если его нет
 try:
     import requests
 except ImportError:
@@ -61,7 +61,6 @@ TEXT_POSITION_BOTTOM = "bottom"
 
 FONT_CHP = "Montserrat-Black.ttf"
 FONT_FALLBACK = "Arial.ttf"
-FOOTER_TEXT = "ЧП ВМ"
 
 # ==================== ЛОГИРОВАНИЕ ====================
 logging.basicConfig(
@@ -305,8 +304,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         
     except Exception as e:
         logger.error(f"❌ Ошибка при создании карточки ЧП ВМ: {e}")
-        import traceback
-        traceback.print_exc()
         # Возвращаем оригинальное фото
         return BytesIO(photo_bytes)
 
@@ -495,8 +492,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
             except Exception as e:
                 logger.error(f"❌ Ошибка создания/отправки карточки: {e}")
-                import traceback
-                traceback.print_exc()
                 
                 # Отправляем оригинальный пост
                 await context.bot.send_message(
@@ -535,8 +530,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке поста: {e}")
-        import traceback
-        traceback.print_exc()
 
 # ==================== ЗАПУСК ====================
 
@@ -603,8 +596,6 @@ async def main():
             
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
-        import traceback
-        traceback.print_exc()
         raise
 
 if __name__ == "__main__":

@@ -304,6 +304,8 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         
     except Exception as e:
         logger.error(f"❌ Ошибка при создании карточки ЧП ВМ: {e}")
+        import traceback
+        traceback.print_exc()
         # Возвращаем оригинальное фото
         return BytesIO(photo_bytes)
 
@@ -471,13 +473,12 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                 card_bytes = make_card_chp(photos[0], title)
                 card_data = card_bytes.getvalue()
                 
-                # Отправляем карточку
+                # Отправляем карточку (без disable_web_page_preview для фото)
                 await context.bot.send_photo(
                     chat_id=ADMIN_CHAT_ID,
                     photo=BytesIO(card_data),
                     caption=caption_text[:1024],  # Telegram лимит на подпись
-                    parse_mode="HTML",
-                    disable_web_page_preview=False
+                    parse_mode="HTML"
                 )
                 logger.info(f"✅ Отправлена карточка ЧП ВМ (размер: {len(card_data)} байт)")
                 
@@ -492,6 +493,8 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
             except Exception as e:
                 logger.error(f"❌ Ошибка создания/отправки карточки: {e}")
+                import traceback
+                traceback.print_exc()
                 
                 # Отправляем оригинальный пост
                 await context.bot.send_message(
@@ -503,7 +506,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                         f"<b>Текст:</b>\n{text[:1000]}"
                     ),
                     parse_mode="HTML",
-                    disable_web_page_preview=False
+                    disable_web_page_preview=True
                 )
                 
                 # Отправляем фото отдельно
@@ -524,12 +527,14 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"<b>Текст:</b>\n{text[:1000]}"
                 ),
                 parse_mode="HTML",
-                disable_web_page_preview=False
+                disable_web_page_preview=True
             )
             logger.info(f"📝 Отправлен только текст (нет фото)")
         
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке поста: {e}")
+        import traceback
+        traceback.print_exc()
 
 # ==================== ЗАПУСК ====================
 
@@ -596,6 +601,8 @@ async def main():
             
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 if __name__ == "__main__":

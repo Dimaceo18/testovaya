@@ -6,7 +6,7 @@ import re
 import logging
 import sys
 from io import BytesIO
-from typing import Optional
+from typing import Optional, List
 
 # Устанавливаем requests если его нет
 try:
@@ -37,20 +37,6 @@ try:
     ADMIN_CHAT_ID = int(ADMIN_CHAT_ID)
 except ValueError:
     raise ValueError("❌ MONITOR_CHANNEL_ID и ADMIN_CHAT_ID должны быть числами!")
-
-# ==================== РЕГИОНЫ ====================
-REGIONS = {
-    "Гродно": [r"гродн[оа]?", r"гродненск", r"гродненский", r"гродненская"],
-    "Гомель": [r"гомел[ьа]?", r"гомельск", r"гомельский", r"гомельская"],
-    "Витебск": [r"витебск", r"витебский", r"витебская"],
-    "Могилев": [r"могил[её]в", r"могилевский", r"могилевская"],
-    "Брест": [r"брест", r"брестский", r"брестская"],
-}
-
-COMPILED_REGIONS = {}
-for region, patterns in REGIONS.items():
-    combined = "|".join(patterns)
-    COMPILED_REGIONS[region] = re.compile(combined, re.IGNORECASE)
 
 # ==================== НАСТРОЙКИ ОФОРМЛЕНИЯ ====================
 TARGET_W, TARGET_H = 720, 900
@@ -242,7 +228,7 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     Создание карточки в стиле ЧП ВМ
     """
     try:
-        # Очищаем заголовок для карточки (убираем эмодзи, оставляем только текст)
+        # Очищаем заголовок для карточки
         clean_title = re.sub(r'[^\w\s.,!?-]', '', title_text).strip()
         if not clean_title:
             clean_title = "Без заголовка"
@@ -360,7 +346,6 @@ def extract_title_from_text(text: str) -> str:
 def format_text_with_bold_title(text: str) -> str:
     """
     Форматирует текст: заголовок выделяет жирным, остальной текст без изменений
-    Возвращает HTML-форматированный текст
     """
     if not text:
         return ""
@@ -377,7 +362,6 @@ def format_text_with_bold_title(text: str) -> str:
     safe_title = html.escape(title)
     
     # Заменяем заголовок на жирный
-    # Ищем первое вхождение заголовка в тексте
     if safe_title in safe_text:
         formatted = safe_text.replace(safe_title, f"<b>{safe_title}</b>", 1)
         return formatted
@@ -390,16 +374,6 @@ def format_text_with_bold_title(text: str) -> str:
         return formatted
     
     return safe_text
-
-def find_region(text: str) -> Optional[str]:
-    """Поиск региона в тексте"""
-    if not text:
-        return None
-    
-    for region, pattern in COMPILED_REGIONS.items():
-        if pattern.search(text):
-            return region
-    return None
 
 def create_post_link(channel_id: int, message_id: int) -> str:
     """Создание ссылки на пост"""
@@ -427,34 +401,30 @@ def get_best_photo(message) -> Optional[str]:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветственное сообщение"""
-    regions_list = "\n".join(f"• {region}" for region in REGIONS.keys())
     await update.message.reply_text(
         f"👋 <b>Привет! Я бот для мониторинга канала.</b>\n\n"
-        f"📢 <b>Отслеживаю канал:</b> <code>{MONITOR_CHANNEL_ID}</code>\n"
-        f"📍 <b>Ищу упоминания регионов:</b>\n{regions_list}\n\n"
-        f"🎨 <b>При нахождении поста:</b>\n"
+        f"📢 <b>Отслеживаю канал:</b> <code>{MONITOR_CHANNEL_ID}</code>\n\n"
+        f"🎨 <b>При каждом новом посте:</b>\n"
         f"1️⃣ Извлекаю заголовок\n"
         f"2️⃣ Создаю карточку в стиле <b>ЧП ВМ</b>\n"
-        f"3️⃣ Отправляю вам готовый пост\n\n"
+        f"3️⃣ Отправляю вам готовый пост (фото + текст одним сообщением)\n\n"
         f"🔄 Для проверки статуса используй /status",
         parse_mode="HTML"
     )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка статуса"""
-    regions_list = "\n".join(f"• {region}" for region in REGIONS.keys())
     await update.message.reply_text(
         f"✅ <b>Бот работает и следит за каналом.</b>\n\n"
         f"📢 <b>ID канала:</b> <code>{MONITOR_CHANNEL_ID}</code>\n"
         f"📨 <b>Уведомления приходят сюда:</b> <code>{ADMIN_CHAT_ID}</code>\n"
-        f"📍 <b>Отслеживаемые регионы:</b>\n{regions_list}\n\n"
-        f"🟢 <b>Бот активен и ждёт новые посты!</b>",
+        f"🟢 <b>Бот активен и обрабатывает ВСЕ новые посты!</b>",
         parse_mode="HTML"
     )
 
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обработка НОВЫХ постов в канале (БЕЗ ФИЛЬТРОВ)
+    Обработка ВСЕХ новых постов в канале
     """
     try:
         message = update.channel_post
@@ -465,21 +435,42 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         if message.chat.id != MONITOR_CHANNEL_ID:
             return
         
-        # Получаем текст
+        logger.info(f"📨 Получен новый пост {message.message_id}")
+        
+        # Получаем текст из сообщения или подписи
         text = message.text or message.caption or ""
         
-        # Если текст пустой - пропускаем (только медиа)
+        # Если нет текста - отправляем уведомление без текста
         if not text.strip():
-            logger.info(f"📷 Пост {message.message_id} без текста, пропускаем")
+            logger.info(f"📷 Пост {message.message_id} без текста")
+            post_link = create_post_link(message.chat.id, message.message_id)
+            full_message = f"📷 <b>Новый пост в канале!</b>\n🔗 <a href='{post_link}'>Перейти к посту</a>\n\n⚠️ <i>Пост без текста</i>"
+            
+            # Получаем фото
+            photo_file_id = get_best_photo(message)
+            if photo_file_id:
+                photo_bytes = await download_media(context.bot, photo_file_id)
+                if photo_bytes:
+                    # Отправляем фото с подписью
+                    await context.bot.send_photo(
+                        chat_id=ADMIN_CHAT_ID,
+                        photo=BytesIO(photo_bytes),
+                        caption=full_message,
+                        parse_mode="HTML"
+                    )
+                    logger.info(f"✅ Отправлен пост без текста с фото")
+                    return
+            
+            # Если нет фото или не удалось скачать
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=full_message,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
             return
         
-        # Ищем регион
-        region = find_region(text)
-        if not region:
-            logger.info(f"📍 Пост {message.message_id} не содержит регионов")
-            return
-        
-        logger.info(f"📍 Найден регион '{region}' в посте {message.message_id}")
+        logger.info(f"📝 Текст поста: {text[:100]}...")
         
         # Извлекаем заголовок для карточки
         title = extract_title_from_text(text)
@@ -488,86 +479,110 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Создаем ссылку на пост
         post_link = create_post_link(message.chat.id, message.message_id)
         
-        # Форматируем текст с жирным заголовком (ОРИГИНАЛЬНЫЙ ТЕКСТ)
+        # Форматируем текст с жирным заголовком
         formatted_text = format_text_with_bold_title(text)
         
-        # Добавляем ссылку на пост
-        full_message = f"📍 <b>Пост про {region}!</b>\n🔗 <a href='{post_link}'>Перейти к посту</a>\n\n{formatted_text}"
+        # Формируем сообщение (подпись к фото)
+        caption = f"📢 <b>Новый пост в канале!</b>\n🔗 <a href='{post_link}'>Перейти к посту</a>\n\n{formatted_text}"
         
-        # Проверяем наличие фото
-        photos = []
+        # Получаем фото
         photo_file_id = get_best_photo(message)
-        if photo_file_id:
-            photo_bytes = await download_media(context.bot, photo_file_id)
-            if photo_bytes:
-                photos.append(photo_bytes)
-                logger.info(f"📸 Скачано фото, размер: {len(photo_bytes)} байт")
         
-        # Создаем карточку если есть фото
-        if photos:
-            try:
-                # Создаем карточку ЧП ВМ
-                card_bytes = make_card_chp(photos[0], title)
-                card_data = card_bytes.getvalue()
-                
-                # Отправляем карточку с текстом
-                await context.bot.send_photo(
-                    chat_id=ADMIN_CHAT_ID,
-                    photo=BytesIO(card_data),
-                    caption=full_message[:1024],  # Telegram лимит на подпись
-                    parse_mode="HTML"
-                )
-                logger.info(f"✅ Отправлена карточка ЧП ВМ")
-                
-                # Если текст больше 1024 символов, отправляем остаток отдельным сообщением
-                if len(full_message) > 1024:
-                    await context.bot.send_message(
-                        chat_id=ADMIN_CHAT_ID,
-                        text=full_message[1024:],
-                        parse_mode="HTML",
-                        disable_web_page_preview=True
-                    )
-                    logger.info(f"📝 Отправлено продолжение текста")
-                
-                # Если есть дополнительные фото - отправляем их отдельно
-                if len(photos) > 1:
-                    for i, photo_bytes in enumerate(photos[1:]):
-                        await context.bot.send_photo(
-                            chat_id=ADMIN_CHAT_ID,
-                            photo=BytesIO(photo_bytes),
-                            caption=f"📸 Дополнительное фото {i+2}/{len(photos)}"
-                        )
-                    logger.info(f"📸 Отправлено {len(photos)-1} дополнительных фото")
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка создания/отправки карточки: {e}")
-                import traceback
-                traceback.print_exc()
-                
-                # Отправляем текст без карточки
-                await context.bot.send_message(
-                    chat_id=ADMIN_CHAT_ID,
-                    text=full_message,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True
-                )
-                
-                # Отправляем фото отдельно
-                for photo_bytes in photos:
+        if photo_file_id:
+            # Скачиваем фото
+            photo_bytes = await download_media(context.bot, photo_file_id)
+            
+            if photo_bytes:
+                try:
+                    # Создаем карточку ЧП ВМ
+                    card_bytes = make_card_chp(photo_bytes, title)
+                    card_data = card_bytes.getvalue()
+                    
+                    # Отправляем ОДНИМ сообщением: фото + текст в подписи
                     await context.bot.send_photo(
                         chat_id=ADMIN_CHAT_ID,
-                        photo=BytesIO(photo_bytes)
+                        photo=BytesIO(card_data),
+                        caption=caption[:1024],  # Telegram лимит 1024 символа
+                        parse_mode="HTML"
                     )
+                    logger.info(f"✅ Отправлена карточка с текстом для поста {message.message_id}")
+                    
+                    # Если текст больше 1024 символов, отправляем остаток отдельным сообщением
+                    if len(caption) > 1024:
+                        await context.bot.send_message(
+                            chat_id=ADMIN_CHAT_ID,
+                            text=caption[1024:],
+                            parse_mode="HTML",
+                            disable_web_page_preview=True
+                        )
+                        logger.info(f"📝 Отправлено продолжение текста")
+                    
+                    # Если есть видео - отправляем отдельно
+                    if hasattr(message, 'video') and message.video:
+                        try:
+                            await context.bot.send_video(
+                                chat_id=ADMIN_CHAT_ID,
+                                video=message.video.file_id
+                            )
+                            logger.info(f"🎬 Отправлено видео")
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка отправки видео: {e}")
+                    
+                    return
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка создания/отправки карточки: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    
+                    # Отправляем оригинальное фото с текстом
+                    await context.bot.send_photo(
+                        chat_id=ADMIN_CHAT_ID,
+                        photo=BytesIO(photo_bytes),
+                        caption=caption[:1024],
+                        parse_mode="HTML"
+                    )
+                    
+                    if len(caption) > 1024:
+                        await context.bot.send_message(
+                            chat_id=ADMIN_CHAT_ID,
+                            text=caption[1024:],
+                            parse_mode="HTML",
+                            disable_web_page_preview=True
+                        )
+                    
+                    # Отправляем видео если есть
+                    if hasattr(message, 'video') and message.video:
+                        try:
+                            await context.bot.send_video(
+                                chat_id=ADMIN_CHAT_ID,
+                                video=message.video.file_id
+                            )
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка отправки видео: {e}")
+                    
+                    return
         
-        else:
-            # Нет фото - отправляем только текст
-            await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=full_message,
-                parse_mode="HTML",
-                disable_web_page_preview=True
-            )
-            logger.info(f"📝 Отправлен только текст (нет фото)")
+        # Если нет фото - отправляем только текст
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=caption,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        
+        # Если есть видео - отправляем отдельно
+        if hasattr(message, 'video') and message.video:
+            try:
+                await context.bot.send_video(
+                    chat_id=ADMIN_CHAT_ID,
+                    video=message.video.file_id
+                )
+                logger.info(f"🎬 Отправлено видео")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки видео: {e}")
+        
+        logger.info(f"📝 Отправлен только текст (нет фото)")
         
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке поста: {e}")
@@ -594,7 +609,6 @@ async def main():
         except Exception as e:
             logger.error(f"❌ Не удалось подключиться к каналу: {e}")
             logger.error("❌ Проверьте: бот добавлен в канал как администратор")
-            logger.error(f"❌ Канал: {MONITOR_CHANNEL_ID}")
             return
         
         # Проверяем админа
@@ -603,14 +617,11 @@ async def main():
             logger.info(f"✅ Уведомления будут приходить: {admin.first_name} (ID: {admin.id})")
         except Exception as e:
             logger.error(f"❌ Не удалось подключиться к админу: {e}")
-            logger.error(f"❌ Проверьте ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
             return
         
-        # Регистрируем обработчик для ВСЕХ постов в канале
+        # Регистрируем обработчики
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("status", status))
-        
-        # Обрабатываем ВСЕ новые посты в канале (без фильтров)
         app.add_handler(MessageHandler(
             filters.ALL & filters.Chat(chat_id=MONITOR_CHANNEL_ID),
             handle_channel_post
@@ -618,10 +629,8 @@ async def main():
         
         logger.info("✅ Обработчики зарегистрированы")
         logger.info("📊 Мониторинг запущен!")
-        logger.info(f"📍 Отслеживаются регионы: {', '.join(REGIONS.keys())}")
-        logger.info(f"📸 Размер карточки: {TARGET_W}x{TARGET_H}")
-        logger.info(f"🎨 Шаблон: ЧП ВМ")
         logger.info("📌 Бот обрабатывает ВСЕ новые посты в канале")
+        logger.info("📸 Фото и текст отправляются ОДНИМ сообщением")
         
         # Запускаем бота
         await app.initialize()

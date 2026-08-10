@@ -8,9 +8,16 @@ import sys
 from io import BytesIO
 from typing import Optional, List, Dict, Any
 
-import requests
+# Устанавливаем requests для скачивания шрифтов
+try:
+    import requests
+except ImportError:
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
+    import requests
+
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
-from telegram import Bot, Update, InputMediaPhoto, InputMediaVideo
+from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ==================== НАСТРОЙКИ ====================
@@ -77,9 +84,12 @@ def download_fonts():
             try:
                 logger.info(f"⬇️ Скачивание шрифта {font_name}...")
                 response = requests.get(url, timeout=30)
-                with open(font_name, "wb") as f:
-                    f.write(response.content)
-                logger.info(f"✅ Шрифт {font_name} скачан")
+                if response.status_code == 200:
+                    with open(font_name, "wb") as f:
+                        f.write(response.content)
+                    logger.info(f"✅ Шрифт {font_name} скачан")
+                else:
+                    logger.warning(f"⚠️ Не удалось скачать {font_name}, статус: {response.status_code}")
             except Exception as e:
                 logger.error(f"❌ Ошибка скачивания {font_name}: {e}")
 
@@ -116,7 +126,6 @@ def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 
     if gh <= 0:
         return img
     
-    # Создаем маску для градиента
     overlay_alpha = Image.new("L", (w, h), 0)
     grad = Image.new("L", (1, gh), 0)
     for y in range(gh):
@@ -125,7 +134,6 @@ def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 
     grad = grad.resize((w, gh))
     overlay_alpha.paste(grad, (0, h - gh))
     
-    # Применяем затемнение
     black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
     base = img.convert("RGBA")
     overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
@@ -197,9 +205,13 @@ def fit_text_block(draw, text: str, safe_w: int, max_block_h: int,
         total_h = 0
         max_w = 0
         for ln in lines:
-            bb = draw.textbbox((0, 0), ln, font=font)
-            lw = bb[2] - bb[0]
-            lh = bb[3] - bb[1]
+            try:
+                bb = draw.textbbox((0, 0), ln, font=font)
+                lw = bb[2] - bb[0]
+                lh = bb[3] - bb[1]
+            except:
+                lw = len(ln) * size // 2
+                lh = size
             heights.append(lh)
             total_h += lh
             max_w = max(max_w, lw)
@@ -214,8 +226,11 @@ def fit_text_block(draw, text: str, safe_w: int, max_block_h: int,
     heights = []
     total_h = 0
     for ln in lines:
-        bb = draw.textbbox((0, 0), ln, font=font)
-        lh = bb[3] - bb[1]
+        try:
+            bb = draw.textbbox((0, 0), ln, font=font)
+            lh = bb[3] - bb[1]
+        except:
+            lh = min_size
         heights.append(lh)
         total_h += lh
     total_h += spacing * (len(lines) - 1)
@@ -226,14 +241,6 @@ def fit_text_block(draw, text: str, safe_w: int, max_block_h: int,
 def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     """
     Создание карточки в стиле ЧП ВМ
-    
-    Args:
-        photo_bytes: байты фото
-        title_text: заголовок
-        text_position: положение текста (top/bottom)
-    
-    Returns:
-        BytesIO: готовая карточка
     """
     try:
         # Очищаем заголовок

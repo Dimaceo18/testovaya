@@ -6,7 +6,7 @@ import re
 import logging
 import sys
 from io import BytesIO
-from typing import Optional, List
+from typing import Optional
 
 # Устанавливаем requests если его нет
 try:
@@ -375,11 +375,6 @@ def format_text_with_bold_title(text: str) -> str:
     
     return safe_text
 
-def create_post_link(channel_id: int, message_id: int) -> str:
-    """Создание ссылки на пост"""
-    channel_id_str = str(channel_id).replace("-100", "")
-    return f"https://t.me/c/{channel_id_str}/{message_id}"
-
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С МЕДИА ====================
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
@@ -440,33 +435,25 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Получаем текст из сообщения или подписи
         text = message.text or message.caption or ""
         
-        # Если нет текста - отправляем уведомление без текста
+        # Если нет текста - отправляем уведомление
         if not text.strip():
             logger.info(f"📷 Пост {message.message_id} без текста")
-            post_link = create_post_link(message.chat.id, message.message_id)
-            full_message = f"📷 <b>Новый пост в канале!</b>\n🔗 <a href='{post_link}'>Перейти к посту</a>\n\n⚠️ <i>Пост без текста</i>"
             
             # Получаем фото
             photo_file_id = get_best_photo(message)
             if photo_file_id:
                 photo_bytes = await download_media(context.bot, photo_file_id)
                 if photo_bytes:
-                    # Отправляем фото с подписью
                     await context.bot.send_photo(
                         chat_id=ADMIN_CHAT_ID,
                         photo=BytesIO(photo_bytes),
-                        caption=full_message,
-                        parse_mode="HTML"
+                        caption="📷 Пост без текста"
                     )
-                    logger.info(f"✅ Отправлен пост без текста с фото")
                     return
             
-            # Если нет фото или не удалось скачать
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=full_message,
-                parse_mode="HTML",
-                disable_web_page_preview=True
+                text="📷 Пост без текста"
             )
             return
         
@@ -476,14 +463,8 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         title = extract_title_from_text(text)
         logger.info(f"📝 Извлечен заголовок: {title[:50]}...")
         
-        # Создаем ссылку на пост
-        post_link = create_post_link(message.chat.id, message.message_id)
-        
-        # Форматируем текст с жирным заголовком
+        # Форматируем текст с жирным заголовком (ОРИГИНАЛЬНЫЙ ТЕКСТ)
         formatted_text = format_text_with_bold_title(text)
-        
-        # Формируем сообщение (подпись к фото)
-        caption = f"📢 <b>Новый пост в канале!</b>\n🔗 <a href='{post_link}'>Перейти к посту</a>\n\n{formatted_text}"
         
         # Получаем фото
         photo_file_id = get_best_photo(message)
@@ -498,22 +479,21 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                     card_bytes = make_card_chp(photo_bytes, title)
                     card_data = card_bytes.getvalue()
                     
-                    # Отправляем ОДНИМ сообщением: фото + текст в подписи
+                    # Отправляем ОДНИМ сообщением: фото + оригинальный текст в подписи
                     await context.bot.send_photo(
                         chat_id=ADMIN_CHAT_ID,
                         photo=BytesIO(card_data),
-                        caption=caption[:1024],  # Telegram лимит 1024 символа
+                        caption=formatted_text[:1024],  # Telegram лимит 1024 символа
                         parse_mode="HTML"
                     )
                     logger.info(f"✅ Отправлена карточка с текстом для поста {message.message_id}")
                     
                     # Если текст больше 1024 символов, отправляем остаток отдельным сообщением
-                    if len(caption) > 1024:
+                    if len(formatted_text) > 1024:
                         await context.bot.send_message(
                             chat_id=ADMIN_CHAT_ID,
-                            text=caption[1024:],
-                            parse_mode="HTML",
-                            disable_web_page_preview=True
+                            text=formatted_text[1024:],
+                            parse_mode="HTML"
                         )
                         logger.info(f"📝 Отправлено продолжение текста")
                     
@@ -539,16 +519,15 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.send_photo(
                         chat_id=ADMIN_CHAT_ID,
                         photo=BytesIO(photo_bytes),
-                        caption=caption[:1024],
+                        caption=formatted_text[:1024],
                         parse_mode="HTML"
                     )
                     
-                    if len(caption) > 1024:
+                    if len(formatted_text) > 1024:
                         await context.bot.send_message(
                             chat_id=ADMIN_CHAT_ID,
-                            text=caption[1024:],
-                            parse_mode="HTML",
-                            disable_web_page_preview=True
+                            text=formatted_text[1024:],
+                            parse_mode="HTML"
                         )
                     
                     # Отправляем видео если есть
@@ -566,9 +545,8 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Если нет фото - отправляем только текст
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text=caption,
-            parse_mode="HTML",
-            disable_web_page_preview=True
+            text=formatted_text,
+            parse_mode="HTML"
         )
         
         # Если есть видео - отправляем отдельно

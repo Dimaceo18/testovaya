@@ -392,54 +392,23 @@ def get_best_photo(message) -> Optional[str]:
         return message.photo[-1].file_id
     return None
 
-# ==================== ОБРАБОТЧИКИ ====================
+def get_text_from_message(message) -> str:
+    """Получение текста из сообщения (текст или подпись)"""
+    return message.text or message.caption or ""
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветственное сообщение"""
-    await update.message.reply_text(
-        f"👋 <b>Привет! Я бот для мониторинга канала.</b>\n\n"
-        f"📢 <b>Отслеживаю канал:</b> <code>{MONITOR_CHANNEL_ID}</code>\n\n"
-        f"🎨 <b>При каждом новом посте:</b>\n"
-        f"1️⃣ Извлекаю заголовок\n"
-        f"2️⃣ Создаю карточку в стиле <b>ЧП ВМ</b>\n"
-        f"3️⃣ Отправляю вам готовый пост (фото + текст одним сообщением)\n\n"
-        f"🔄 Для проверки статуса используй /status",
-        parse_mode="HTML"
-    )
+# ==================== ОСНОВНАЯ ФУНКЦИЯ ОБРАБОТКИ ПОСТА ====================
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса"""
-    await update.message.reply_text(
-        f"✅ <b>Бот работает и следит за каналом.</b>\n\n"
-        f"📢 <b>ID канала:</b> <code>{MONITOR_CHANNEL_ID}</code>\n"
-        f"📨 <b>Уведомления приходят сюда:</b> <code>{ADMIN_CHAT_ID}</code>\n"
-        f"🟢 <b>Бот активен и обрабатывает ВСЕ новые посты!</b>",
-        parse_mode="HTML"
-    )
-
-async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_post(message, context: ContextTypes.DEFAULT_TYPE, source: str = "канал"):
     """
-    Обработка ВСЕХ новых постов в канале
+    Универсальная функция обработки поста
+    source: "канал" или "репост"
     """
     try:
-        message = update.channel_post
-        if not message:
-            return
+        # Получаем текст
+        text = get_text_from_message(message)
         
-        # Проверяем, что пост из нужного канала
-        if message.chat.id != MONITOR_CHANNEL_ID:
-            return
-        
-        logger.info(f"📨 Получен новый пост {message.message_id}")
-        
-        # Получаем текст из сообщения или подписи
-        text = message.text or message.caption or ""
-        
-        # Если нет текста - отправляем уведомление
         if not text.strip():
-            logger.info(f"📷 Пост {message.message_id} без текста")
-            
-            # Получаем фото
+            logger.info(f"📷 Пост без текста ({source})")
             photo_file_id = get_best_photo(message)
             if photo_file_id:
                 photo_bytes = await download_media(context.bot, photo_file_id)
@@ -450,20 +419,19 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                         caption="📷 Пост без текста"
                     )
                     return
-            
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
                 text="📷 Пост без текста"
             )
             return
         
-        logger.info(f"📝 Текст поста: {text[:100]}...")
+        logger.info(f"📝 Текст поста ({source}): {text[:100]}...")
         
         # Извлекаем заголовок для карточки
         title = extract_title_from_text(text)
         logger.info(f"📝 Извлечен заголовок: {title[:50]}...")
         
-        # Форматируем текст с жирным заголовком (ОРИГИНАЛЬНЫЙ ТЕКСТ)
+        # Форматируем текст с жирным заголовком
         formatted_text = format_text_with_bold_title(text)
         
         # Получаем фото
@@ -479,16 +447,16 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                     card_bytes = make_card_chp(photo_bytes, title)
                     card_data = card_bytes.getvalue()
                     
-                    # Отправляем ОДНИМ сообщением: фото + оригинальный текст в подписи
+                    # Отправляем ОДНИМ сообщением: фото + текст
                     await context.bot.send_photo(
                         chat_id=ADMIN_CHAT_ID,
                         photo=BytesIO(card_data),
-                        caption=formatted_text[:1024],  # Telegram лимит 1024 символа
+                        caption=formatted_text[:1024],
                         parse_mode="HTML"
                     )
-                    logger.info(f"✅ Отправлена карточка с текстом для поста {message.message_id}")
+                    logger.info(f"✅ Отправлена карточка с текстом ({source})")
                     
-                    # Если текст больше 1024 символов, отправляем остаток отдельным сообщением
+                    # Если текст больше 1024 символов, отправляем остаток
                     if len(formatted_text) > 1024:
                         await context.bot.send_message(
                             chat_id=ADMIN_CHAT_ID,
@@ -530,7 +498,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
                             parse_mode="HTML"
                         )
                     
-                    # Отправляем видео если есть
                     if hasattr(message, 'video') and message.video:
                         try:
                             await context.bot.send_video(
@@ -549,7 +516,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode="HTML"
         )
         
-        # Если есть видео - отправляем отдельно
         if hasattr(message, 'video') and message.video:
             try:
                 await context.bot.send_video(
@@ -560,12 +526,82 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки видео: {e}")
         
-        logger.info(f"📝 Отправлен только текст (нет фото)")
+        logger.info(f"📝 Отправлен только текст ({source})")
         
     except Exception as e:
-        logger.error(f"❌ Ошибка при обработке поста: {e}")
+        logger.error(f"❌ Ошибка при обработке поста ({source}): {e}")
         import traceback
         traceback.print_exc()
+
+# ==================== ОБРАБОТЧИКИ ====================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветственное сообщение"""
+    await update.message.reply_text(
+        f"👋 <b>Привет! Я бот для оформления постов.</b>\n\n"
+        f"📢 <b>Отслеживаю канал:</b> <code>{MONITOR_CHANNEL_ID}</code>\n\n"
+        f"🎨 <b>Что я умею:</b>\n"
+        f"1️⃣ Слежу за новыми постами в канале\n"
+        f"2️⃣ Оформляю их в стиле <b>ЧП ВМ</b>\n"
+        f"3️⃣ Отправляю вам готовый пост\n\n"
+        f"📎 <b>Также вы можете:</b>\n"
+        f"• Переслать любой пост в этот бот\n"
+        f"• Бот оформит его по шаблону <b>ЧП ВМ</b>\n"
+        f"• И пришлет обработанное фото с текстом\n\n"
+        f"🔄 Для проверки статуса используй /status",
+        parse_mode="HTML"
+    )
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка статуса"""
+    await update.message.reply_text(
+        f"✅ <b>Бот работает!</b>\n\n"
+        f"📢 <b>ID канала:</b> <code>{MONITOR_CHANNEL_ID}</code>\n"
+        f"📨 <b>Уведомления приходят сюда:</b> <code>{ADMIN_CHAT_ID}</code>\n"
+        f"🟢 <b>Бот активен и обрабатывает:</b>\n"
+        f"• Все новые посты в канале\n"
+        f"• Репосты в бота",
+        parse_mode="HTML"
+    )
+
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка новых постов в канале"""
+    message = update.channel_post
+    if not message:
+        return
+    
+    # Проверяем, что пост из нужного канала
+    if message.chat.id != MONITOR_CHANNEL_ID:
+        return
+    
+    logger.info(f"📨 Получен новый пост из канала {message.message_id}")
+    await process_post(message, context, "канал")
+
+async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработка пересланных сообщений (репостов) в бота
+    """
+    message = update.message
+    if not message:
+        return
+    
+    # Проверяем, что это пересланное сообщение
+    is_forwarded = message.forward_from_chat is not None or message.forward_from is not None
+    
+    if not is_forwarded:
+        # Если это не репост, но есть фото с текстом - тоже обрабатываем
+        if message.photo or message.video:
+            logger.info(f"📨 Получено сообщение с медиа (не репост)")
+            await process_post(message, context, "прямое сообщение")
+        return
+    
+    logger.info(f"📨 Получен репост в бота")
+    
+    # Если есть текст в самом сообщении (добавленный пользователем)
+    # Игнорируем его, берем текст из оригинального поста
+    # Но оригинальный текст уже в message.text или message.caption
+    
+    await process_post(message, context, "репост")
 
 # ==================== ЗАПУСК ====================
 
@@ -600,14 +636,25 @@ async def main():
         # Регистрируем обработчики
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("status", status))
+        
+        # Обработчик постов из канала
         app.add_handler(MessageHandler(
             filters.ALL & filters.Chat(chat_id=MONITOR_CHANNEL_ID),
             handle_channel_post
         ))
         
+        # Обработчик репостов (пересланных сообщений) в бота
+        # Также обрабатывает обычные сообщения с фото/видео
+        app.add_handler(MessageHandler(
+            filters.ALL & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID),
+            handle_forwarded_message
+        ))
+        
         logger.info("✅ Обработчики зарегистрированы")
         logger.info("📊 Мониторинг запущен!")
-        logger.info("📌 Бот обрабатывает ВСЕ новые посты в канале")
+        logger.info("📌 Бот обрабатывает:")
+        logger.info("  • Все новые посты в канале")
+        logger.info("  • Репосты в бота")
         logger.info("📸 Фото и текст отправляются ОДНИМ сообщением")
         
         # Запускаем бота

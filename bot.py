@@ -1330,13 +1330,21 @@ async def main():
     
     download_fonts()
     
+    # Создаём приложение с увеличенным таймаутом
     app = Application.builder().token(BOT_TOKEN).build()
     bot = Bot(token=BOT_TOKEN)
     
     logger.info("🔄 Очистка старых сессий...")
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("✅ Webhook удалён")
+        # Пробуем удалить webhook несколько раз
+        for attempt in range(3):
+            try:
+                await bot.delete_webhook(drop_pending_updates=True)
+                logger.info("✅ Webhook удалён")
+                break
+            except Exception as e:
+                logger.warning(f"⚠️ Попытка {attempt+1}: {e}")
+                await asyncio.sleep(1)
     except Exception as e:
         logger.warning(f"⚠️ Webhook: {e}")
     
@@ -1405,11 +1413,15 @@ async def main():
     await app.initialize()
     await app.start()
     
+    # Запускаем с улучшенными параметрами
     await app.updater.start_polling(
         allowed_updates=["message", "channel_post", "callback_query"],
         drop_pending_updates=True,
         poll_interval=1.0,
-        timeout=30
+        timeout=30,
+        read_timeout=30,
+        write_timeout=30,
+        connect_timeout=30
     )
     
     logger.info("🟢 Бот запущен!")

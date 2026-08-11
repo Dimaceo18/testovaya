@@ -29,7 +29,9 @@ except ImportError:
         from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
     except:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
-        from moviepy import VideoFileClip, ImageSequenceClip, CompositeVideoClip
+        from moviepy.video.io.VideoFileClip import VideoFileClip
+        from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
+        from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 
 try:
     import numpy as np
@@ -370,14 +372,10 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
         cover_img.save(cover_path)
         
         # Обрабатываем остальные фото
-        photo_paths = []
-        for i, photo_bytes in enumerate(photos):
-            # Для первого фото используем уже созданную обложку
-            if i == 0:
-                photo_paths.append(cover_path)
-                continue
-            
-            # Обрабатываем фото как слайд (без текста или с текстом?)
+        photo_paths = [cover_path]  # первое фото - обложка
+        
+        for i, photo_bytes in enumerate(photos[1:], 1):
+            # Обрабатываем фото как слайд (без текста)
             img = Image.open(BytesIO(photo_bytes)).convert("RGB")
             img = crop_to_4x5(img)
             img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
@@ -394,16 +392,16 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
         
         # Обложка - 3 секунды с эффектом приближения
         cover_clip = ImageSequenceClip([cover_path], durations=[3])
-        # Эффект приближения для обложки (zoom-in)
-        cover_clip = cover_clip.resize(lambda t: 1 + 0.05 * (t / 3))
+        # Исправленный эффект приближения для moviepy 1.0.3
+        cover_clip = cover_clip.resize(lambda t: 1 + 0.05 * (t / 3) if t <= 3 else 1)
         clips.append(cover_clip)
         
-        # Остальные фото - по 2-3 секунды с легким приближением
-        for i, path in enumerate(photo_paths[1:]):
-            duration = 2.5  # среднее значение
+        # Остальные фото - по 2.5 секунды с легким приближением
+        for path in photo_paths[1:]:
+            duration = 2.5
             clip = ImageSequenceClip([path], durations=[duration])
-            # Легкое приближение
-            clip = clip.resize(lambda t: 1 + 0.03 * (t / duration))
+            # Исправленный эффект приближения
+            clip = clip.resize(lambda t: 1 + 0.03 * (t / duration) if t <= duration else 1)
             clips.append(clip)
         
         # Объединяем все клипы
@@ -1108,7 +1106,7 @@ async def main():
     app.add_handler(CommandHandler("done", handle_video_done))
     
     # Обработчики для фото
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.PHOTO & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID), handle_photo))
     app.add_handler(MessageHandler(filters.PHOTO & filters.Chat(chat_id=MONITOR_CHANNEL_ID), handle_photo_collection))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID),

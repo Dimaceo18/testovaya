@@ -14,6 +14,7 @@ import traceback
 import shutil
 import json
 from collections import defaultdict
+import hashlib
 
 try:
     import requests
@@ -106,10 +107,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== СОСТОЯНИЯ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ====================
+# ==================== СОСТОЯНИЯ ====================
 user_sessions = {}
-# Хранилище для медиагрупп
-media_groups: Dict[str, Dict] = defaultdict(lambda: {"photos": [], "video": None, "caption": "", "processed": False})
+media_groups: Dict[str, Dict] = {}
 
 # ==================== ФУНКЦИИ ====================
 
@@ -866,7 +866,7 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         except:
             pass
 
-# ==================== ОБРАБОТКА МЕДИАГРУПП (НОВАЯ ВЕРСИЯ) ====================
+# ==================== ОБРАБОТКА МЕДИАГРУПП ====================
 
 async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка медиагрупп (несколько фото или видео+фото)"""
@@ -877,16 +877,15 @@ async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not message:
         return
     
-    # Проверяем, есть ли media_group_id
     media_group_id = getattr(message, 'media_group_id', None)
     
-    # Если это не медиагруппа - пропускаем
+    # Если это не медиагруппа - возвращаем False
     if not media_group_id:
-        return
+        return False
     
-    logger.info(f"📦 Получена медиагруппа: {media_group_id}")
+    logger.info(f"📦 Получена часть медиагруппы: {media_group_id}")
     
-    # Инициализируем группу в хранилище
+    # Инициализируем группу
     if media_group_id not in media_groups:
         media_groups[media_group_id] = {
             "photos": [],
@@ -895,45 +894,46 @@ async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "processed": False,
             "user_id": update.effective_user.id,
             "chat_id": message.chat.id,
-            "message_id": message.message_id
+            "message_id": message.message_id,
+            "timestamp": time.time()
         }
     
     group = media_groups[media_group_id]
     
-    # Сохраняем подпись (caption) если есть
+    # Сохраняем подпись
     if message.caption:
         group["caption"] = message.caption
     
     # Сохраняем медиа
     try:
-        # Если есть фото
         if message.photo:
-            photo = message.photo[-1]  # Берем самое качественное
+            photo = message.photo[-1]
             file = await context.bot.get_file(photo.file_id)
             photo_bytes = await file.download_as_bytearray()
             group["photos"].append(photo_bytes)
-            logger.info(f"📸 Добавлено фото в группу {media_group_id}, всего: {len(group['photos'])}")
+            logger.info(f"📸 Добавлено фото в группу, всего: {len(group['photos'])}")
         
-        # Если есть видео
         if message.video:
             file = await context.bot.get_file(message.video.file_id)
             video_bytes = await file.download_as_bytearray()
             group["video"] = video_bytes
-            logger.info(f"📹 Добавлено видео в группу {media_group_id}")
+            logger.info(f"📹 Добавлено видео в группу")
             
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания медиа: {e}")
-        return
+        return True
     
-    # Устанавливаем таймер на обработку (ждем 3 секунды для сбора всех частей)
+    # Запускаем таймер
     if not group.get("timer_started"):
         group["timer_started"] = True
         
         async def process_group():
-            await asyncio.sleep(3)  # Ждем 3 секунды для сбора всех частей
+            await asyncio.sleep(5)  # Ждем 5 секунд
             await process_collected_group(media_group_id, context)
         
         asyncio.create_task(process_group())
+    
+    return True
 
 async def process_collected_group(media_group_id: str, context: ContextTypes.DEFAULT_TYPE):
     """Обработка собранной медиагруппы"""
@@ -945,21 +945,20 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
     # Отмечаем как обработанную
     group["processed"] = True
     
-    # Проверяем, есть ли видео и фото
-    has_video = group.get("video") is not None
-    has_photos = len(group.get("photos", [])) > 0
-    
-    if not has_photos:
+    # Проверяем, есть ли фото
+    photos = group.get("photos", [])
+    if not photos:
         logger.info(f"❌ В группе {media_group_id} нет фото")
         return
     
-    logger.info(f"📦 Обработка группы {media_group_id}: видео={has_video}, фото={len(group['photos'])}")
+    has_video = group.get("video") is not None
+    
+    logger.info(f"📦 Обработка группы: видео={has_video}, фото={len(photos)}")
     
     # Инициализируем сессию пользователя
     user_id = group["user_id"]
     if user_id not in user_sessions:
         user_sessions[user_id] = {
-            "media": [], 
             "state": "idle", 
             "audio": None, 
             "audio_selected": None, 
@@ -970,10 +969,8 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
         }
     
     session = user_sessions[user_id]
-    session["photos"] = group["photos"].copy()
-    
-    if has_video:
-        session["video"] = group["video"]
+    session["photos"] = photos.copy()
+    session["video"] = group.get("video")
     
     # Проверяем текст
     caption = group.get("caption", "")
@@ -996,10 +993,11 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
         
         title_preview = auto_title if auto_title else "❌ Не удалось извлечь заголовок"
         
-        # Отправляем сообщение в чат
+        media_type = "видео + фото" if has_video else f"{len(photos)} фото"
+        
         await context.bot.send_message(
             chat_id=group["chat_id"],
-            text=f"📸 Получена медиагруппа!\n\n"
+            text=f"📸 Получена медиагруппа: {media_type}!\n\n"
                  f"<b>Найденный заголовок:</b>\n{title_preview}\n\n"
                  f"Выберите действие:",
             parse_mode="HTML",
@@ -1017,7 +1015,7 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        media_type = "видео + фото" if has_video else f"{len(session['photos'])} фото"
+        media_type = "видео + фото" if has_video else f"{len(photos)} фото"
         
         await context.bot.send_message(
             chat_id=group["chat_id"],
@@ -1026,6 +1024,15 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
             reply_markup=reply_markup
         )
         session["state"] = "idle"
+    
+    # Удаляем группу из хранилища через час
+    asyncio.create_task(cleanup_group(media_group_id))
+
+async def cleanup_group(media_group_id: str):
+    """Очистка группы через час"""
+    await asyncio.sleep(3600)
+    if media_group_id in media_groups:
+        del media_groups[media_group_id]
 
 # ==================== ОБРАБОТКА ОДИНОЧНЫХ ФОТО ====================
 
@@ -1040,7 +1047,7 @@ async def handle_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message or not message.photo:
         return
     
-    # Если есть media_group_id - пропускаем (обработает handle_media_group)
+    # Если есть media_group_id - пропускаем
     if hasattr(message, 'media_group_id') and message.media_group_id:
         return
     
@@ -1054,13 +1061,13 @@ async def handle_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
         await message.reply_text("❌ Не удалось скачать фото")
         return
     
-    # Инициализируем сессию
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, 
                                  "auto_title": None, "video": None, "photos": [], "current_title": None}
     
     session = user_sessions[user_id]
     session["photos"] = [photo_bytes]
+    session["video"] = None
     
     caption = message.caption or ""
     
@@ -1183,7 +1190,7 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text(f"✅ Использую заголовок из текста:\n\n<b>{auto_title}</b>", parse_mode="HTML")
         
         # Проверяем, есть ли видео для обработки
-        if session.get("video") and session.get("photos"):
+        if session.get("video"):
             keyboard = [
                 [InlineKeyboardButton("🎬 Обработать видео", callback_data="process_media")]
             ]
@@ -1195,7 +1202,6 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             # Обрабатываем как фото
             if session["photos"]:
-                # Если несколько фото - обрабатываем первое
                 photo_bytes = session["photos"][0]
                 status_msg = await query.message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
                 
@@ -1268,7 +1274,7 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         await query.edit_message_text(f"✅ Использую улучшенный заголовок:\n\n<b>{current_title}</b>", parse_mode="HTML")
         
-        if session.get("video") and session.get("photos"):
+        if session.get("video"):
             keyboard = [
                 [InlineKeyboardButton("🎬 Обработать видео", callback_data="process_media")]
             ]
@@ -1389,7 +1395,6 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("❌ Нет фото для обработки")
             return
         
-        # Если несколько фото - обрабатываем первое
         photo_bytes = session["photos"][0]
         await query.edit_message_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
         await query.message.reply_text("✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):")
@@ -1403,11 +1408,9 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         count = len(session["photos"])
         
         if count >= 3:
-            # Если уже есть 3+ фото - сразу предлагаем музыку
             await handle_music_choice(update, context)
             session["state"] = "selecting_music"
         else:
-            # Если меньше 3 - просим добавить еще
             await query.edit_message_text(
                 f"🎬 <b>Создание видео из фото</b>\n\n"
                 f"У вас {count} фото. Нужно минимум 3.\n"
@@ -1446,7 +1449,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if session["photos"]:
-            photo_bytes = session["photos"][0]  # Берем первое фото
+            photo_bytes = session["photos"][0]
             status_msg = await message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
             
             processed = process_single_photo(photo_bytes, title)
@@ -1477,7 +1480,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         session["current_title"] = title
         
-        if session.get("video") and session.get("photos"):
+        if session.get("video"):
             keyboard = [
                 [InlineKeyboardButton("🎬 Обработать видео", callback_data="process_media")]
             ]
@@ -1509,25 +1512,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session["current_title"] = None
             session["audio"] = None
             session["audio_selected"] = None
-    
-    elif state == "waiting_media_title":
-        title = message.text.strip()
-        
-        if not title:
-            await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
-            return
-        
-        session["current_title"] = title
-        
-        keyboard = [
-            [InlineKeyboardButton("🎬 Обработать видео", callback_data="process_media")]
-        ]
-        await message.reply_text(
-            f"✅ Заголовок сохранен:\n\n<b>{title}</b>\n\nНажмите кнопку для обработки:",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        session["state"] = "ready_to_process"
     
     elif state == "waiting_video_title":
         title = message.text.strip()
@@ -1733,7 +1717,7 @@ async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     
     if user_id in user_sessions:
-        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, 
                                  "auto_title": None, "video": None, "photos": [], "current_title": None}
     
     await query.edit_message_text("❌ Создание видео отменено")
@@ -1746,7 +1730,7 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if user_id in user_sessions:
-        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, 
                                  "auto_title": None, "video": None, "photos": [], "current_title": None}
     
     await update.message.reply_text("✅ Действие отменено")
@@ -1763,8 +1747,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"2️⃣ <b>Фото</b> - отправьте фото:\n"
         f"   • С текстом → предложит использовать заголовок из текста или свой\n"
         f"   • Без текста → покажет кнопки: Оформить пост / Сделать видео\n"
-        f"3️⃣ <b>Несколько фото</b> - отправьте вместе в одном сообщении → бот соберет их все\n"
-        f"4️⃣ <b>Видео + Фото</b> - отправьте в одном сообщении → бот объединит их в одно видео\n"
+        f"3️⃣ <b>Несколько фото</b> - отправьте в одном сообщении → соберет их все\n"
+        f"4️⃣ <b>Видео + Фото</b> - отправьте в одном сообщении → объединит в одно видео\n"
         f"5️⃣ <b>🤖 ИИ</b> - улучшает заголовки через DeepSeek AI\n\n"
         f"🎵 <b>Музыка для видео:</b>\n"
         f"   • 🎵 Обычная мелодия\n"
@@ -1818,14 +1802,16 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message:
         return
     
-    # Проверяем, есть ли видео и фото
-    has_video = hasattr(message, 'video') and message.video
-    has_photo = hasattr(message, 'photo') and message.photo
+    # Проверяем, есть ли media_group_id
+    media_group_id = getattr(message, 'media_group_id', None)
     
-    # Если есть media_group_id - это часть медиагруппы
-    if hasattr(message, 'media_group_id') and message.media_group_id:
+    # Если это часть медиагруппы
+    if media_group_id:
         await handle_media_group(update, context)
         return
+    
+    has_video = hasattr(message, 'video') and message.video
+    has_photo = hasattr(message, 'photo') and message.photo
     
     # Только видео
     if has_video:
@@ -1841,7 +1827,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await handle_photo_collection(update, context)
                 return
         
-        # Иначе обрабатываем как одиночное фото
+        # Одиночное фото
         await handle_single_photo(update, context)
         return
     
@@ -1894,13 +1880,13 @@ async def main():
     app.add_handler(CommandHandler("cancel", handle_cancel))
     app.add_handler(CommandHandler("done", handle_video_done))
     
-    # Универсальный обработчик для ВСЕХ сообщений (кроме команд)
+    # Универсальный обработчик
     app.add_handler(MessageHandler(
         filters.ALL & ~filters.COMMAND & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID),
         handle_all_messages
     ))
     
-    # Обработчики для канала (только видео)
+    # Обработчики для канала
     app.add_handler(MessageHandler(
         filters.VIDEO & filters.Chat(chat_id=MONITOR_CHANNEL_ID),
         handle_channel_post

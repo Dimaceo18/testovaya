@@ -10,6 +10,7 @@ import time
 from io import BytesIO
 from typing import Optional
 import subprocess
+import traceback
 
 try:
     import requests
@@ -248,93 +249,84 @@ def clean_title_for_card(title: str) -> str:
     clean = re.sub(r'\s+', ' ', clean)
     return clean.strip()
 
-# ==================== БЫСТРАЯ ОБРАБОТКА ВИДЕО ====================
+# ==================== ОБРАБОТКА ВИДЕО (ПОКАДРОВАЯ) ====================
 
-def create_text_overlay(title_text: str, target_size: tuple) -> Image.Image:
-    w, h = target_size
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    
-    clean_title = clean_title_for_card(title_text)
-    text = (clean_title or "Без заголовка").strip().upper()
-    
-    margin_x = int(w * 0.06)
-    margin_bottom = int(h * 0.08)
-    margin_top = int(h * 0.08)
-    safe_w = w - 2 * margin_x
-    title_max_h = int(h * MN_TITLE_ZONE_PCT)
-    
-    font, lines, heights, spacing, total_h = fit_text_block(
-        draw=draw, text=text, safe_w=safe_w,
-        max_block_h=title_max_h, max_lines=6,
-        start_size=int(h * 0.11), min_size=16
-    )
-    
-    line_height = font.size
-    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
-    
-    y = h - margin_bottom - total_text_height
-    
-    for ln in lines:
-        draw.text((margin_x, y), ln, font=font, fill="white")
-        y += line_height + 2
-    
-    return overlay
+def process_video_frame(frame: np.ndarray, title_text: str) -> np.ndarray:
+    """Обработка одного кадра (используется в fl_image)"""
+    try:
+        img = Image.fromarray(frame).convert("RGB")
+        
+        # 1. Обрезка до 4:5
+        img = crop_to_4x5(img)
+        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+        
+        # 2. Яркость
+        img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+        
+        # 3. Градиент снизу
+        img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+        
+        # 4. Текст
+        draw = ImageDraw.Draw(img)
+        margin_x = int(img.width * 0.06)
+        margin_bottom = int(img.height * 0.08)
+        safe_w = img.width - 2 * margin_x
+        title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+        
+        clean_title = clean_title_for_card(title_text)
+        text = (clean_title or "Без заголовка").strip().upper()
+        
+        font, lines, heights, spacing, total_h = fit_text_block(
+            draw=draw, text=text, safe_w=safe_w,
+            max_block_h=title_max_h, max_lines=6,
+            start_size=int(img.height * 0.11), min_size=16
+        )
+        
+        line_height = font.size
+        total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
+        
+        y = img.height - margin_bottom - total_text_height
+        
+        for ln in lines:
+            draw.text((margin_x, y), ln, font=font, fill="white")
+            y += line_height + 2
+        
+        return np.array(img)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки кадра: {e}")
+        return frame
 
-def process_video_fast(video_bytes: bytes, title_text: str) -> BytesIO:
+def process_video(video_bytes: bytes, title_text: str) -> BytesIO:
+    """Обработка видео (работает!)"""
     temp_input = None
     temp_output = None
     
     try:
+        # Сохраняем входное видео
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
             f.write(video_bytes)
             temp_input = f.name
         
+        # Создаём выходной файл
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
             temp_output = f.name
         
         logger.info(f"📹 Загрузка видео...")
         video = VideoFileClip(temp_input)
+        logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
         
-        # Обрезка до 4:5
-        logger.info(f"✂️ Обрезка до 4:5...")
-        w, h = video.size
-        target_ratio = 4 / 5
-        cur_ratio = w / h
-        
-        if cur_ratio > target_ratio:
-            new_w = int(h * target_ratio)
-            left = (w - new_w) // 2
-            video = video.crop(x1=left, y1=0, x2=left + new_w, y2=h)
-        else:
-            new_h = int(w / target_ratio)
-            top = (h - new_h) // 2
-            video = video.crop(x1=0, y1=top, x2=w, y2=top + new_h)
-        
-        # Изменяем размер
-        logger.info(f"📐 Изменение размера до {TARGET_W}x{TARGET_H}...")
-        video = video.resize((TARGET_W, TARGET_H))
-        
-        # Создаём оверлей с текстом
-        logger.info(f"📝 Создание текстового оверлея...")
-        text_overlay = create_text_overlay(title_text, (TARGET_W, TARGET_H))
-        
-        # Применяем фильтр к видео
-        def process_frame(frame):
-            img = Image.fromarray(frame).convert("RGB")
-            img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-            img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
-            img = img.convert("RGBA")
-            text_overlay_rgba = text_overlay.convert("RGBA")
-            img = Image.alpha_composite(img, text_overlay_rgba)
-            img = img.convert("RGB")
-            return np.array(img)
-        
+        # Обрабатываем каждый кадр
         logger.info(f"🎬 Обработка кадров...")
-        video = video.fl_image(process_frame)
         
+        def process_frame(frame):
+            return process_video_frame(frame, title_text)
+        
+        processed_video = video.fl_image(process_frame)
+        
+        # Сохраняем
         logger.info(f"💾 Сохранение видео...")
-        video.write_videofile(
+        processed_video.write_videofile(
             temp_output,
             codec='libx264',
             audio_codec='aac',
@@ -346,7 +338,9 @@ def process_video_fast(video_bytes: bytes, title_text: str) -> BytesIO:
         )
         
         video.close()
+        processed_video.close()
         
+        # Читаем результат
         with open(temp_output, 'rb') as f:
             result_bytes = f.read()
         
@@ -359,9 +353,11 @@ def process_video_fast(video_bytes: bytes, title_text: str) -> BytesIO:
         
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке видео: {e}")
-        import traceback
         traceback.print_exc()
-        return BytesIO(video_bytes)
+        # Возвращаем оригинал в случае ошибки
+        output = BytesIO(video_bytes)
+        output.seek(0)
+        return output
     
     finally:
         try:
@@ -440,15 +436,15 @@ async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
         file = await bot.get_file(file_id)
         
         if file.file_size and file.file_size > MAX_FILE_SIZE_BYTES:
-            logger.error(f"❌ Файл слишком большой: {file.file_size / (1024*1024):.1f} MB (макс. {MAX_VIDEO_SIZE_MB} MB)")
+            logger.error(f"❌ Файл слишком большой: {file.file_size / (1024*1024):.1f} MB")
             return None
         
         logger.info(f"📥 Скачивание видео, размер: {file.file_size / (1024*1024):.1f} MB")
         result = await file.download_as_bytearray()
-        logger.info(f"✅ Видео скачано, размер: {len(result) / (1024*1024):.1f} MB")
+        logger.info(f"✅ Видео скачано: {len(result) / (1024*1024):.1f} MB")
         return result
     except Exception as e:
-        logger.error(f"❌ Ошибка скачивания медиа: {e}")
+        logger.error(f"❌ Ошибка скачивания: {e}")
         return None
 
 def get_text_from_message(message) -> str:
@@ -459,36 +455,38 @@ def get_text_from_message(message) -> str:
 async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source: str = "канал"):
     try:
         if not hasattr(message, 'video') or not message.video:
-            logger.error("❌ Нет видео в сообщении!")
+            logger.error("❌ Нет видео!")
             return
         
-        logger.info(f"📹 Получено видео: ID={message.video.file_id}, размер={message.video.file_size / (1024*1024):.1f} MB")
+        logger.info(f"📹 Получено видео: {message.video.file_size / (1024*1024):.1f} MB")
         
+        # Проверка размера
         if message.video.file_size and message.video.file_size > MAX_FILE_SIZE_BYTES:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=f"❌ <b>Видео слишком большое!</b>\n\nРазмер: {message.video.file_size / (1024*1024):.1f} MB\nМакс: {MAX_VIDEO_SIZE_MB} MB",
+                text=f"❌ Видео слишком большое! {message.video.file_size / (1024*1024):.1f} MB > {MAX_VIDEO_SIZE_MB} MB",
                 parse_mode="HTML"
             )
             return
         
+        # Статус
         status_msg = await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text="🎬 <b>Начинаю обработку видео (ЧП ВМ)...</b>\n⏳ Это займёт ~30-60 секунд",
+            text="🎬 <b>Начинаю обработку видео...</b>\n⏳ Это займёт ~30-60 секунд",
             parse_mode="HTML"
         )
         
         text = get_text_from_message(message)
         
         if not text.strip():
-            await status_msg.edit_text("⚠️ <b>Видео без текста</b>")
+            await status_msg.edit_text("⚠️ Видео без текста")
             await context.bot.send_video(
                 chat_id=ADMIN_CHAT_ID,
                 video=message.video.file_id
             )
             return
         
-        logger.info(f"📝 Текст видео ({source}): {text[:100]}...")
+        logger.info(f"📝 Текст: {text[:100]}...")
         
         title = extract_title_from_text(text)
         formatted_text = format_text_with_bold_title(text)
@@ -498,19 +496,21 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         video_bytes = await download_media(context.bot, message.video.file_id)
         
         if not video_bytes:
-            await status_msg.edit_text("❌ <b>Не удалось скачать видео</b>")
+            await status_msg.edit_text("❌ Не удалось скачать видео")
             return
         
-        await status_msg.edit_text("⏳ <b>Обрабатываю видео...</b>\n🎬 Применяю ЧП ВМ...", parse_mode="HTML")
+        await status_msg.edit_text("⏳ <b>Обрабатываю видео...</b>", parse_mode="HTML")
         
-        processed_video = process_video_fast(video_bytes, title)
+        # Обрабатываем видео
+        processed_video = process_video(video_bytes, title)
         
         if not processed_video or len(processed_video.getvalue()) == 0:
-            await status_msg.edit_text("❌ <b>Ошибка обработки видео</b>")
+            await status_msg.edit_text("❌ Ошибка обработки видео")
             return
         
         await status_msg.edit_text("⏳ <b>Отправляю видео...</b>", parse_mode="HTML")
         
+        # Отправляем обработанное видео
         await context.bot.send_video(
             chat_id=ADMIN_CHAT_ID,
             video=BytesIO(processed_video.getvalue()),
@@ -521,7 +521,7 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         )
         
         await status_msg.delete()
-        logger.info(f"✅ Отправлено обработанное видео (ЧП ВМ) ({source})")
+        logger.info(f"✅ Видео отправлено! ({source})")
         
         if len(formatted_text) > 1024:
             await context.bot.send_message(
@@ -531,13 +531,12 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
             )
         
     except Exception as e:
-        logger.error(f"❌ Ошибка при обработке видео ({source}): {e}")
-        import traceback
+        logger.error(f"❌ Ошибка: {e}")
         traceback.print_exc()
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=f"❌ <b>Ошибка</b>\n\n{str(e)}",
+                text=f"❌ Ошибка: {str(e)}",
                 parse_mode="HTML"
             )
         except:
@@ -550,9 +549,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 <b>Бот для обработки видео (ЧП ВМ)</b>\n\n"
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
         f"📊 Макс. размер: {MAX_VIDEO_SIZE_MB} MB\n\n"
-        f"⚡ <b>Быстрая обработка!</b>\n"
+        f"🎬 <b>Настройки (ЧП ВМ):</b>\n"
         f"  • Обрезка до 4:5\n"
         f"  • Градиент 48%\n"
+        f"  • Яркость 0.85\n"
         f"  • Белый текст (Montserrat-Black)\n"
         f"  • Текст снизу\n\n"
         f"📎 Перешли видео в бота",
@@ -561,10 +561,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"✅ <b>Бот работает (ЧП ВМ)</b>\n\n"
+        f"✅ <b>Бот работает</b>\n\n"
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
         f"📨 Уведомления: <code>{ADMIN_CHAT_ID}</code>\n"
-        f"⚡ Быстрая обработка включена!",
+        f"⚡ Обработка включена!",
         parse_mode="HTML"
     )
 
@@ -577,7 +577,7 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     if message.video:
-        logger.info(f"📨 Получено видео из канала {message.message_id}")
+        logger.info(f"📨 Получено видео из канала")
         await process_video_post(message, context, "канал")
 
 async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -598,84 +598,69 @@ async def main():
     
     download_fonts()
     
+    # Создаём приложение
+    app = Application.builder().token(BOT_TOKEN).build()
+    bot = Bot(token=BOT_TOKEN)
+    
+    # Очищаем старые сессии
+    logger.info("🔄 Очистка старых сессий...")
     try:
-        # Создаём приложение
-        app = Application.builder().token(BOT_TOKEN).build()
-        bot = Bot(token=BOT_TOKEN)
-        
-        # ПРОВЕРКА: сначала удаляем вебхук и останавливаем старые сессии
-        logger.info("🔄 Очистка старых сессий...")
-        try:
-            await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("✅ Webhook удалён")
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
-        
-        # Небольшая пауза для завершения старых сессий
-        await asyncio.sleep(2)
-        
-        # Проверка подключения к каналу
-        try:
-            channel = await bot.get_chat(MONITOR_CHANNEL_ID)
-            logger.info(f"✅ Подключен к каналу: {channel.title}")
-        except Exception as e:
-            logger.error(f"❌ Не удалось подключиться к каналу: {e}")
-            return
-        
-        # Проверка админа
-        try:
-            admin = await bot.get_chat(ADMIN_CHAT_ID)
-            logger.info(f"✅ Уведомления для: {admin.first_name}")
-        except Exception as e:
-            logger.error(f"❌ Не удалось подключиться к админу: {e}")
-            return
-        
-        # Регистрируем обработчики
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("status", status))
-        
-        app.add_handler(MessageHandler(
-            filters.VIDEO & filters.Chat(chat_id=MONITOR_CHANNEL_ID),
-            handle_channel_post
-        ))
-        
-        app.add_handler(MessageHandler(
-            filters.VIDEO & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID),
-            handle_forwarded_message
-        ))
-        
-        logger.info("✅ Обработчики зарегистрированы")
-        logger.info("⚡ Включена БЫСТРАЯ обработка видео!")
-        logger.info(f"📊 Параметры ЧП ВМ:")
-        logger.info(f"  • Размер: {TARGET_W}x{TARGET_H} (4:5)")
-        logger.info(f"  • Градиент: {int(CHP_GRADIENT_PCT*100)}% от высоты")
-        logger.info(f"  • Шрифт: Montserrat-Black")
-        logger.info(f"  • Текст: снизу")
-        logger.info(f"  • Макс. размер: {MAX_VIDEO_SIZE_MB} MB")
-        
-        # Инициализация и запуск
-        await app.initialize()
-        await app.start()
-        
-        # Запускаем polling с обработкой конфликтов
-        await app.updater.start_polling(
-            allowed_updates=["message", "channel_post", "callback_query"],
-            drop_pending_updates=True,
-            poll_interval=1.0,
-            timeout=30
-        )
-        
-        logger.info("🟢 Бот успешно запущен!")
-        
-        # Держим бота запущенным
-        while True:
-            await asyncio.sleep(1)
-            
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook удалён")
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
+        logger.warning(f"⚠️ Webhook: {e}")
+    
+    await asyncio.sleep(2)
+    
+    # Проверка
+    try:
+        channel = await bot.get_chat(MONITOR_CHANNEL_ID)
+        logger.info(f"✅ Подключен к каналу: {channel.title}")
+    except Exception as e:
+        logger.error(f"❌ Канал: {e}")
+        return
+    
+    try:
+        admin = await bot.get_chat(ADMIN_CHAT_ID)
+        logger.info(f"✅ Уведомления для: {admin.first_name}")
+    except Exception as e:
+        logger.error(f"❌ Админ: {e}")
+        return
+    
+    # Обработчики
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status))
+    
+    app.add_handler(MessageHandler(
+        filters.VIDEO & filters.Chat(chat_id=MONITOR_CHANNEL_ID),
+        handle_channel_post
+    ))
+    
+    app.add_handler(MessageHandler(
+        filters.VIDEO & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID),
+        handle_forwarded_message
+    ))
+    
+    logger.info("✅ Обработчики зарегистрированы")
+    logger.info("📊 Параметры ЧП ВМ:")
+    logger.info(f"  • Размер: {TARGET_W}x{TARGET_H}")
+    logger.info(f"  • Градиент: {int(CHP_GRADIENT_PCT*100)}%")
+    logger.info(f"  • Текст: снизу")
+    
+    await app.initialize()
+    await app.start()
+    
+    await app.updater.start_polling(
+        allowed_updates=["message", "channel_post"],
+        drop_pending_updates=True,
+        poll_interval=1.0,
+        timeout=30
+    )
+    
+    logger.info("🟢 Бот запущен!")
+    
+    while True:
+        await asyncio.sleep(1)
 
 if __name__ == "__main__":
     try:
@@ -684,5 +669,5 @@ if __name__ == "__main__":
         logger.info("🛑 Бот остановлен")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"❌ Фатальная ошибка: {e}")
+        logger.error(f"❌ Ошибка: {e}")
         sys.exit(1)

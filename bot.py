@@ -387,64 +387,98 @@ async def improve_title_with_ai(title: str) -> Optional[str]:
         logger.error(f"❌ Ошибка при работе с DeepSeek: {e}")
         return None
 
-# ==================== СУПЕР-БЫСТРАЯ ОБРАБОТКА ВИДЕО ЧЕРЕЗ FFMPEG (ИСПРАВЛЕННАЯ) ====================
+# ==================== ОБРАБОТКА ВИДЕО (РАБОТАЮЩАЯ ВЕРСИЯ) ====================
 
-def process_video_ultrafast(video_bytes: bytes, title_text: str) -> BytesIO:
-    """Супер-быстрая обработка видео через FFmpeg напрямую"""
+def process_video_frame(frame: np.ndarray, title_text: str) -> np.ndarray:
+    """Обработка одного кадра для видео (полный шаблон ЧП ВМ)"""
+    try:
+        img = Image.fromarray(frame).convert("RGB")
+        
+        # 1. Обрезка до 4:5
+        img = crop_to_4x5(img)
+        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+        
+        # 2. Яркость
+        img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+        
+        # 3. Градиент снизу
+        img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+        
+        # 4. Текст
+        draw = ImageDraw.Draw(img)
+        margin_x = int(img.width * 0.06)
+        margin_bottom = int(img.height * 0.08)
+        safe_w = img.width - 2 * margin_x
+        title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+        
+        clean_title = clean_title_for_card(title_text)
+        text = (clean_title or "Без заголовка").strip().upper()
+        
+        font, lines, heights, spacing, total_h = fit_text_block(
+            draw=draw, text=text, safe_w=safe_w,
+            max_block_h=title_max_h, max_lines=6,
+            start_size=int(img.height * 0.11), min_size=16
+        )
+        
+        line_height = font.size
+        total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
+        
+        y = img.height - margin_bottom - total_text_height
+        
+        for ln in lines:
+            draw.text((margin_x, y), ln, font=font, fill="white")
+            y += line_height + 2
+        
+        return np.array(img)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки кадра: {e}")
+        return frame
+
+def process_video_fast(video_bytes: bytes, title_text: str) -> BytesIO:
+    """Быстрая обработка видео с оптимизациями"""
     temp_input = None
     temp_output = None
     
     try:
-        # Сохраняем входное видео
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
             f.write(video_bytes)
             temp_input = f.name
         
-        # Создаём выходной файл
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
             temp_output = f.name
         
-        logger.info(f"📹 Супер-быстрая обработка видео через FFmpeg...")
+        logger.info(f"📹 Загрузка видео...")
+        video = VideoFileClip(temp_input)
+        logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
         
-        # Подготовка текста для FFmpeg
-        text = title_text.replace("'", "'\\\\''").replace(":", "\:").replace("/", "\/")
-        if len(text) > 100:
-            text = text[:97] + "..."
+        # Оптимизация: уменьшаем разрешение если видео большое
+        if video.size[0] > 1280 or video.size[1] > 1280:
+            video = video.resize(height=720)
+            logger.info(f"📹 Уменьшено разрешение для ускорения")
         
-        # Экранируем текст для drawtext
-        text = text.replace("\\", "\\\\").replace(":", "\:").replace("/", "\/").replace("'", "'\\\\''")
+        logger.info(f"🎬 Обработка кадров...")
         
-        # Строим команду FFmpeg с фильтрами (исправленная версия)
-        cmd = [
-            'ffmpeg',
-            '-i', temp_input,
-            '-vf',
-            f"scale=720:900:force_original_aspect_ratio=decrease,pad=720:900:(ow-iw)/2:(oh-ih)/2,eq=brightness=0.15,drawtext=text='{text}':fontcolor=white:fontsize=48:fontfile=Montserrat-Black.ttf:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.5:boxborderw=10",
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-crf', '28',
-            '-threads', '4',
-            '-movflags', '+faststart',
-            '-y',
-            temp_output
-        ]
+        def process_frame(frame):
+            return process_video_frame(frame, title_text)
         
-        logger.info(f"🎬 Запуск FFmpeg...")
+        processed_video = video.fl_image(process_frame)
         
-        # Запускаем FFmpeg
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60
+        logger.info(f"💾 Сохранение видео...")
+        processed_video.write_videofile(
+            temp_output,
+            codec='libx264',
+            audio_codec='aac',
+            fps=video.fps,
+            bitrate='1000k',
+            threads=4,
+            preset='ultrafast',
+            logger=None
         )
         
-        if result.returncode != 0:
-            logger.error(f"❌ Ошибка FFmpeg: {result.stderr}")
-            # Пробуем без eq фильтра
-            return process_video_fallback(video_bytes, title_text)
+        video.close()
+        processed_video.close()
         
-        # Читаем результат
         with open(temp_output, 'rb') as f:
             result_bytes = f.read()
         
@@ -455,125 +489,13 @@ def process_video_ultrafast(video_bytes: bytes, title_text: str) -> BytesIO:
         output.seek(0)
         return output
         
-    except subprocess.TimeoutExpired:
-        logger.error("❌ FFmpeg превысил время выполнения")
-        return process_video_fallback(video_bytes, title_text)
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        return process_video_fallback(video_bytes, title_text)
-    finally:
-        try:
-            if temp_input and os.path.exists(temp_input):
-                os.unlink(temp_input)
-            if temp_output and os.path.exists(temp_output):
-                os.unlink(temp_output)
-        except:
-            pass
-
-def process_video_fallback(video_bytes: bytes, title_text: str) -> BytesIO:
-    """Запасной метод через MoviePy (надежнее, но медленнее)"""
-    temp_input = None
-    temp_output = None
-    
-    try:
-        from moviepy.editor import VideoFileClip
-        import numpy as np
-        from PIL import Image, ImageDraw, ImageFont
-        
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
-            f.write(video_bytes)
-            temp_input = f.name
-        
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
-            temp_output = f.name
-        
-        logger.info(f"📹 Использую fallback метод (MoviePy)...")
-        
-        video = VideoFileClip(temp_input)
-        
-        # Уменьшаем разрешение для ускорения
-        if video.size[0] > 720:
-            video = video.resize(width=720)
-        
-        def process_frame(frame):
-            try:
-                img = Image.fromarray(frame).convert("RGB")
-                img = img.resize((720, 900), Image.Resampling.LANCZOS)
-                
-                # Яркость
-                enhancer = ImageEnhance.Brightness(img)
-                img = enhancer.enhance(0.85)
-                
-                # Градиент снизу
-                draw = ImageDraw.Draw(img)
-                for i in range(200):
-                    alpha = int(220 * (i / 200))
-                    draw.rectangle([(0, 900 - 200 + i), (720, 900 - 200 + i + 1)], 
-                                 fill=(0, 0, 0, alpha))
-                
-                # Текст
-                try:
-                    font = ImageFont.truetype("Montserrat-Black.ttf", 48)
-                except:
-                    try:
-                        font = ImageFont.truetype("Arial.ttf", 48)
-                    except:
-                        font = ImageFont.load_default()
-                
-                # Перенос текста
-                words = title_text.split()
-                lines = []
-                current = ""
-                for word in words:
-                    test = current + " " + word if current else word
-                    try:
-                        bbox = draw.textbbox((0, 0), test, font=font)
-                        if bbox[2] - bbox[0] < 600:
-                            current = test
-                        else:
-                            lines.append(current)
-                            current = word
-                    except:
-                        lines.append(word)
-                        current = ""
-                if current:
-                    lines.append(current)
-                
-                # Ограничиваем количество строк
-                lines = lines[:3]
-                
-                y = 800
-                for line in lines:
-                    try:
-                        bbox = draw.textbbox((0, 0), line, font=font)
-                        x = (720 - (bbox[2] - bbox[0])) // 2
-                        draw.text((x, y), line, font=font, fill="white")
-                        y += 55
-                    except:
-                        pass
-                
-                return np.array(img)
-            except Exception as e:
-                logger.error(f"Ошибка кадра: {e}")
-                return frame
-        
-        processed = video.fl_image(process_frame)
-        processed.write_videofile(temp_output, preset='ultrafast', threads=4, logger=None)
-        
-        with open(temp_output, 'rb') as f:
-            result_bytes = f.read()
-        
-        output = BytesIO()
-        output.write(result_bytes)
-        output.seek(0)
-        return output
-        
-    except Exception as e:
-        logger.error(f"❌ Fallback ошибка: {e}")
+        logger.error(f"❌ Ошибка при обработке видео: {e}")
         traceback.print_exc()
         output = BytesIO(video_bytes)
         output.seek(0)
         return output
+    
     finally:
         try:
             if temp_input and os.path.exists(temp_input):
@@ -892,7 +814,7 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         
         status_msg = await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text="🎬 <b>Начинаю обработку видео...</b>\n⏳ Это займёт ~5-15 секунд",
+            text="🎬 <b>Начинаю обработку видео...</b>\n⏳ Это займёт ~20-40 секунд",
             parse_mode="HTML"
         )
         
@@ -919,9 +841,9 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
             await status_msg.edit_text("❌ Не удалось скачать видео")
             return
         
-        await status_msg.edit_text("⏳ <b>Обрабатываю видео (супер-быстрый режим)...</b>", parse_mode="HTML")
+        await status_msg.edit_text("⏳ <b>Обрабатываю видео...</b>", parse_mode="HTML")
         
-        processed_video = process_video_ultrafast(video_bytes, title)
+        processed_video = process_video_fast(video_bytes, title)
         
         if not processed_video or len(processed_video.getvalue()) == 0:
             await status_msg.edit_text("❌ Ошибка обработки видео")
@@ -1027,7 +949,7 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
         )
         session["state"] = "waiting_video_title"
 
-# ==================== ОБРАБОТЧИКИ ФОТО ====================
+# ==================== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ====================
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
@@ -1102,8 +1024,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
         session["state"] = "idle"
-
-# ==================== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ====================
 
 async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
@@ -1237,82 +1157,6 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
             await handle_music_choice(update, context)
 
-# ==================== КОМАНДЫ И ЗАПУСК ====================
-
-async def handle_video_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user:
-        return
-    
-    user_id = update.effective_user.id
-    message = update.message
-    
-    if not message:
-        return
-    
-    if user_id not in user_sessions:
-        await message.reply_text("❌ Нет активной сессии. Отправьте фото сначала.")
-        return
-    
-    session = user_sessions[user_id]
-    
-    if session.get("state") != "collecting_photos":
-        await message.reply_text("❌ Нет активного сбора фото.")
-        return
-    
-    count = len(session["photos"])
-    
-    if count < 3:
-        await message.reply_text(
-            f"❌ Недостаточно фото! Отправлено: {count}, нужно минимум 3.\n"
-            "Отправьте еще фото или /cancel для отмены"
-        )
-        return
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("🎵 Обычная мелодия", callback_data="music_обычная"),
-            InlineKeyboardButton("📢 Важная новость", callback_data="music_важная")
-        ],
-        [
-            InlineKeyboardButton("🔇 Без музыки", callback_data="music_no_music"),
-            InlineKeyboardButton("❌ Отмена", callback_data="music_cancel")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await message.reply_text(
-        "🎵 <b>Выберите музыкальное сопровождение для слайд-шоу:</b>",
-        parse_mode="HTML",
-        reply_markup=reply_markup
-    )
-
-async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if not update.effective_user:
-        await query.edit_message_text("❌ Ошибка: пользователь не найден")
-        return
-    
-    user_id = query.from_user.id
-    
-    if user_id in user_sessions:
-        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
-    
-    await query.edit_message_text("❌ Действие отменено")
-
-async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user:
-        await update.message.reply_text("❌ Ошибка: пользователь не найден")
-        return
-    
-    user_id = update.effective_user.id
-    
-    if user_id in user_sessions:
-        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
-    
-    await update.message.reply_text("✅ Действие отменено")
-
 async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1349,7 +1193,6 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             session["state"] = "ready_to_process_video"
         else:
-            # Для фото - спрашиваем что делать
             keyboard = [
                 [
                     InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="action_slideshow"),
@@ -1603,9 +1446,9 @@ async def process_video_only(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("❌ Нет видео для обработки")
         return
     
-    await query.edit_message_text("⏳ <b>Обрабатываю видео...</b>\n⏳ Это займет ~5-15 секунд", parse_mode="HTML")
+    await query.edit_message_text("⏳ <b>Обрабатываю видео...</b>\n⏳ Это займет ~20-40 секунд", parse_mode="HTML")
     
-    result = process_video_ultrafast(video_bytes, title)
+    result = process_video_fast(video_bytes, title)
     
     if result and len(result.getvalue()) > 0:
         await query.message.reply_video(
@@ -1823,6 +1666,80 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["audio"] = None
         session["audio_selected"] = None
 
+async def handle_video_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user:
+        return
+    
+    user_id = update.effective_user.id
+    message = update.message
+    
+    if not message:
+        return
+    
+    if user_id not in user_sessions:
+        await message.reply_text("❌ Нет активной сессии. Отправьте фото сначала.")
+        return
+    
+    session = user_sessions[user_id]
+    
+    if session.get("state") != "collecting_photos":
+        await message.reply_text("❌ Нет активного сбора фото.")
+        return
+    
+    count = len(session["photos"])
+    
+    if count < 3:
+        await message.reply_text(
+            f"❌ Недостаточно фото! Отправлено: {count}, нужно минимум 3.\n"
+            "Отправьте еще фото или /cancel для отмены"
+        )
+        return
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🎵 Обычная мелодия", callback_data="music_обычная"),
+            InlineKeyboardButton("📢 Важная новость", callback_data="music_важная")
+        ],
+        [
+            InlineKeyboardButton("🔇 Без музыки", callback_data="music_no_music"),
+            InlineKeyboardButton("❌ Отмена", callback_data="music_cancel")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await message.reply_text(
+        "🎵 <b>Выберите музыкальное сопровождение для слайд-шоу:</b>",
+        parse_mode="HTML",
+        reply_markup=reply_markup
+    )
+
+async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = query.from_user.id
+    
+    if user_id in user_sessions:
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
+    
+    await query.edit_message_text("❌ Действие отменено")
+
+async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user:
+        await update.message.reply_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = update.effective_user.id
+    
+    if user_id in user_sessions:
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
+    
+    await update.message.reply_text("✅ Действие отменено")
+
 # ==================== ОСНОВНЫЕ ОБРАБОТЧИКИ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1831,7 +1748,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
         f"📊 Макс. размер: {MAX_VIDEO_SIZE_MB} MB\n\n"
         f"🎬 <b>Что умеет бот:</b>\n"
-        f"1️⃣ <b>Видео</b> - обрабатывает видео с текстом (градиент + текст) БЫСТРО!\n"
+        f"1️⃣ <b>Видео</b> - обрабатывает видео с текстом (градиент + текст)\n"
         f"2️⃣ <b>Фото</b> - с текстом (выбор заголовка) или без (кнопки)\n"
         f"3️⃣ <b>Слайд-шоу</b> - из 3-10 фото с музыкой\n"
         f"4️⃣ <b>Видео + Фото</b> - объединение в одно видео\n"
@@ -1840,7 +1757,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   • 🎵 Обычная мелодия\n"
         f"   • 📢 Важная новость\n"
         f"   • 🔇 Без музыки\n\n"
-        f"⚡ <b>Скорость:</b> 5-15 секунд для 10 МБ видео!\n\n"
         f"📎 Просто отправьте видео или фото в бот",
         parse_mode="HTML"
     )
@@ -1851,8 +1767,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
         f"📨 Уведомления: <code>{ADMIN_CHAT_ID}</code>\n"
         f"⚡ Обработка включена!\n"
-        f"🤖 ИИ: {'✅ Доступен' if DEEPSEEK_API_KEY else '❌ Не настроен'}\n"
-        f"⚡ Видео: Супер-быстрый режим (FFmpeg)",
+        f"🤖 ИИ: {'✅ Доступен' if DEEPSEEK_API_KEY else '❌ Не настроен'}",
         parse_mode="HTML"
     )
 
@@ -2172,11 +2087,6 @@ async def main():
     logger.info("  • Слайд-шоу из 3-10 фото с плавным приближением (+10% за 3с)")
     logger.info("  • Поддержка медиагрупп (несколько фото/видео в одном сообщении)")
     logger.info("  • Видео: наложение градиента и текста")
-    logger.info("⚡ СУПЕР-БЫСТРАЯ ОБРАБОТКА:")
-    logger.info("  • FFmpeg напрямую (без MoviePy)")
-    logger.info("  • preset='ultrafast'")
-    logger.info("  • threads=4")
-    logger.info("  • Время: 5-15 секунд для 10 МБ видео")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")
     logger.info("  • Важная новость")

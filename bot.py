@@ -65,10 +65,10 @@ MONITOR_CHANNEL_ID = os.getenv("MONITOR_CHANNEL_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 MAX_VIDEO_SIZE_MB = int(os.getenv("MAX_VIDEO_SIZE_MB", "50"))
 
-# URL для аудиофайлов на GitHub
-# ЗАМЕНИТЕ ЭТИ ССЫЛКИ НА ВАШИ РЕАЛЬНЫЕ ССЫЛКИ
+# URL для аудиофайлов на GitHub (исправленные ссылки)
 AUDIO_URLS = {
-    "важная": "https://raw.githubusercontent.com/ваш_username/ваш_репозиторий/main/важная.mp3"
+    "важная": "https://raw.githubusercontent.com/Dimaceo18/testovaya/main/vajnoe.mp3",
+    "обычная": "https://raw.githubusercontent.com/Dimaceo18/testovaya/main/obychnaya.mp3"
 }
 
 if not BOT_TOKEN:
@@ -122,25 +122,25 @@ def download_fonts():
             except Exception as e:
                 logger.error(f"❌ Ошибка скачивания {font_name}: {e}")
 
-def download_audio_from_github() -> Optional[bytes]:
+def download_audio_from_github(audio_type: str) -> Optional[bytes]:
     """Скачивает аудиофайл с GitHub"""
     try:
-        url = AUDIO_URLS.get("важная")
+        url = AUDIO_URLS.get(audio_type)
         if not url:
-            logger.error("❌ URL для аудио не найден")
+            logger.error(f"❌ URL для {audio_type} не найден")
             return None
         
-        logger.info(f"⬇️ Скачивание аудио с GitHub...")
+        logger.info(f"⬇️ Скачивание аудио {audio_type}...")
         response = requests.get(url, timeout=30)
         
         if response.status_code == 200:
-            logger.info(f"✅ Аудио скачано! Размер: {len(response.content) / 1024:.1f} KB")
+            logger.info(f"✅ Аудио {audio_type} скачано! Размер: {len(response.content) / 1024:.1f} KB")
             return response.content
         else:
             logger.error(f"❌ Ошибка скачивания аудио: {response.status_code}")
             return None
     except Exception as e:
-        logger.error(f"❌ Ошибка скачивания аудио: {e}")
+        logger.error(f"❌ Ошибка скачивания аудио {audio_type}: {e}")
         return None
 
 def load_font(font_name: str, size: int):
@@ -749,7 +749,7 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         except:
             pass
 
-# ==================== НОВЫЙ ОБРАБОТЧИК ВЫБОРА МУЗЫКИ ====================
+# ==================== ОБРАБОТЧИК ВЫБОРА МУЗЫКИ ====================
 
 async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает выбор музыки для видео"""
@@ -768,10 +768,11 @@ async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     keyboard = [
         [
-            InlineKeyboardButton("📢 Важная новость", callback_data="music_important"),
-            InlineKeyboardButton("🔇 Без музыки", callback_data="music_no_music")
+            InlineKeyboardButton("🎵 Обычная мелодия", callback_data="music_обычная"),
+            InlineKeyboardButton("📢 Важная новость", callback_data="music_важная")
         ],
         [
+            InlineKeyboardButton("🔇 Без музыки", callback_data="music_no_music"),
             InlineKeyboardButton("❌ Отмена", callback_data="music_cancel")
         ]
     ]
@@ -779,7 +780,8 @@ async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     await query.edit_message_text(
         "🎵 <b>Выберите музыкальное сопровождение для видео:</b>\n\n"
-        "• 📢 Важная новость - энергичная/драматичная музыка\n"
+        "• 🎵 Обычная мелодия - спокойный фон\n"
+        "• 📢 Важная новость - энергичная/драматичная\n"
         "• 🔇 Без музыки - тишина",
         parse_mode="HTML",
         reply_markup=reply_markup
@@ -804,49 +806,44 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
     session = user_photo_sessions[user_id]
     
     if data == "no_music":
-        # Без музыки
         session["audio"] = None
         session["audio_selected"] = "без музыки"
         await query.edit_message_text("🔇 Видео будет без музыки")
         
-        # Запрашиваем заголовок
         await query.message.reply_text(
             f"✅ Собрано {len(session['photos'])} фото.\n\n✏️ Отправьте текст для заголовка:"
         )
         session["state"] = "waiting_video_title"
         
     elif data == "cancel":
-        # Отмена выбора музыки
         session["audio"] = None
         session["audio_selected"] = None
         await query.edit_message_text("❌ Выбор музыки отменен")
         
-        # Возвращаемся к сбору фото
         await query.message.reply_text(
             "📸 Продолжайте отправлять фото или нажмите /done для создания видео"
         )
         session["state"] = "collecting_photos"
         
-    elif data == "important":
-        # Выбрана важная музыка - скачиваем с GitHub
-        await query.edit_message_text("⏳ Скачиваю музыку 'Важная новость' с GitHub...")
+    elif data in ["важная", "обычная"]:
+        # Выбрана музыка - скачиваем с GitHub
+        audio_name = "Важная новость" if data == "важная" else "Обычная мелодия"
+        await query.edit_message_text(f"⏳ Скачиваю музыку '{audio_name}' с GitHub...")
         
-        audio_bytes = download_audio_from_github()
+        audio_bytes = download_audio_from_github(data)
         
         if audio_bytes:
             session["audio"] = audio_bytes
-            session["audio_selected"] = "Важная новость"
+            session["audio_selected"] = audio_name
             
-            await query.edit_message_text("✅ Музыка 'Важная новость' загружена! Она будет добавлена к видео")
+            await query.edit_message_text(f"✅ Музыка '{audio_name}' загружена! Она будет добавлена к видео")
             
-            # Запрашиваем заголовок
             await query.message.reply_text(
                 f"✅ Собрано {len(session['photos'])} фото.\n\n✏️ Отправьте текст для заголовка:"
             )
             session["state"] = "waiting_video_title"
         else:
-            await query.edit_message_text("❌ Не удалось загрузить музыку. Попробуйте снова.")
-            # Показываем выбор снова
+            await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
             await handle_music_choice(update, context)
 
 # ==================== ОБРАБОТЧИКИ ====================
@@ -920,7 +917,6 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("❌ Нет фото для обработки")
             return
         
-        # Переходим к выбору музыки
         await handle_music_choice(update, context)
         session["state"] = "selecting_music"
 
@@ -981,7 +977,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
             
-            # Получаем аудио из сессии
             audio_bytes = session.get("audio")
             audio_selected = session.get("audio_selected", "без музыки")
             
@@ -990,13 +985,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 logger.info("🔇 Создаю видео без музыки")
             
-            # Создаем видео с музыкой
             video = create_slideshow_video(session["photos"], title, audio_bytes)
             
             if video and len(video.getvalue()) > 0:
                 await status_msg.edit_text("⏳ <b>Отправляю видео...</b>", parse_mode="HTML")
                 
-                # Формируем подпись с информацией о музыке
                 caption = f"<b>{title}</b>"
                 if audio_selected and audio_selected != "без музыки":
                     caption += f"\n🎵 Музыка: {audio_selected}"
@@ -1091,13 +1084,13 @@ async def handle_video_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Переходим к выбору музыки
     keyboard = [
         [
-            InlineKeyboardButton("📢 Важная новость", callback_data="music_important"),
-            InlineKeyboardButton("🔇 Без музыки", callback_data="music_no_music")
+            InlineKeyboardButton("🎵 Обычная мелодия", callback_data="music_обычная"),
+            InlineKeyboardButton("📢 Важная новость", callback_data="music_важная")
         ],
         [
+            InlineKeyboardButton("🔇 Без музыки", callback_data="music_no_music"),
             InlineKeyboardButton("❌ Отмена", callback_data="music_cancel")
         ]
     ]
@@ -1105,7 +1098,8 @@ async def handle_video_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await message.reply_text(
         "🎵 <b>Выберите музыкальное сопровождение для видео:</b>\n\n"
-        "• 📢 Важная новость - энергичная/драматичная музыка\n"
+        "• 🎵 Обычная мелодия - спокойный фон\n"
+        "• 📢 Важная новость - энергичная/драматичная\n"
         "• 🔇 Без музыки - тишина",
         parse_mode="HTML",
         reply_markup=reply_markup
@@ -1151,7 +1145,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   • Оформить пост (градиент + текст)\n"
         f"   • Сделать видео (слайд-шоу из 3-10 фото)\n\n"
         f"🎵 <b>Музыка для видео:</b>\n"
-        f"   • 📢 Важная новость (скачивается с GitHub)\n"
+        f"   • 🎵 Обычная мелодия\n"
+        f"   • 📢 Важная новость\n"
         f"   • 🔇 Без музыки\n\n"
         f"📎 Просто отправьте видео или фото в бот",
         parse_mode="HTML"
@@ -1265,7 +1260,8 @@ async def main():
     logger.info("  • Обработка фото с градиентом")
     logger.info("  • Слайд-шоу из 3-10 фото с плавным приближением (+10% за 3с)")
     logger.info("🎵 Музыка:")
-    logger.info("  • Важная новость (скачивается с GitHub)")
+    logger.info("  • Обычная мелодия")
+    logger.info("  • Важная новость")
     
     await app.initialize()
     await app.start()

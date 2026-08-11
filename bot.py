@@ -105,7 +105,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== СОСТОЯНИЯ ДЛЯ ФОТО ====================
+# ==================== СОСТОЯНИЯ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ====================
 user_sessions = {}
 
 # ==================== ФУНКЦИИ ====================
@@ -775,7 +775,7 @@ async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
 def get_text_from_message(message) -> str:
     return message.text or message.caption or ""
 
-# ==================== ОБРАБОТЧИКИ ====================
+# ==================== ОБРАБОТКА ВИДЕО ====================
 
 async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source: str = "канал"):
     try:
@@ -863,83 +863,10 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         except:
             pass
 
-async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user:
-        return
-    
-    user_id = update.effective_user.id
-    message = update.message
-    
-    if not message:
-        return
-    
-    has_video = hasattr(message, 'video') and message.video
-    has_photo = hasattr(message, 'photo') and message.photo
-    has_caption = message.caption or ""
-    
-    if not has_video or not has_photo:
-        return
-    
-    logger.info(f"📦 Получена медиагруппа: видео + {len(message.photo)} фото")
-    
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
-    
-    session = user_sessions[user_id]
-    
-    try:
-        video_file = await context.bot.get_file(message.video.file_id)
-        video_bytes = await video_file.download_as_bytearray()
-        session["video"] = video_bytes
-        session["photos"] = []
-        
-        for photo in message.photo:
-            photo_file = await context.bot.get_file(photo.file_id)
-            photo_bytes = await photo_file.download_as_bytearray()
-            session["photos"].append(photo_bytes)
-        
-        logger.info(f"✅ Скачано: видео + {len(session['photos'])} фото")
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка скачивания медиа: {e}")
-        await message.reply_text("❌ Не удалось скачать медиафайлы")
-        return
-    
-    if has_caption.strip():
-        auto_title = extract_title_from_text(has_caption)
-        session["auto_title"] = auto_title
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("📝 Использовать заголовок из текста", callback_data="title_auto"),
-                InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom")
-            ],
-            [
-                InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="title_ai"),
-                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        title_preview = auto_title if auto_title else "❌ Не удалось извлечь заголовок"
-        
-        await message.reply_text(
-            f"📦 Получена медиагруппа (видео + {len(session['photos'])} фото)!\n\n"
-            f"<b>Найденный заголовок:</b>\n{title_preview}\n\n"
-            f"Выберите действие:",
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
-        session["state"] = "selecting_title"
-        
-    else:
-        await message.reply_text(
-            f"📦 Получена медиагруппа (видео + {len(session['photos'])} фото)!\n\n"
-            f"✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):"
-        )
-        session["state"] = "waiting_media_title"
+# ==================== ОБРАБОТКА МЕДИАГРУПП (НЕСКОЛЬКО ФОТО) ====================
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нескольких фото в одном сообщении (медиагруппа)"""
     if not update.effective_user:
         return
     
@@ -949,11 +876,108 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message or not message.photo:
         return
     
-    # Если есть видео вместе с фото - пропускаем (обработает handle_media_group)
+    # Проверяем, есть ли видео вместе с фото
     if hasattr(message, 'video') and message.video:
         return
     
-    photo = message.photo[-1]
+    # Получаем все фото из сообщения (их может быть несколько)
+    photos = message.photo
+    
+    # Инициализируем сессию
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
+                                 "auto_title": None, "video": None, "photos": [], "current_title": None}
+    
+    session = user_sessions[user_id]
+    
+    # Если фото несколько - это медиагруппа
+    if len(photos) > 1:
+        logger.info(f"📸 Получена медиагруппа из {len(photos)} фото")
+        session["photos"] = []  # Очищаем старые фото
+        
+        # Скачиваем все фото
+        try:
+            for photo in photos:
+                file = await context.bot.get_file(photo.file_id)
+                photo_bytes = await file.download_as_bytearray()
+                session["photos"].append(photo_bytes)
+            
+            logger.info(f"✅ Скачано {len(session['photos'])} фото")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка скачивания фото: {e}")
+            await message.reply_text("❌ Не удалось скачать фото")
+            return
+        
+        # Проверяем текст
+        caption = message.caption or ""
+        
+        if caption.strip():
+            auto_title = extract_title_from_text(caption)
+            session["auto_title"] = auto_title
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("📝 Использовать заголовок из текста", callback_data="title_auto"),
+                    InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom")
+                ],
+                [
+                    InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="title_ai"),
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            title_preview = auto_title if auto_title else "❌ Не удалось извлечь заголовок"
+            
+            await message.reply_text(
+                f"📸 Получено {len(session['photos'])} фото с текстом!\n\n"
+                f"<b>Найденный заголовок:</b>\n{title_preview}\n\n"
+                f"Выберите действие:",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
+            session["state"] = "selecting_title"
+            
+        else:
+            # Нет текста - показываем кнопки
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Оформить пост", callback_data="photo_post"),
+                    InlineKeyboardButton("🎬 Сделать видео", callback_data="photo_video")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await message.reply_text(
+                f"📸 Получено {len(session['photos'])} фото!\n\n"
+                f"Выберите действие:",
+                reply_markup=reply_markup
+            )
+            session["state"] = "idle"
+        
+        return
+    
+    # Если только одно фото - обрабатываем как обычно
+    else:
+        await handle_single_photo(update, context)
+
+async def handle_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка одного фото"""
+    if not update.effective_user:
+        return
+    
+    user_id = update.effective_user.id
+    message = update.message
+    
+    if not message or not message.photo:
+        return
+    
+    # Если есть видео вместе с фото - пропускаем
+    if hasattr(message, 'video') and message.video:
+        return
+    
+    photo = message.photo[-1]  # Берем последнее (самое качественное)
     
     try:
         file = await context.bot.get_file(photo.file_id)
@@ -963,11 +987,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Не удалось скачать фото")
         return
     
+    # Инициализируем сессию
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
+        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
+                                 "auto_title": None, "video": None, "photos": [], "current_title": None}
     
     session = user_sessions[user_id]
-    session["photos"] = [photo_bytes]  # Заменяем, а не добавляем
+    session["photos"] = [photo_bytes]  # Сохраняем одно фото
     
     caption = message.caption or ""
     
@@ -1012,6 +1038,60 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
         session["state"] = "idle"
+
+# ==================== СБОР ФОТО ДЛЯ ВИДЕО ====================
+
+async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сбор дополнительных фото для видео"""
+    if not update.effective_user:
+        return
+    
+    user_id = update.effective_user.id
+    message = update.message
+    
+    if not message or not message.photo:
+        return
+    
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
+                                 "auto_title": None, "video": None, "photos": [], "current_title": None}
+    
+    session = user_sessions[user_id]
+    
+    # Проверяем, нужно ли собирать фото для видео
+    if session.get("state") != "collecting_photos":
+        # Если не в режиме сбора, обрабатываем как обычное фото
+        await handle_single_photo(update, context)
+        return
+    
+    # Если в режиме сбора - добавляем все фото из сообщения
+    photos = message.photo
+    count_before = len(session["photos"])
+    
+    try:
+        for photo in photos:
+            file = await context.bot.get_file(photo.file_id)
+            photo_bytes = await file.download_as_bytearray()
+            session["photos"].append(photo_bytes)
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания фото: {e}")
+        await message.reply_text("❌ Не удалось скачать фото")
+        return
+    
+    count = len(session["photos"])
+    added = count - count_before
+    
+    if count >= 10:
+        await message.reply_text(f"✅ Собрано {count} фото (максимум).\nНажмите /done для создания видео")
+        return
+    
+    await message.reply_text(
+        f"✅ Добавлено {added} фото! Всего: {count}\n"
+        f"Осталось: {max(0, 3 - count)} фото (минимум 3, максимум 10)\n"
+        "Нажмите /done когда будете готовы"
+    )
+
+# ==================== ОБРАБОТЧИК ВЫБОРА ЗАГОЛОВКА ====================
 
 async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1164,6 +1244,8 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         session["audio"] = None
         await query.edit_message_text("❌ Действие отменено")
 
+# ==================== ОБРАБОТКА МЕДИА ====================
+
 async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1215,6 +1297,8 @@ async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session["current_title"] = None
     session["audio"] = None
 
+# ==================== ОБРАБОТЧИКИ КНОПОК ====================
+
 async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1241,6 +1325,8 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("❌ Нет фото для обработки")
             return
         
+        # Если несколько фото - обрабатываем первое
+        photo_bytes = session["photos"][0]
         await query.edit_message_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
         await query.message.reply_text("✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):")
         session["state"] = "waiting_post_title"
@@ -1250,17 +1336,27 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("❌ Нет фото для обработки")
             return
         
-        # Запрашиваем сколько фото нужно для видео
-        await query.message.reply_text(
-            "🎬 <b>Создание видео из фото</b>\n\n"
-            "Отправьте еще 2-9 фотографий (всего нужно 3-10).\n"
-            "Когда будете готовы, нажмите /done",
-            parse_mode="HTML"
-        )
-        session["state"] = "collecting_photos"
+        count = len(session["photos"])
+        
+        if count >= 3:
+            # Если уже есть 3+ фото - сразу предлагаем музыку
+            await handle_music_choice(update, context)
+            session["state"] = "selecting_music"
+        else:
+            # Если меньше 3 - просим добавить еще
+            await query.edit_message_text(
+                f"🎬 <b>Создание видео из фото</b>\n\n"
+                f"У вас {count} фото. Нужно минимум 3.\n"
+                f"Отправьте еще {3 - count} фото (можно несколько в одном сообщении).\n"
+                "Когда будете готовы, нажмите /done",
+                parse_mode="HTML"
+            )
+            session["state"] = "collecting_photos"
         
     elif data == "process_media":
         await process_media(update, context)
+
+# ==================== ТЕКСТОВЫЙ ВВОД ====================
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
@@ -1286,7 +1382,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if session["photos"]:
-            photo_bytes = session["photos"][-1]
+            photo_bytes = session["photos"][0]  # Берем первое фото
             status_msg = await message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
             
             processed = process_single_photo(photo_bytes, title)
@@ -1328,7 +1424,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             session["state"] = "ready_to_process"
         elif session["photos"]:
-            photo_bytes = session["photos"][-1]
+            photo_bytes = session["photos"][0]
             status_msg = await message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
             
             processed = process_single_photo(photo_bytes, title)
@@ -1415,6 +1511,8 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["current_title"] = None
         session["audio"] = None
         session["audio_selected"] = None
+
+# ==================== МУЗЫКА ====================
 
 async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1508,46 +1606,7 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
             await handle_music_choice(update, context)
 
-async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user:
-        return
-    
-    user_id = update.effective_user.id
-    message = update.message
-    
-    if not message or not message.photo:
-        return
-    
-    if user_id not in user_sessions:
-        return
-    
-    session = user_sessions[user_id]
-    
-    if session.get("state") != "collecting_photos":
-        return
-    
-    photo = message.photo[-1]
-    
-    try:
-        file = await context.bot.get_file(photo.file_id)
-        photo_bytes = await file.download_as_bytearray()
-    except Exception as e:
-        logger.error(f"❌ Ошибка скачивания фото: {e}")
-        await message.reply_text("❌ Не удалось скачать фото")
-        return
-    
-    session["photos"].append(photo_bytes)
-    count = len(session["photos"])
-    
-    if count >= 10:
-        await message.reply_text(f"✅ Собрано {count} фото (максимум).\nНажмите /done для создания видео")
-        return
-    
-    await message.reply_text(
-        f"✅ Фото {count} добавлено!\n"
-        f"Осталось: {max(0, 3 - count)} фото (минимум 3, максимум 10)\n"
-        "Нажмите /done когда будете готовы"
-    )
+# ==================== КОМАНДЫ ====================
 
 async def handle_video_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
@@ -1610,7 +1669,8 @@ async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     
     if user_id in user_sessions:
-        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
+        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
+                                 "auto_title": None, "video": None, "photos": [], "current_title": None}
     
     await query.edit_message_text("❌ Создание видео отменено")
 
@@ -1622,7 +1682,8 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if user_id in user_sessions:
-        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
+        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
+                                 "auto_title": None, "video": None, "photos": [], "current_title": None}
     
     await update.message.reply_text("✅ Действие отменено")
 
@@ -1638,8 +1699,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"2️⃣ <b>Фото</b> - отправьте фото:\n"
         f"   • С текстом → предложит использовать заголовок из текста или свой\n"
         f"   • Без текста → покажет кнопки: Оформить пост / Сделать видео\n"
-        f"3️⃣ <b>Видео + Фото</b> - отправьте вместе → бот объединит их в одно видео\n"
-        f"4️⃣ <b>🤖 ИИ</b> - улучшает заголовки через DeepSeek AI\n\n"
+        f"3️⃣ <b>Несколько фото</b> - отправьте вместе → бот соберет их все\n"
+        f"4️⃣ <b>Видео + Фото</b> - отправьте вместе → бот объединит их в одно видео\n"
+        f"5️⃣ <b>🤖 ИИ</b> - улучшает заголовки через DeepSeek AI\n\n"
         f"🎵 <b>Музыка для видео:</b>\n"
         f"   • 🎵 Обычная мелодия\n"
         f"   • 📢 Важная новость\n"
@@ -1706,9 +1768,18 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         await handle_forwarded_message(update, context)
         return
     
-    # Только фото
+    # Только фото - проверяем режим сбора
     if has_photo:
-        await handle_photo(update, context)
+        user_id = update.effective_user.id
+        if user_id in user_sessions:
+            session = user_sessions[user_id]
+            if session.get("state") == "collecting_photos":
+                # Если в режиме сбора фото - добавляем
+                await handle_photo_collection(update, context)
+                return
+        
+        # Иначе обрабатываем как медиагруппу (может быть несколько фото)
+        await handle_media_group(update, context)
         return
     
     # Текст
@@ -1787,6 +1858,7 @@ async def main():
     logger.info("  • Слайд-шоу из 3-10 фото с плавным приближением (+10% за 3с)")
     logger.info("  • Объединение видео + фото в одно видео")
     logger.info("  • 🤖 Улучшение заголовков через DeepSeek AI")
+    logger.info("  • Поддержка нескольких фото в одном сообщении")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")
     logger.info("  • Важная новость")
@@ -1797,11 +1869,12 @@ async def main():
     await app.updater.start_polling(
         allowed_updates=["message", "channel_post", "callback_query"],
         drop_pending_updates=True,
-        poll_interval=1.0,
-        timeout=30,
-        read_timeout=30,
-        write_timeout=30,
-        connect_timeout=30
+        poll_interval=2.0,
+        timeout=60,
+        read_timeout=60,
+        write_timeout=60,
+        connect_timeout=60,
+        limit=100
     )
     
     logger.info("🟢 Бот запущен!")

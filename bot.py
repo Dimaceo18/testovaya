@@ -8,28 +8,28 @@ import sys
 import tempfile
 from io import BytesIO
 from typing import Optional
+import subprocess
 
 try:
     import requests
 except ImportError:
-    import subprocess
     subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
     import requests
 
 try:
-    from moviepy import VideoFileClip
+    from moviepy import VideoFileClip, CompositeVideoClip, ImageClip
 except ImportError:
     try:
         from moviepy.video.io.VideoFileClip import VideoFileClip
+        from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+        from moviepy.video.VideoClip import ImageClip
     except:
-        import subprocess
         subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
-        from moviepy import VideoFileClip
+        from moviepy import VideoFileClip, CompositeVideoClip, ImageClip
 
 try:
     import numpy as np
 except ImportError:
-    import subprocess
     subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy"])
     import numpy as np
 
@@ -249,60 +249,56 @@ def clean_title_for_card(title: str) -> str:
     clean = re.sub(r'\s+', ' ', clean)
     return clean.strip()
 
-# ==================== ОБРАБОТКА ВИДЕО ====================
+# ==================== БЫСТРАЯ ОБРАБОТКА ВИДЕО ====================
 
-def process_video_frame(frame: np.ndarray, title_text: str, text_position: str = "bottom") -> np.ndarray:
-    try:
-        img = Image.fromarray(frame).convert("RGB")
-        
-        img = crop_to_4x5(img)
-        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-        img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-        
-        if text_position == "top":
-            img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
-        else:
-            img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
-        
-        draw = ImageDraw.Draw(img)
-        margin_x = int(img.width * 0.06)
-        margin_bottom = int(img.height * 0.08)
-        margin_top = int(img.height * 0.08)
-        safe_w = img.width - 2 * margin_x
-        title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
-        
-        clean_title = clean_title_for_card(title_text)
-        text = (clean_title or "").strip().upper()
-        
-        font, lines, heights, spacing, total_h = fit_text_block(
-            draw=draw, text=text, safe_w=safe_w,
-            max_block_h=title_max_h, max_lines=6,
-            start_size=int(img.height * 0.11), min_size=16
-        )
-        
-        line_height = font.size
-        total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
-        
-        if text_position == "top":
-            y = margin_top
-        else:
-            y = img.height - margin_bottom - total_text_height
-        
-        for ln in lines:
-            draw.text((margin_x, y), ln, font=font, fill="white")
-            y += line_height + 2
-        
-        return np.array(img)
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки кадра: {e}")
-        return frame
+def create_text_overlay(title_text: str, target_size: tuple) -> Image.Image:
+    """
+    Создает изображение с текстом для наложения на видео (ОДИН РАЗ!)
+    """
+    w, h = target_size
+    
+    # Создаем прозрачное изображение
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    clean_title = clean_title_for_card(title_text)
+    text = (clean_title or "Без заголовка").strip().upper()
+    
+    # Настройки отступов (как в ЧП ВМ)
+    margin_x = int(w * 0.06)
+    margin_bottom = int(h * 0.08)
+    margin_top = int(h * 0.08)
+    safe_w = w - 2 * margin_x
+    title_max_h = int(h * MN_TITLE_ZONE_PCT)
+    
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw, text=text, safe_w=safe_w,
+        max_block_h=title_max_h, max_lines=6,
+        start_size=int(h * 0.11), min_size=16
+    )
+    
+    line_height = font.size
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
+    
+    y = h - margin_bottom - total_text_height
+    
+    for ln in lines:
+        draw.text((margin_x, y), ln, font=font, fill="white")
+        y += line_height + 2
+    
+    return overlay
 
-def process_video(video_bytes: bytes, title_text: str, text_position: str = "bottom") -> BytesIO:
+def process_video_fast(video_bytes: bytes, title_text: str) -> BytesIO:
+    """
+    БЫСТРАЯ обработка видео:
+    1. Один раз создаём оверлей с текстом
+    2. Применяем обрезку и градиент ко ВСЕМУ видео сразу (а не к каждому кадру)
+    """
     temp_input = None
     temp_output = None
     
     try:
+        # Сохраняем входное видео
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
             f.write(video_bytes)
             temp_input = f.name
@@ -310,35 +306,77 @@ def process_video(video_bytes: bytes, title_text: str, text_position: str = "bot
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
             temp_output = f.name
         
-        logger.info(f"📹 Загрузка видео для обработки (ЧП ВМ)...")
+        logger.info(f"📹 Загрузка видео...")
         video = VideoFileClip(temp_input)
-        logger.info(f"📹 Видео загружено: длительность={video.duration}с, fps={video.fps}, размер={video.size}")
         
-        logger.info(f"🎬 Обработка кадров видео (ЧП ВМ)...")
+        # 1. Обрезаем до 4:5 (один раз!)
+        logger.info(f"✂️ Обрезка до 4:5...")
         
+        # Получаем размеры видео
+        w, h = video.size
+        target_ratio = 4 / 5
+        cur_ratio = w / h
+        
+        if cur_ratio > target_ratio:
+            new_w = int(h * target_ratio)
+            left = (w - new_w) // 2
+            video = video.crop(x1=left, y1=0, x2=left + new_w, y2=h)
+        else:
+            new_h = int(w / target_ratio)
+            top = (h - new_h) // 2
+            video = video.crop(x1=0, y1=top, x2=w, y2=top + new_h)
+        
+        # 2. Изменяем размер до 720x900 (один раз!)
+        logger.info(f"📐 Изменение размера до {TARGET_W}x{TARGET_H}...")
+        video = video.resize((TARGET_W, TARGET_H))
+        
+        # 3. Создаём оверлей с текстом (ОДИН РАЗ!)
+        logger.info(f"📝 Создание текстового оверлея...")
+        text_overlay = create_text_overlay(title_text, (TARGET_W, TARGET_H))
+        
+        # 4. Применяем градиент и яркость ко ВСЕМУ видео (через фильтр)
+        logger.info(f"🎨 Применение градиента и яркости...")
+        
+        # Применяем фильтр к видео (обрабатывает каждый кадр, но быстрее)
         def process_frame(frame):
-            return process_video_frame(frame, title_text, text_position)
+            img = Image.fromarray(frame).convert("RGB")
+            
+            # Яркость
+            img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+            
+            # Градиент
+            img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+            
+            # Накладываем текст
+            img = img.convert("RGBA")
+            text_overlay_rgba = text_overlay.convert("RGBA")
+            img = Image.alpha_composite(img, text_overlay_rgba)
+            img = img.convert("RGB")
+            
+            return np.array(img)
         
-        processed_video = video.fl_image(process_frame)
+        logger.info(f"🎬 Обработка кадров...")
+        video = video.fl_image(process_frame)
         
-        logger.info(f"💾 Сохранение обработанного видео...")
-        processed_video.write_videofile(
+        # 5. Сохраняем с оптимизацией
+        logger.info(f"💾 Сохранение видео...")
+        video.write_videofile(
             temp_output,
             codec='libx264',
             audio_codec='aac',
             fps=video.fps,
-            bitrate='2000k',
+            bitrate='1500k',  # Уменьшенный битрейт для скорости
             threads=4,
+            preset='fast',  # Быстрый preset
             logger=None
         )
         
         video.close()
-        processed_video.close()
         
         with open(temp_output, 'rb') as f:
             result_bytes = f.read()
         
-        logger.info(f"✅ Видео обработано (ЧП ВМ), размер: {len(result_bytes) / (1024*1024):.2f} MB")
+        logger.info(f"✅ Видео обработано! Размер: {len(result_bytes) / (1024*1024):.2f} MB")
         
         output = BytesIO()
         output.write(result_bytes)
@@ -452,58 +490,29 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         
         logger.info(f"📹 Получено видео: ID={message.video.file_id}, размер={message.video.file_size / (1024*1024):.1f} MB")
         
-        # Проверяем размер видео
+        # Проверяем размер
         if message.video.file_size and message.video.file_size > MAX_FILE_SIZE_BYTES:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=f"❌ <b>Видео слишком большое!</b>\n\n"
-                     f"Размер: {message.video.file_size / (1024*1024):.1f} MB\n"
-                     f"Максимальный размер: {MAX_VIDEO_SIZE_MB} MB\n\n"
-                     f"Отправляю текст без обработки.",
+                text=f"❌ <b>Видео слишком большое!</b>\n\nРазмер: {message.video.file_size / (1024*1024):.1f} MB\nМакс: {MAX_VIDEO_SIZE_MB} MB",
                 parse_mode="HTML"
             )
-            
-            text = get_text_from_message(message)
-            if text.strip():
-                formatted_text = format_text_with_bold_title(text)
-                await context.bot.send_message(
-                    chat_id=ADMIN_CHAT_ID,
-                    text=formatted_text,
-                    parse_mode="HTML"
-                )
-            else:
-                await context.bot.send_video(
-                    chat_id=ADMIN_CHAT_ID,
-                    video=message.video.file_id,
-                    caption="📷 Видео без текста"
-                )
             return
         
-        # Отправляем уведомление о начале обработки
+        # Статус
         status_msg = await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text="🎬 <b>Начинаю обработку видео...</b>\n\n"
-                 "📌 <b>Настройки ЧП ВМ:</b>\n"
-                 "  • Обрезка до 4:5\n"
-                 "  • Градиент 48% от высоты\n"
-                 "  • Яркость 0.85\n"
-                 "  • Белый текст (Montserrat-Black)\n"
-                 "  • Текст позиционируется снизу\n\n"
-                 "⏳ <i>Это может занять несколько секунд...</i>",
+            text="🎬 <b>Начинаю обработку видео (ЧП ВМ)...</b>\n⏳ Это займёт ~30-60 секунд",
             parse_mode="HTML"
         )
         
         text = get_text_from_message(message)
         
         if not text.strip():
-            await status_msg.edit_text(
-                "⚠️ <b>Видео без текста</b>\n\n"
-                "Отправляю оригинал без обработки."
-            )
+            await status_msg.edit_text("⚠️ <b>Видео без текста</b>")
             await context.bot.send_video(
                 chat_id=ADMIN_CHAT_ID,
-                video=message.video.file_id,
-                caption="📷 Видео без текста"
+                video=message.video.file_id
             )
             return
         
@@ -512,73 +521,35 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         title = extract_title_from_text(text)
         formatted_text = format_text_with_bold_title(text)
         
-        # Обновляем статус
-        await status_msg.edit_text(
-            "⏳ <b>Скачиваю видео...</b>",
-            parse_mode="HTML"
-        )
+        await status_msg.edit_text("⏳ <b>Скачиваю видео...</b>", parse_mode="HTML")
         
         video_bytes = await download_media(context.bot, message.video.file_id)
         
         if not video_bytes:
-            await status_msg.edit_text(
-                "❌ <b>Не удалось скачать видео</b>\n\n"
-                "Отправляю текст без обработки."
-            )
-            await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=formatted_text,
-                parse_mode="HTML"
-            )
+            await status_msg.edit_text("❌ <b>Не удалось скачать видео</b>")
             return
         
-        # Обновляем статус
-        await status_msg.edit_text(
-            "⏳ <b>Обрабатываю видео...</b>\n\n"
-            "🎬 Применяю настройки ЧП ВМ...",
-            parse_mode="HTML"
-        )
+        await status_msg.edit_text("⏳ <b>Обрабатываю видео...</b>\n🎬 Применяю ЧП ВМ...", parse_mode="HTML")
         
-        # Обрабатываем видео
-        processed_video = process_video(video_bytes, title, "bottom")
+        # БЫСТРАЯ обработка
+        processed_video = process_video_fast(video_bytes, title)
         
         if not processed_video or len(processed_video.getvalue()) == 0:
-            logger.error("❌ processed_video пустой!")
-            await status_msg.edit_text(
-                "❌ <b>Ошибка при обработке видео</b>\n\n"
-                "Не удалось обработать видео."
-            )
+            await status_msg.edit_text("❌ <b>Ошибка обработки видео</b>")
             return
         
-        logger.info(f"✅ Видео обработано, размер: {len(processed_video.getvalue()) / (1024*1024):.2f} MB")
+        await status_msg.edit_text("⏳ <b>Отправляю видео...</b>", parse_mode="HTML")
         
-        # Обновляем статус
-        await status_msg.edit_text(
-            "⏳ <b>Отправляю готовое видео...</b>",
-            parse_mode="HTML"
+        await context.bot.send_video(
+            chat_id=ADMIN_CHAT_ID,
+            video=BytesIO(processed_video.getvalue()),
+            caption=formatted_text[:1024],
+            parse_mode="HTML",
+            width=TARGET_W,
+            height=TARGET_H
         )
         
-        # Отправляем видео
-        try:
-            result = await context.bot.send_video(
-                chat_id=ADMIN_CHAT_ID,
-                video=BytesIO(processed_video.getvalue()),
-                caption=formatted_text[:1024],
-                parse_mode="HTML",
-                width=TARGET_W,
-                height=TARGET_H
-            )
-            logger.info(f"✅ Видео отправлено! message_id={result.message_id}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при отправке видео: {e}")
-            await status_msg.edit_text(
-                f"❌ <b>Ошибка при отправке видео</b>\n\n{str(e)}"
-            )
-            return
-        
-        # Удаляем статусное сообщение
         await status_msg.delete()
-        
         logger.info(f"✅ Отправлено обработанное видео (ЧП ВМ) ({source})")
         
         if len(formatted_text) > 1024:
@@ -595,7 +566,7 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=f"❌ <b>Ошибка при обработке видео</b>\n\n{str(e)}",
+                text=f"❌ <b>Ошибка</b>\n\n{str(e)}",
                 parse_mode="HTML"
             )
         except:
@@ -607,14 +578,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 <b>Бот для обработки видео (ЧП ВМ)</b>\n\n"
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
-        f"📊 Макс. размер видео: {MAX_VIDEO_SIZE_MB} MB\n\n"
-        f"🎬 <b>Настройки (ЧП ВМ):</b>\n"
+        f"📊 Макс. размер: {MAX_VIDEO_SIZE_MB} MB\n\n"
+        f"⚡ <b>Быстрая обработка!</b>\n"
         f"  • Обрезка до 4:5\n"
-        f"  • Градиент 48% от высоты\n"
-        f"  • Яркость 0.85\n"
+        f"  • Градиент 48%\n"
         f"  • Белый текст (Montserrat-Black)\n"
-        f"  • Текст позиционируется снизу\n\n"
-        f"📎 Перешли видео в бота или добавь в канал",
+        f"  • Текст снизу\n\n"
+        f"📎 Перешли видео в бота",
         parse_mode="HTML"
     )
 
@@ -623,12 +593,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ <b>Бот работает (ЧП ВМ)</b>\n\n"
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
         f"📨 Уведомления: <code>{ADMIN_CHAT_ID}</code>\n"
-        f"📊 Макс. размер: {MAX_VIDEO_SIZE_MB} MB\n"
-        f"🎬 Параметры ЧП ВМ:\n"
-        f"  • Размер: {TARGET_W}x{TARGET_H} (4:5)\n"
-        f"  • Градиент: {int(CHP_GRADIENT_PCT*100)}% от высоты\n"
-        f"  • Шрифт: Montserrat-Black\n"
-        f"  • Текст: снизу",
+        f"⚡ Быстрая обработка включена!",
         parse_mode="HTML"
     )
 
@@ -694,12 +659,13 @@ async def main():
         ))
         
         logger.info("✅ Обработчики зарегистрированы")
+        logger.info("⚡ Включена БЫСТРАЯ обработка видео!")
         logger.info(f"📊 Параметры ЧП ВМ:")
         logger.info(f"  • Размер: {TARGET_W}x{TARGET_H} (4:5)")
         logger.info(f"  • Градиент: {int(CHP_GRADIENT_PCT*100)}% от высоты")
         logger.info(f"  • Шрифт: Montserrat-Black")
         logger.info(f"  • Текст: снизу")
-        logger.info(f"  • Макс. размер видео: {MAX_VIDEO_SIZE_MB} MB")
+        logger.info(f"  • Макс. размер: {MAX_VIDEO_SIZE_MB} MB")
         
         await app.initialize()
         await app.start()

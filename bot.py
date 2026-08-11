@@ -21,7 +21,6 @@ except ImportError:
 
 try:
     from moviepy import VideoFileClip, ImageSequenceClip, CompositeVideoClip
-    from moviepy.video.fx import resize
 except ImportError:
     try:
         from moviepy.video.io.VideoFileClip import VideoFileClip
@@ -356,7 +355,7 @@ def create_cover_with_title(photo_bytes: bytes, title_text: str) -> Image.Image:
         return Image.open(BytesIO(photo_bytes))
 
 def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[BytesIO]:
-    """Создает видео-слайдшоу из фотографий с обложкой"""
+    """Создает видео-слайдшоу из фотографий с обложкой (без эффектов для совместимости)"""
     temp_dir = tempfile.mkdtemp()
     
     try:
@@ -390,20 +389,14 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
         # Создаем список клипов
         clips = []
         
-        # Обложка - 3 секунды
+        # Обложка - 3 секунды (без эффектов для совместимости)
         cover_clip = ImageSequenceClip([cover_path], durations=[3])
-        # Для moviepy 1.0.3 используем другой подход для эффекта приближения
-        # Создаем эффект через resize с использованием lambda
-        from moviepy.video.fx import resize
-        cover_clip = cover_clip.fx(resize, lambda t: 1 + 0.05 * (t / 3))
         clips.append(cover_clip)
         
-        # Остальные фото - по 2.5 секунды
+        # Остальные фото - по 2.5 секунды (без эффектов)
         for path in photo_paths[1:]:
             duration = 2.5
             clip = ImageSequenceClip([path], durations=[duration])
-            # Используем fx для применения эффекта
-            clip = clip.fx(resize, lambda t: 1 + 0.03 * (t / duration))
             clips.append(clip)
         
         # Объединяем все клипы
@@ -1185,7 +1178,7 @@ async def main():
     logger.info(f"  • Текст: снизу")
     logger.info("📸 Новые функции:")
     logger.info("  • Обработка фото с градиентом")
-    logger.info("  • Создание слайд-шоу из 3-10 фото")
+    logger.info("  • Создание слайд-шоу из 3-10 фото (без эффектов для стабильности)")
     
     await app.initialize()
     await app.start()

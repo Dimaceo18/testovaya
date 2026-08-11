@@ -387,21 +387,23 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
             img.save(path)
             photo_paths.append(path)
         
-        # Создаем клипы для каждого фото
+        # Создаем список клипов
         clips = []
         
-        # Обложка - 3 секунды с эффектом приближения
+        # Обложка - 3 секунды
         cover_clip = ImageSequenceClip([cover_path], durations=[3])
-        # Исправленный эффект приближения для moviepy 1.0.3
-        cover_clip = cover_clip.resize(lambda t: 1 + 0.05 * (t / 3) if t <= 3 else 1)
+        # Для moviepy 1.0.3 используем другой подход для эффекта приближения
+        # Создаем эффект через resize с использованием lambda
+        from moviepy.video.fx import resize
+        cover_clip = cover_clip.fx(resize, lambda t: 1 + 0.05 * (t / 3))
         clips.append(cover_clip)
         
-        # Остальные фото - по 2.5 секунды с легким приближением
+        # Остальные фото - по 2.5 секунды
         for path in photo_paths[1:]:
             duration = 2.5
             clip = ImageSequenceClip([path], durations=[duration])
-            # Исправленный эффект приближения
-            clip = clip.resize(lambda t: 1 + 0.03 * (t / duration) if t <= duration else 1)
+            # Используем fx для применения эффекта
+            clip = clip.fx(resize, lambda t: 1 + 0.03 * (t / duration))
             clips.append(clip)
         
         # Объединяем все клипы
@@ -738,10 +740,15 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка фото с предложением выбора действия"""
+    # Проверяем, есть ли effective_user (может быть None для каналов)
+    if not update.effective_user:
+        logger.info("ℹ️ Пропускаем фото из канала (нет пользователя)")
+        return
+    
     user_id = update.effective_user.id
     message = update.message
     
-    if not message.photo:
+    if not message or not message.photo:
         return
     
     # Получаем фото в максимальном качестве
@@ -782,7 +789,12 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id
+    # Проверяем, есть ли effective_user
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = update.effective_user.id
     data = query.data
     
     if user_id not in user_photo_sessions:
@@ -827,8 +839,15 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""
+    # Проверяем, есть ли effective_user
+    if not update.effective_user:
+        return
+    
     user_id = update.effective_user.id
     message = update.message
+    
+    if not message:
+        return
     
     if user_id not in user_photo_sessions:
         return
@@ -920,8 +939,15 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Сбор фото для видео"""
+    # Проверяем, есть ли effective_user
+    if not update.effective_user:
+        return
+    
     user_id = update.effective_user.id
     message = update.message
+    
+    if not message or not message.photo:
+        return
     
     if user_id not in user_photo_sessions:
         return
@@ -929,9 +955,6 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
     session = user_photo_sessions[user_id]
     
     if session.get("state") != "collecting_photos":
-        return
-    
-    if not message.photo:
         return
     
     # Получаем фото
@@ -964,8 +987,15 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
 
 async def handle_video_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /done для создания видео"""
+    # Проверяем, есть ли effective_user
+    if not update.effective_user:
+        return
+    
     user_id = update.effective_user.id
     message = update.message
+    
+    if not message:
+        return
     
     if user_id not in user_photo_sessions:
         await message.reply_text("❌ Нет активной сессии. Отправьте фото сначала.")
@@ -999,6 +1029,11 @@ async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     
+    # Проверяем, есть ли effective_user
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
     user_id = query.from_user.id
     
     if user_id in user_photo_sessions:
@@ -1008,6 +1043,11 @@ async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /cancel"""
+    # Проверяем, есть ли effective_user
+    if not update.effective_user:
+        await update.message.reply_text("❌ Ошибка: пользователь не найден")
+        return
+    
     user_id = update.effective_user.id
     
     if user_id in user_photo_sessions:
@@ -1105,9 +1145,18 @@ async def main():
     app.add_handler(CommandHandler("cancel", handle_cancel))
     app.add_handler(CommandHandler("done", handle_video_done))
     
-    # Обработчики для фото
-    app.add_handler(MessageHandler(filters.PHOTO & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID), handle_photo))
-    app.add_handler(MessageHandler(filters.PHOTO & filters.Chat(chat_id=MONITOR_CHANNEL_ID), handle_photo_collection))
+    # Обработчики для фото - только для личных сообщений
+    app.add_handler(MessageHandler(
+        filters.PHOTO & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID), 
+        handle_photo
+    ))
+    
+    # Сбор фото для видео - только в личных сообщениях
+    app.add_handler(MessageHandler(
+        filters.PHOTO & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID), 
+        handle_photo_collection
+    ))
+    
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID),
         handle_text_input

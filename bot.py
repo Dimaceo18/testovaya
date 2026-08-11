@@ -5,6 +5,7 @@ import os
 import re
 import logging
 import sys
+import tempfile
 from io import BytesIO
 from typing import Optional
 
@@ -15,6 +16,20 @@ except ImportError:
     import subprocess
     subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
     import requests
+
+try:
+    from moviepy import VideoFileClip
+except ImportError:
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy"])
+    from moviepy import VideoFileClip
+
+try:
+    import numpy as np
+except ImportError:
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy"])
+    import numpy as np
 
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from telegram import Bot, Update
@@ -221,31 +236,24 @@ def fit_text_block(draw, text: str, safe_w: int, max_block_h: int,
     total_h += spacing * (len(lines) - 1)
     return font, lines, heights, spacing, total_h
 
-# ==================== СОЗДАНИЕ КАРТОЧКИ ====================
+# ==================== СОЗДАНИЕ КАРТОЧКИ ДЛЯ ФОТО ====================
 
-def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
+def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_BOTTOM) -> BytesIO:
     """
-    Создание карточки в стиле ЧП ВМ
+    Создание карточки в стиле ЧП ВМ для ФОТО
     """
     try:
-        # Очищаем заголовок для карточки
         clean_title = re.sub(r'[^\w\s.,!?-]', '', title_text).strip()
         if not clean_title:
             clean_title = "Без заголовка"
         
         logger.info(f"📝 Создание карточки с заголовком: {clean_title[:50]}...")
         
-        # Открываем изображение
         img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-        
-        # Обрезаем до 4:5
         img = crop_to_4x5(img)
         img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-        
-        # Улучшаем яркость
         img = ImageEnhance.Brightness(img).enhance(0.85)
         
-        # Применяем градиент
         if text_position == TEXT_POSITION_TOP:
             img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
         else:
@@ -259,8 +267,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
         
         text = clean_title.upper()
-        
-        # Подбираем шрифт
         font, lines, heights, spacing, total_h = fit_text_block(
             draw=draw, text=text, safe_w=safe_w,
             max_block_h=title_max_h, max_lines=6,
@@ -275,12 +281,10 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         else:
             y = img.height - margin_bottom - total_text_height
         
-        # Рисуем текст
         for ln in lines:
             draw.text((margin_x, y), ln, font=font, fill="white")
             y += line_height + 2
         
-        # Сохраняем результат
         out = BytesIO()
         img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
         out.seek(0)
@@ -289,11 +293,141 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         return out
         
     except Exception as e:
-        logger.error(f"❌ Ошибка при создании карточки ЧП ВМ: {e}")
+        logger.error(f"❌ Ошибка при создании карточки: {e}")
         import traceback
         traceback.print_exc()
-        # Возвращаем оригинальное фото
         return BytesIO(photo_bytes)
+
+# ==================== ОБРАБОТКА ВИДЕО ====================
+
+def process_video_frame(frame: np.ndarray, title_text: str, text_position: str = TEXT_POSITION_BOTTOM) -> np.ndarray:
+    """
+    Обработка одного кадра видео: обрезка + градиент + текст
+    """
+    try:
+        # Конвертируем numpy array в PIL Image
+        img = Image.fromarray(frame).convert("RGB")
+        
+        # Обрезаем до 4:5
+        img = crop_to_4x5(img)
+        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+        
+        # Улучшаем яркость
+        img = ImageEnhance.Brightness(img).enhance(0.85)
+        
+        # Применяем градиент
+        if text_position == TEXT_POSITION_TOP:
+            img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+        else:
+            img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+        
+        # Добавляем текст
+        draw = ImageDraw.Draw(img)
+        margin_x = int(img.width * 0.06)
+        margin_bottom = int(img.height * 0.08)
+        margin_top = int(img.height * 0.08)
+        safe_w = img.width - 2 * margin_x
+        title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+        
+        clean_title = re.sub(r'[^\w\s.,!?-]', '', title_text).strip()
+        if not clean_title:
+            clean_title = "Без заголовка"
+        
+        text = clean_title.upper()
+        font, lines, heights, spacing, total_h = fit_text_block(
+            draw=draw, text=text, safe_w=safe_w,
+            max_block_h=title_max_h, max_lines=6,
+            start_size=int(img.height * 0.11), min_size=16
+        )
+        
+        line_height = font.size
+        total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
+        
+        if text_position == TEXT_POSITION_TOP:
+            y = margin_top
+        else:
+            y = img.height - margin_bottom - total_text_height
+        
+        for ln in lines:
+            draw.text((margin_x, y), ln, font=font, fill="white")
+            y += line_height + 2
+        
+        # Конвертируем обратно в numpy array
+        return np.array(img)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки кадра: {e}")
+        return frame
+
+def process_video(video_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_BOTTOM) -> BytesIO:
+    """
+    Обработка видео: обрезка до 4:5 + градиент + текст
+    """
+    temp_input = None
+    temp_output = None
+    
+    try:
+        # Сохраняем входное видео во временный файл
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+            f.write(video_bytes)
+            temp_input = f.name
+        
+        # Создаем временный файл для вывода
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+            temp_output = f.name
+        
+        # Загружаем видео
+        logger.info(f"📹 Загрузка видео для обработки...")
+        video = VideoFileClip(temp_input)
+        
+        # Применяем обработку ко всем кадрам
+        logger.info(f"🎬 Обработка кадров видео...")
+        
+        def process_frame(frame):
+            return process_video_frame(frame, title_text, text_position)
+        
+        processed_video = video.fl_image(process_frame)
+        
+        # Сохраняем результат
+        logger.info(f"💾 Сохранение обработанного видео...")
+        processed_video.write_videofile(
+            temp_output,
+            codec='libx264',
+            audio_codec='aac',
+            fps=video.fps,
+            bitrate='2000k',
+            threads=4
+        )
+        
+        # Закрываем клипы
+        video.close()
+        processed_video.close()
+        
+        # Читаем результат
+        with open(temp_output, 'rb') as f:
+            result_bytes = f.read()
+        
+        logger.info(f"✅ Видео обработано, размер: {len(result_bytes) / (1024*1024):.2f} MB")
+        
+        output = BytesIO()
+        output.write(result_bytes)
+        output.seek(0)
+        return output
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обработке видео: {e}")
+        import traceback
+        traceback.print_exc()
+        return BytesIO(video_bytes)
+    
+    finally:
+        try:
+            if temp_input and os.path.exists(temp_input):
+                os.unlink(temp_input)
+            if temp_output and os.path.exists(temp_output):
+                os.unlink(temp_output)
+        except:
+            pass
 
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С ТЕКСТОМ ====================
 
@@ -302,7 +436,6 @@ def extract_title_from_text(text: str) -> str:
     if not text:
         return ""
     
-    # Удаляем эмодзи и специальные символы
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"
@@ -322,7 +455,6 @@ def extract_title_from_text(text: str) -> str:
     )
     clean_text = emoji_pattern.sub('', text).strip()
     
-    # Если есть перенос строки - первая строка заголовок
     if '\n' in clean_text:
         lines = clean_text.split('\n')
         title = lines[0].strip()
@@ -330,7 +462,6 @@ def extract_title_from_text(text: str) -> str:
             title = title[:197] + "..."
         return title
     
-    # Если есть точка с пробелом - первое предложение
     if '. ' in clean_text and len(clean_text) > 100:
         parts = clean_text.split('. ', 1)
         title = (parts[0] + '.').strip()
@@ -338,39 +469,25 @@ def extract_title_from_text(text: str) -> str:
             title = title[:197] + "..."
         return title
     
-    # Иначе первые 200 символов
     if len(clean_text) > 200:
         return clean_text[:197] + "..."
     return clean_text
 
 def format_text_with_bold_title(text: str) -> str:
-    """
-    Форматирует текст: заголовок выделяет жирным, остальной текст без изменений
-    """
+    """Форматирует текст: заголовок выделяет жирным"""
     if not text:
         return ""
     
-    # Ищем заголовок (первая строка или первое предложение)
     title = extract_title_from_text(text)
-    
     if not title:
         return text
     
-    # Экранируем HTML
     import html
     safe_text = html.escape(text)
     safe_title = html.escape(title)
     
-    # Заменяем заголовок на жирный
     if safe_title in safe_text:
         formatted = safe_text.replace(safe_title, f"<b>{safe_title}</b>", 1)
-        return formatted
-    
-    # Если не нашли точное совпадение, пробуем найти без учета регистра
-    import re
-    pattern = re.compile(re.escape(safe_title), re.IGNORECASE)
-    if pattern.search(safe_text):
-        formatted = pattern.sub(f"<b>{safe_title}</b>", safe_text, 1)
         return formatted
     
     return safe_text
@@ -400,8 +517,7 @@ def get_text_from_message(message) -> str:
 
 async def process_post(message, context: ContextTypes.DEFAULT_TYPE, source: str = "канал"):
     """
-    Универсальная функция обработки поста
-    source: "канал" или "репост"
+    Универсальная функция обработки поста (ФОТО и ВИДЕО)
     """
     try:
         # Получаем текст
@@ -409,32 +525,92 @@ async def process_post(message, context: ContextTypes.DEFAULT_TYPE, source: str 
         
         if not text.strip():
             logger.info(f"📷 Пост без текста ({source})")
-            photo_file_id = get_best_photo(message)
-            if photo_file_id:
-                photo_bytes = await download_media(context.bot, photo_file_id)
-                if photo_bytes:
-                    await context.bot.send_photo(
-                        chat_id=ADMIN_CHAT_ID,
-                        photo=BytesIO(photo_bytes),
-                        caption="📷 Пост без текста"
-                    )
-                    return
-            await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text="📷 Пост без текста"
-            )
-            return
+            # Отправляем оригинальное медиа без обработки
+            if message.video:
+                await context.bot.send_video(
+                    chat_id=ADMIN_CHAT_ID,
+                    video=message.video.file_id,
+                    caption="📷 Видео без текста"
+                )
+                return
+            elif get_best_photo(message):
+                await context.bot.send_photo(
+                    chat_id=ADMIN_CHAT_ID,
+                    photo=get_best_photo(message),
+                    caption="📷 Фото без текста"
+                )
+                return
+            else:
+                await context.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text="📷 Пост без текста и медиа"
+                )
+                return
         
         logger.info(f"📝 Текст поста ({source}): {text[:100]}...")
         
-        # Извлекаем заголовок для карточки
+        # Извлекаем заголовок
         title = extract_title_from_text(text)
         logger.info(f"📝 Извлечен заголовок: {title[:50]}...")
         
         # Форматируем текст с жирным заголовком
         formatted_text = format_text_with_bold_title(text)
         
-        # Получаем фото
+        # ========== ОБРАБОТКА ВИДЕО ==========
+        if hasattr(message, 'video') and message.video:
+            logger.info(f"🎬 Обработка ВИДЕО ({source})...")
+            
+            video_bytes = await download_media(context.bot, message.video.file_id)
+            
+            if not video_bytes:
+                await context.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=f"❌ Не удалось скачать видео\n\n{formatted_text}",
+                    parse_mode="HTML"
+                )
+                return
+            
+            # Обрабатываем видео
+            processed_video = process_video(video_bytes, title, TEXT_POSITION_BOTTOM)
+            
+            # Отправляем обработанное видео
+            await context.bot.send_video(
+                chat_id=ADMIN_CHAT_ID,
+                video=BytesIO(processed_video.getvalue()),
+                caption=formatted_text[:1024],
+                parse_mode="HTML",
+                width=TARGET_W,
+                height=TARGET_H
+            )
+            logger.info(f"✅ Отправлено обработанное ВИДЕО ({source})")
+            
+            # Если текст больше 1024 символов, отправляем остаток
+            if len(formatted_text) > 1024:
+                await context.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=formatted_text[1024:],
+                    parse_mode="HTML"
+                )
+                logger.info(f"📝 Отправлено продолжение текста")
+            
+            # Если есть фото в посте с видео - отправляем отдельно
+            photo_file_id = get_best_photo(message)
+            if photo_file_id:
+                photo_bytes = await download_media(context.bot, photo_file_id)
+                if photo_bytes:
+                    try:
+                        card_bytes = make_card_chp(photo_bytes, title, TEXT_POSITION_BOTTOM)
+                        await context.bot.send_photo(
+                            chat_id=ADMIN_CHAT_ID,
+                            photo=BytesIO(card_bytes.getvalue()),
+                            caption="📸 Дополнительное фото из поста"
+                        )
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка обработки дополнительного фото: {e}")
+            
+            return
+        
+        # ========== ОБРАБОТКА ФОТО ==========
         photo_file_id = get_best_photo(message)
         
         if photo_file_id:
@@ -443,8 +619,8 @@ async def process_post(message, context: ContextTypes.DEFAULT_TYPE, source: str 
             
             if photo_bytes:
                 try:
-                    # Создаем карточку ЧП ВМ
-                    card_bytes = make_card_chp(photo_bytes, title)
+                    # Создаем карточку
+                    card_bytes = make_card_chp(photo_bytes, title, TEXT_POSITION_BOTTOM)
                     card_data = card_bytes.getvalue()
                     
                     # Отправляем ОДНИМ сообщением: фото + текст
@@ -464,17 +640,6 @@ async def process_post(message, context: ContextTypes.DEFAULT_TYPE, source: str 
                             parse_mode="HTML"
                         )
                         logger.info(f"📝 Отправлено продолжение текста")
-                    
-                    # Если есть видео - отправляем отдельно
-                    if hasattr(message, 'video') and message.video:
-                        try:
-                            await context.bot.send_video(
-                                chat_id=ADMIN_CHAT_ID,
-                                video=message.video.file_id
-                            )
-                            logger.info(f"🎬 Отправлено видео")
-                        except Exception as e:
-                            logger.error(f"❌ Ошибка отправки видео: {e}")
                     
                     return
                     
@@ -497,35 +662,14 @@ async def process_post(message, context: ContextTypes.DEFAULT_TYPE, source: str 
                             text=formatted_text[1024:],
                             parse_mode="HTML"
                         )
-                    
-                    if hasattr(message, 'video') and message.video:
-                        try:
-                            await context.bot.send_video(
-                                chat_id=ADMIN_CHAT_ID,
-                                video=message.video.file_id
-                            )
-                        except Exception as e:
-                            logger.error(f"❌ Ошибка отправки видео: {e}")
-                    
                     return
         
-        # Если нет фото - отправляем только текст
+        # Если нет фото и видео - отправляем только текст
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=formatted_text,
             parse_mode="HTML"
         )
-        
-        if hasattr(message, 'video') and message.video:
-            try:
-                await context.bot.send_video(
-                    chat_id=ADMIN_CHAT_ID,
-                    video=message.video.file_id
-                )
-                logger.info(f"🎬 Отправлено видео")
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки видео: {e}")
-        
         logger.info(f"📝 Отправлен только текст ({source})")
         
     except Exception as e:
@@ -541,13 +685,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 <b>Привет! Я бот для оформления постов.</b>\n\n"
         f"📢 <b>Отслеживаю канал:</b> <code>{MONITOR_CHANNEL_ID}</code>\n\n"
         f"🎨 <b>Что я умею:</b>\n"
-        f"1️⃣ Слежу за новыми постами в канале\n"
-        f"2️⃣ Оформляю их в стиле <b>ЧП ВМ</b>\n"
-        f"3️⃣ Отправляю вам готовый пост\n\n"
+        f"📸 <b>Для ФОТО:</b>\n"
+        f"  • Обрезка до 4:5\n"
+        f"  • Градиент (48% от высоты)\n"
+        f"  • Белый текст с автоматическим размером\n"
+        f"  • Текст позиционируется снизу\n\n"
+        f"🎬 <b>Для ВИДЕО:</b>\n"
+        f"  • Обрезка до 4:5\n"
+        f"  • Градиент (48% от высоты)\n"
+        f"  • Белый текст с автоматическим размером\n"
+        f"  • Текст позиционируется снизу\n\n"
         f"📎 <b>Также вы можете:</b>\n"
         f"• Переслать любой пост в этот бот\n"
-        f"• Бот оформит его по шаблону <b>ЧП ВМ</b>\n"
-        f"• И пришлет обработанное фото с текстом\n\n"
+        f"• Бот обработает и ФОТО, и ВИДЕО\n"
+        f"• И пришлет готовый результат\n\n"
         f"🔄 Для проверки статуса используй /status",
         parse_mode="HTML"
     )
@@ -559,8 +710,12 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 <b>ID канала:</b> <code>{MONITOR_CHANNEL_ID}</code>\n"
         f"📨 <b>Уведомления приходят сюда:</b> <code>{ADMIN_CHAT_ID}</code>\n"
         f"🟢 <b>Бот активен и обрабатывает:</b>\n"
-        f"• Все новые посты в канале\n"
-        f"• Репосты в бота",
+        f"• Все новые посты в канале (ФОТО и ВИДЕО)\n"
+        f"• Репосты в бота (ФОТО и ВИДЕО)\n"
+        f"📸 Параметры обработки:\n"
+        f"  • Размер: {TARGET_W}x{TARGET_H} (4:5)\n"
+        f"  • Градиент: {int(CHP_GRADIENT_PCT*100)}% от высоты\n"
+        f"  • Текст: снизу",
         parse_mode="HTML"
     )
 
@@ -570,12 +725,26 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message:
         return
     
-    # Проверяем, что пост из нужного канала
     if message.chat.id != MONITOR_CHANNEL_ID:
         return
     
-    logger.info(f"📨 Получен новый пост из канала {message.message_id}")
-    await process_post(message, context, "канал")
+    # Проверяем, есть ли фото или видео
+    has_media = message.photo or message.video
+    
+    if has_media:
+        logger.info(f"📨 Получен новый пост из канала {message.message_id}")
+        await process_post(message, context, "канал")
+    else:
+        # Если пост без медиа, но есть текст - отправляем текст
+        text = get_text_from_message(message)
+        if text.strip():
+            formatted_text = format_text_with_bold_title(text)
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=formatted_text,
+                parse_mode="HTML"
+            )
+            logger.info(f"📝 Отправлен текст из поста без медиа")
 
 async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -585,22 +754,17 @@ async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT
     if not message:
         return
     
-    # Проверяем, что это пересланное сообщение
+    # Проверяем, что это пересланное сообщение или есть медиа
     is_forwarded = message.forward_from_chat is not None or message.forward_from is not None
     
     if not is_forwarded:
-        # Если это не репост, но есть фото с текстом - тоже обрабатываем
+        # Если это не репост, но есть фото или видео - тоже обрабатываем
         if message.photo or message.video:
             logger.info(f"📨 Получено сообщение с медиа (не репост)")
             await process_post(message, context, "прямое сообщение")
         return
     
     logger.info(f"📨 Получен репост в бота")
-    
-    # Если есть текст в самом сообщении (добавленный пользователем)
-    # Игнорируем его, берем текст из оригинального поста
-    # Но оригинальный текст уже в message.text или message.caption
-    
     await process_post(message, context, "репост")
 
 # ==================== ЗАПУСК ====================
@@ -637,14 +801,13 @@ async def main():
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("status", status))
         
-        # Обработчик постов из канала
+        # Обработчик постов из канала (фото и видео)
         app.add_handler(MessageHandler(
             filters.ALL & filters.Chat(chat_id=MONITOR_CHANNEL_ID),
             handle_channel_post
         ))
         
-        # Обработчик репостов (пересланных сообщений) в бота
-        # Также обрабатывает обычные сообщения с фото/видео
+        # Обработчик репостов (фото и видео)
         app.add_handler(MessageHandler(
             filters.ALL & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID),
             handle_forwarded_message
@@ -653,9 +816,12 @@ async def main():
         logger.info("✅ Обработчики зарегистрированы")
         logger.info("📊 Мониторинг запущен!")
         logger.info("📌 Бот обрабатывает:")
-        logger.info("  • Все новые посты в канале")
-        logger.info("  • Репосты в бота")
-        logger.info("📸 Фото и текст отправляются ОДНИМ сообщением")
+        logger.info("  • Все новые посты в канале (ФОТО и ВИДЕО)")
+        logger.info("  • Репосты в бота (ФОТО и ВИДЕО)")
+        logger.info(f"📸 Параметры обработки:")
+        logger.info(f"  • Размер: {TARGET_W}x{TARGET_H} (4:5)")
+        logger.info(f"  • Градиент: {int(CHP_GRADIENT_PCT*100)}% от высоты")
+        logger.info(f"  • Текст: снизу")
         
         # Запускаем бота
         await app.initialize()
@@ -670,7 +836,6 @@ async def main():
         
         logger.info("🟢 Бот успешно запущен и работает!")
         
-        # Держим бота запущенным
         while True:
             await asyncio.sleep(1)
             

@@ -19,19 +19,34 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
     import requests
 
+# Правильный импорт moviepy
 try:
     from moviepy import VideoFileClip, ImageSequenceClip, CompositeVideoClip
     from moviepy.video.fx import resize
+    from moviepy.video.fx.resize import resize as resize_fx
 except ImportError:
     try:
         from moviepy.video.io.VideoFileClip import VideoFileClip
         from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
         from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+        # Пробуем разные варианты импорта resize
+        try:
+            from moviepy.video.fx import resize
+            from moviepy.video.fx.resize import resize as resize_fx
+        except:
+            resize = None
+            resize_fx = None
     except:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
         from moviepy.video.io.VideoFileClip import VideoFileClip
         from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
         from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+        try:
+            from moviepy.video.fx import resize
+            from moviepy.video.fx.resize import resize as resize_fx
+        except:
+            resize = None
+            resize_fx = None
 
 try:
     import numpy as np
@@ -355,6 +370,31 @@ def create_cover_with_title(photo_bytes: bytes, title_text: str) -> Image.Image:
         logger.error(f"❌ Ошибка создания обложки: {e}")
         return Image.open(BytesIO(photo_bytes))
 
+def apply_zoom_effect(clip, duration=3.0, zoom_factor=0.1):
+    """Применяет эффект плавного приближения к клипу"""
+    try:
+        # Пробуем разные способы применения эффекта
+        def make_zoom(t):
+            progress = t / duration
+            # Ease-in-out для плавности
+            return 1.0 + zoom_factor * (progress * progress * (3 - 2 * progress))
+        
+        # Пробуем импортировать resize
+        try:
+            from moviepy.video.fx import resize
+            return clip.fx(resize, make_zoom)
+        except:
+            try:
+                from moviepy.video.fx.resize import resize as resize_fx
+                return clip.fx(resize_fx, make_zoom)
+            except:
+                # Если resize не работает, возвращаем клип без эффекта
+                logger.warning("⚠️ Эффект приближения недоступен, использую оригинальный клип")
+                return clip
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка применения эффекта приближения: {e}")
+        return clip
+
 def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[BytesIO]:
     """Создает видео-слайдшоу из фотографий с обложкой и эффектом приближения"""
     temp_dir = tempfile.mkdtemp()
@@ -396,19 +436,8 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
             # Создаем клип для фото
             clip = ImageSequenceClip([path], durations=[duration_per_photo])
             
-            # Эффект плавного приближения на 10% за 3 секунды
-            # Используем fx.resize для совместимости с moviepy 1.0.3
-            from moviepy.video.fx import resize
-            
-            # Плавное увеличение от 1.0 до 1.1 за duration_per_photo секунд
-            def make_zoom(t, duration=duration_per_photo):
-                # Плавное увеличение: начинаем с 1.0, заканчиваем 1.1
-                progress = t / duration  # от 0 до 1
-                # Используем ease-in-out для плавности
-                zoom = 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
-                return zoom
-            
-            clip = clip.fx(resize, make_zoom)
+            # Применяем эффект приближения
+            clip = apply_zoom_effect(clip, duration=duration_per_photo, zoom_factor=0.1)
             clips.append(clip)
         
         # Объединяем все клипы

@@ -8,11 +8,12 @@ import sys
 import tempfile
 import time
 from io import BytesIO
-from typing import Optional, List
+from typing import Optional, List, Dict
 import subprocess
 import traceback
 import shutil
 import json
+from collections import defaultdict
 
 try:
     import requests
@@ -107,6 +108,8 @@ logger = logging.getLogger(__name__)
 
 # ==================== СОСТОЯНИЯ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ====================
 user_sessions = {}
+# Хранилище для медиагрупп
+media_groups: Dict[str, Dict] = defaultdict(lambda: {"photos": [], "video": None, "caption": "", "processed": False})
 
 # ==================== ФУНКЦИИ ====================
 
@@ -863,107 +866,171 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         except:
             pass
 
-# ==================== ОБРАБОТКА МЕДИАГРУПП (НЕСКОЛЬКО ФОТО) ====================
+# ==================== ОБРАБОТКА МЕДИАГРУПП (НОВАЯ ВЕРСИЯ) ====================
 
 async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нескольких фото в одном сообщении (медиагруппа)"""
+    """Обработка медиагрупп (несколько фото или видео+фото)"""
     if not update.effective_user:
         return
     
-    user_id = update.effective_user.id
     message = update.message
-    
-    if not message or not message.photo:
+    if not message:
         return
     
-    # Проверяем, есть ли видео вместе с фото
-    if hasattr(message, 'video') and message.video:
+    # Проверяем, есть ли media_group_id
+    media_group_id = getattr(message, 'media_group_id', None)
+    
+    # Если это не медиагруппа - пропускаем
+    if not media_group_id:
         return
     
-    # Получаем все фото из сообщения (их может быть несколько)
-    photos = message.photo
+    logger.info(f"📦 Получена медиагруппа: {media_group_id}")
     
-    # Инициализируем сессию
+    # Инициализируем группу в хранилище
+    if media_group_id not in media_groups:
+        media_groups[media_group_id] = {
+            "photos": [],
+            "video": None,
+            "caption": "",
+            "processed": False,
+            "user_id": update.effective_user.id,
+            "chat_id": message.chat.id,
+            "message_id": message.message_id
+        }
+    
+    group = media_groups[media_group_id]
+    
+    # Сохраняем подпись (caption) если есть
+    if message.caption:
+        group["caption"] = message.caption
+    
+    # Сохраняем медиа
+    try:
+        # Если есть фото
+        if message.photo:
+            photo = message.photo[-1]  # Берем самое качественное
+            file = await context.bot.get_file(photo.file_id)
+            photo_bytes = await file.download_as_bytearray()
+            group["photos"].append(photo_bytes)
+            logger.info(f"📸 Добавлено фото в группу {media_group_id}, всего: {len(group['photos'])}")
+        
+        # Если есть видео
+        if message.video:
+            file = await context.bot.get_file(message.video.file_id)
+            video_bytes = await file.download_as_bytearray()
+            group["video"] = video_bytes
+            logger.info(f"📹 Добавлено видео в группу {media_group_id}")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания медиа: {e}")
+        return
+    
+    # Устанавливаем таймер на обработку (ждем 3 секунды для сбора всех частей)
+    if not group.get("timer_started"):
+        group["timer_started"] = True
+        
+        async def process_group():
+            await asyncio.sleep(3)  # Ждем 3 секунды для сбора всех частей
+            await process_collected_group(media_group_id, context)
+        
+        asyncio.create_task(process_group())
+
+async def process_collected_group(media_group_id: str, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка собранной медиагруппы"""
+    group = media_groups.get(media_group_id)
+    
+    if not group or group.get("processed"):
+        return
+    
+    # Отмечаем как обработанную
+    group["processed"] = True
+    
+    # Проверяем, есть ли видео и фото
+    has_video = group.get("video") is not None
+    has_photos = len(group.get("photos", [])) > 0
+    
+    if not has_photos:
+        logger.info(f"❌ В группе {media_group_id} нет фото")
+        return
+    
+    logger.info(f"📦 Обработка группы {media_group_id}: видео={has_video}, фото={len(group['photos'])}")
+    
+    # Инициализируем сессию пользователя
+    user_id = group["user_id"]
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
-                                 "auto_title": None, "video": None, "photos": [], "current_title": None}
+        user_sessions[user_id] = {
+            "media": [], 
+            "state": "idle", 
+            "audio": None, 
+            "audio_selected": None, 
+            "auto_title": None, 
+            "video": None, 
+            "photos": [], 
+            "current_title": None
+        }
     
     session = user_sessions[user_id]
+    session["photos"] = group["photos"].copy()
     
-    # Если фото несколько - это медиагруппа
-    if len(photos) > 1:
-        logger.info(f"📸 Получена медиагруппа из {len(photos)} фото")
-        session["photos"] = []  # Очищаем старые фото
-        
-        # Скачиваем все фото
-        try:
-            for photo in photos:
-                file = await context.bot.get_file(photo.file_id)
-                photo_bytes = await file.download_as_bytearray()
-                session["photos"].append(photo_bytes)
-            
-            logger.info(f"✅ Скачано {len(session['photos'])} фото")
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка скачивания фото: {e}")
-            await message.reply_text("❌ Не удалось скачать фото")
-            return
-        
-        # Проверяем текст
-        caption = message.caption or ""
-        
-        if caption.strip():
-            auto_title = extract_title_from_text(caption)
-            session["auto_title"] = auto_title
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("📝 Использовать заголовок из текста", callback_data="title_auto"),
-                    InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom")
-                ],
-                [
-                    InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="title_ai"),
-                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            title_preview = auto_title if auto_title else "❌ Не удалось извлечь заголовок"
-            
-            await message.reply_text(
-                f"📸 Получено {len(session['photos'])} фото с текстом!\n\n"
-                f"<b>Найденный заголовок:</b>\n{title_preview}\n\n"
-                f"Выберите действие:",
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
-            session["state"] = "selecting_title"
-            
-        else:
-            # Нет текста - показываем кнопки
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Оформить пост", callback_data="photo_post"),
-                    InlineKeyboardButton("🎬 Сделать видео", callback_data="photo_video")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await message.reply_text(
-                f"📸 Получено {len(session['photos'])} фото!\n\n"
-                f"Выберите действие:",
-                reply_markup=reply_markup
-            )
-            session["state"] = "idle"
-        
-        return
+    if has_video:
+        session["video"] = group["video"]
     
-    # Если только одно фото - обрабатываем как обычно
+    # Проверяем текст
+    caption = group.get("caption", "")
+    
+    if caption.strip():
+        auto_title = extract_title_from_text(caption)
+        session["auto_title"] = auto_title
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Использовать заголовок из текста", callback_data="title_auto"),
+                InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom")
+            ],
+            [
+                InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="title_ai"),
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        title_preview = auto_title if auto_title else "❌ Не удалось извлечь заголовок"
+        
+        # Отправляем сообщение в чат
+        await context.bot.send_message(
+            chat_id=group["chat_id"],
+            text=f"📸 Получена медиагруппа!\n\n"
+                 f"<b>Найденный заголовок:</b>\n{title_preview}\n\n"
+                 f"Выберите действие:",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "selecting_title"
+        
     else:
-        await handle_single_photo(update, context)
+        # Нет текста - показываем кнопки
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Оформить пост", callback_data="photo_post"),
+                InlineKeyboardButton("🎬 Сделать видео", callback_data="photo_video")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        media_type = "видео + фото" if has_video else f"{len(session['photos'])} фото"
+        
+        await context.bot.send_message(
+            chat_id=group["chat_id"],
+            text=f"📸 Получена медиагруппа: {media_type}!\n\n"
+                 f"Выберите действие:",
+            reply_markup=reply_markup
+        )
+        session["state"] = "idle"
+
+# ==================== ОБРАБОТКА ОДИНОЧНЫХ ФОТО ====================
 
 async def handle_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка одного фото"""
+    """Обработка одного фото (без медиагруппы)"""
     if not update.effective_user:
         return
     
@@ -973,11 +1040,11 @@ async def handle_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message or not message.photo:
         return
     
-    # Если есть видео вместе с фото - пропускаем
-    if hasattr(message, 'video') and message.video:
+    # Если есть media_group_id - пропускаем (обработает handle_media_group)
+    if hasattr(message, 'media_group_id') and message.media_group_id:
         return
     
-    photo = message.photo[-1]  # Берем последнее (самое качественное)
+    photo = message.photo[-1]
     
     try:
         file = await context.bot.get_file(photo.file_id)
@@ -993,7 +1060,7 @@ async def handle_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
                                  "auto_title": None, "video": None, "photos": [], "current_title": None}
     
     session = user_sessions[user_id]
-    session["photos"] = [photo_bytes]  # Сохраняем одно фото
+    session["photos"] = [photo_bytes]
     
     caption = message.caption or ""
     
@@ -1052,41 +1119,37 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
     if not message or not message.photo:
         return
     
+    # Если это медиагруппа - пропускаем
+    if hasattr(message, 'media_group_id') and message.media_group_id:
+        return
+    
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"media": [], "state": "idle", "audio": None, "audio_selected": None, 
-                                 "auto_title": None, "video": None, "photos": [], "current_title": None}
+        return
     
     session = user_sessions[user_id]
     
-    # Проверяем, нужно ли собирать фото для видео
     if session.get("state") != "collecting_photos":
-        # Если не в режиме сбора, обрабатываем как обычное фото
-        await handle_single_photo(update, context)
         return
     
-    # Если в режиме сбора - добавляем все фото из сообщения
-    photos = message.photo
-    count_before = len(session["photos"])
+    photo = message.photo[-1]
     
     try:
-        for photo in photos:
-            file = await context.bot.get_file(photo.file_id)
-            photo_bytes = await file.download_as_bytearray()
-            session["photos"].append(photo_bytes)
+        file = await context.bot.get_file(photo.file_id)
+        photo_bytes = await file.download_as_bytearray()
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания фото: {e}")
         await message.reply_text("❌ Не удалось скачать фото")
         return
     
+    session["photos"].append(photo_bytes)
     count = len(session["photos"])
-    added = count - count_before
     
     if count >= 10:
         await message.reply_text(f"✅ Собрано {count} фото (максимум).\nНажмите /done для создания видео")
         return
     
     await message.reply_text(
-        f"✅ Добавлено {added} фото! Всего: {count}\n"
+        f"✅ Фото {count} добавлено!\n"
         f"Осталось: {max(0, 3 - count)} фото (минимум 3, максимум 10)\n"
         "Нажмите /done когда будете готовы"
     )
@@ -1132,7 +1195,8 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             # Обрабатываем как фото
             if session["photos"]:
-                photo_bytes = session["photos"][-1]
+                # Если несколько фото - обрабатываем первое
+                photo_bytes = session["photos"][0]
                 status_msg = await query.message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
                 
                 processed = process_single_photo(photo_bytes, auto_title)
@@ -1215,7 +1279,7 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             session["state"] = "ready_to_process"
         else:
             if session["photos"]:
-                photo_bytes = session["photos"][-1]
+                photo_bytes = session["photos"][0]
                 status_msg = await query.message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
                 
                 processed = process_single_photo(photo_bytes, current_title)
@@ -1699,8 +1763,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"2️⃣ <b>Фото</b> - отправьте фото:\n"
         f"   • С текстом → предложит использовать заголовок из текста или свой\n"
         f"   • Без текста → покажет кнопки: Оформить пост / Сделать видео\n"
-        f"3️⃣ <b>Несколько фото</b> - отправьте вместе → бот соберет их все\n"
-        f"4️⃣ <b>Видео + Фото</b> - отправьте вместе → бот объединит их в одно видео\n"
+        f"3️⃣ <b>Несколько фото</b> - отправьте вместе в одном сообщении → бот соберет их все\n"
+        f"4️⃣ <b>Видео + Фото</b> - отправьте в одном сообщении → бот объединит их в одно видео\n"
         f"5️⃣ <b>🤖 ИИ</b> - улучшает заголовки через DeepSeek AI\n\n"
         f"🎵 <b>Музыка для видео:</b>\n"
         f"   • 🎵 Обычная мелодия\n"
@@ -1754,12 +1818,12 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message:
         return
     
-    # Проверяем, есть ли видео и фото вместе
+    # Проверяем, есть ли видео и фото
     has_video = hasattr(message, 'video') and message.video
     has_photo = hasattr(message, 'photo') and message.photo
     
-    # Медиагруппа (видео + фото)
-    if has_video and has_photo:
+    # Если есть media_group_id - это часть медиагруппы
+    if hasattr(message, 'media_group_id') and message.media_group_id:
         await handle_media_group(update, context)
         return
     
@@ -1774,12 +1838,11 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         if user_id in user_sessions:
             session = user_sessions[user_id]
             if session.get("state") == "collecting_photos":
-                # Если в режиме сбора фото - добавляем
                 await handle_photo_collection(update, context)
                 return
         
-        # Иначе обрабатываем как медиагруппу (может быть несколько фото)
-        await handle_media_group(update, context)
+        # Иначе обрабатываем как одиночное фото
+        await handle_single_photo(update, context)
         return
     
     # Текст
@@ -1858,7 +1921,7 @@ async def main():
     logger.info("  • Слайд-шоу из 3-10 фото с плавным приближением (+10% за 3с)")
     logger.info("  • Объединение видео + фото в одно видео")
     logger.info("  • 🤖 Улучшение заголовков через DeepSeek AI")
-    logger.info("  • Поддержка нескольких фото в одном сообщении")
+    logger.info("  • Поддержка медиагрупп (несколько фото/видео в одном сообщении)")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")
     logger.info("  • Важная новость")

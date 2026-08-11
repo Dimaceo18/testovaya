@@ -312,6 +312,7 @@ def process_video(video_bytes: bytes, title_text: str, text_position: str = "bot
         
         logger.info(f"📹 Загрузка видео для обработки (ЧП ВМ)...")
         video = VideoFileClip(temp_input)
+        logger.info(f"📹 Видео загружено: длительность={video.duration}с, fps={video.fps}, размер={video.size}")
         
         logger.info(f"🎬 Обработка кадров видео (ЧП ВМ)...")
         
@@ -327,7 +328,8 @@ def process_video(video_bytes: bytes, title_text: str, text_position: str = "bot
             audio_codec='aac',
             fps=video.fps,
             bitrate='2000k',
-            threads=4
+            threads=4,
+            logger=None
         )
         
         video.close()
@@ -429,7 +431,10 @@ async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
             logger.error(f"❌ Файл слишком большой: {file.file_size / (1024*1024):.1f} MB (макс. {MAX_VIDEO_SIZE_MB} MB)")
             return None
         
-        return await file.download_as_bytearray()
+        logger.info(f"📥 Скачивание видео, размер: {file.file_size / (1024*1024):.1f} MB")
+        result = await file.download_as_bytearray()
+        logger.info(f"✅ Видео скачано, размер: {len(result) / (1024*1024):.1f} MB")
+        return result
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания медиа: {e}")
         return None
@@ -442,9 +447,12 @@ def get_text_from_message(message) -> str:
 async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source: str = "канал"):
     try:
         if not hasattr(message, 'video') or not message.video:
+            logger.error("❌ Нет видео в сообщении!")
             return
         
-        # Проверяем размер видео ДО отправки статуса
+        logger.info(f"📹 Получено видео: ID={message.video.file_id}, размер={message.video.file_size / (1024*1024):.1f} MB")
+        
+        # Проверяем размер видео
         if message.video.file_size and message.video.file_size > MAX_FILE_SIZE_BYTES:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
@@ -534,20 +542,39 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         # Обрабатываем видео
         processed_video = process_video(video_bytes, title, "bottom")
         
+        if not processed_video or len(processed_video.getvalue()) == 0:
+            logger.error("❌ processed_video пустой!")
+            await status_msg.edit_text(
+                "❌ <b>Ошибка при обработке видео</b>\n\n"
+                "Не удалось обработать видео."
+            )
+            return
+        
+        logger.info(f"✅ Видео обработано, размер: {len(processed_video.getvalue()) / (1024*1024):.2f} MB")
+        
         # Обновляем статус
         await status_msg.edit_text(
             "⏳ <b>Отправляю готовое видео...</b>",
             parse_mode="HTML"
         )
         
-        await context.bot.send_video(
-            chat_id=ADMIN_CHAT_ID,
-            video=BytesIO(processed_video.getvalue()),
-            caption=formatted_text[:1024],
-            parse_mode="HTML",
-            width=TARGET_W,
-            height=TARGET_H
-        )
+        # Отправляем видео
+        try:
+            result = await context.bot.send_video(
+                chat_id=ADMIN_CHAT_ID,
+                video=BytesIO(processed_video.getvalue()),
+                caption=formatted_text[:1024],
+                parse_mode="HTML",
+                width=TARGET_W,
+                height=TARGET_H
+            )
+            logger.info(f"✅ Видео отправлено! message_id={result.message_id}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отправке видео: {e}")
+            await status_msg.edit_text(
+                f"❌ <b>Ошибка при отправке видео</b>\n\n{str(e)}"
+            )
+            return
         
         # Удаляем статусное сообщение
         await status_msg.delete()

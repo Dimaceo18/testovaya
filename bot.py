@@ -17,12 +17,17 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
     import requests
 
+# Правильный импорт для moviepy 1.0.3
 try:
     from moviepy import VideoFileClip
 except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy"])
-    from moviepy import VideoFileClip
+    try:
+        # Альтернативный импорт для старых версий
+        from moviepy.video.io.VideoFileClip import VideoFileClip
+    except ImportError:
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
+        from moviepy import VideoFileClip
 
 try:
     import numpy as np
@@ -526,7 +531,7 @@ async def process_post(message, context: ContextTypes.DEFAULT_TYPE, source: str 
         if not text.strip():
             logger.info(f"📷 Пост без текста ({source})")
             # Отправляем оригинальное медиа без обработки
-            if message.video:
+            if hasattr(message, 'video') and message.video:
                 await context.bot.send_video(
                     chat_id=ADMIN_CHAT_ID,
                     video=message.video.file_id,

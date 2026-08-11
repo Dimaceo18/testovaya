@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import asyncio  # <-- ДОБАВЛЯЕМ ЭТОТ ИМПОРТ
 import os
 import re
 import logging

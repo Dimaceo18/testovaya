@@ -65,7 +65,7 @@ MONITOR_CHANNEL_ID = os.getenv("MONITOR_CHANNEL_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 MAX_VIDEO_SIZE_MB = int(os.getenv("MAX_VIDEO_SIZE_MB", "50"))
 
-# URL для аудиофайлов на GitHub (исправленные ссылки)
+# URL для аудиофайлов на GitHub
 AUDIO_URLS = {
     "важная": "https://raw.githubusercontent.com/Dimaceo18/testovaya/main/vajnoe.mp3",
     "обычная": "https://raw.githubusercontent.com/Dimaceo18/testovaya/main/obychnaya.mp3"
@@ -101,7 +101,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== СОСТОЯНИЯ ДЛЯ ФОТО ====================
-user_photo_sessions = {}  # user_id: {"photos": [bytes], "state": "...", "audio": bytes}
+user_photo_sessions = {}  # user_id: {"photos": [bytes], "state": "...", "audio": bytes, "auto_title": str}
 
 # ==================== ФУНКЦИИ ====================
 
@@ -280,6 +280,66 @@ def clean_title_for_card(title: str) -> str:
     clean = emoji_pattern.sub('', title)
     clean = re.sub(r'\s+', ' ', clean)
     return clean.strip()
+
+def extract_title_from_text(text: str) -> str:
+    """Извлекает заголовок из текста"""
+    if not text:
+        return ""
+    
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F700-\U0001F77F"
+        "\U0001F780-\U0001F7FF"
+        "\U0001F800-\U0001F8FF"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA00-\U0001FA6F"
+        "\U0001FA70-\U0001FAFF"
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "\u2600-\u27BF"
+        "]+",
+        flags=re.UNICODE
+    )
+    clean_text = emoji_pattern.sub('', text).strip()
+    
+    if '\n' in clean_text:
+        lines = clean_text.split('\n')
+        title = lines[0].strip()
+        if len(title) > 200:
+            title = title[:197] + "..."
+        return title
+    
+    if '. ' in clean_text and len(clean_text) > 100:
+        parts = clean_text.split('. ', 1)
+        title = (parts[0] + '.').strip()
+        if len(title) > 200:
+            title = title[:197] + "..."
+        return title
+    
+    if len(clean_text) > 200:
+        return clean_text[:197] + "..."
+    return clean_text
+
+def format_text_with_bold_title(text: str) -> str:
+    if not text:
+        return ""
+    
+    title = extract_title_from_text(text)
+    if not title:
+        return text
+    
+    import html
+    safe_text = html.escape(text)
+    safe_title = html.escape(title)
+    
+    if safe_title in safe_text:
+        formatted = safe_text.replace(safe_title, f"<b>{safe_title}</b>", 1)
+        return formatted
+    
+    return safe_text
 
 # ==================== ФУНКЦИИ ДЛЯ ФОТО ====================
 
@@ -579,67 +639,6 @@ def process_video(video_bytes: bytes, title_text: str) -> BytesIO:
         except:
             pass
 
-# ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С ТЕКСТОМ ====================
-
-def extract_title_from_text(text: str) -> str:
-    if not text:
-        return ""
-    
-    emoji_pattern = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"
-        "\U0001F300-\U0001F5FF"
-        "\U0001F680-\U0001F6FF"
-        "\U0001F700-\U0001F77F"
-        "\U0001F780-\U0001F7FF"
-        "\U0001F800-\U0001F8FF"
-        "\U0001F900-\U0001F9FF"
-        "\U0001FA00-\U0001FA6F"
-        "\U0001FA70-\U0001FAFF"
-        "\U00002702-\U000027B0"
-        "\U000024C2-\U0001F251"
-        "\u2600-\u27BF"
-        "]+",
-        flags=re.UNICODE
-    )
-    clean_text = emoji_pattern.sub('', text).strip()
-    
-    if '\n' in clean_text:
-        lines = clean_text.split('\n')
-        title = lines[0].strip()
-        if len(title) > 200:
-            title = title[:197] + "..."
-        return title
-    
-    if '. ' in clean_text and len(clean_text) > 100:
-        parts = clean_text.split('. ', 1)
-        title = (parts[0] + '.').strip()
-        if len(title) > 200:
-            title = title[:197] + "..."
-        return title
-    
-    if len(clean_text) > 200:
-        return clean_text[:197] + "..."
-    return clean_text
-
-def format_text_with_bold_title(text: str) -> str:
-    if not text:
-        return ""
-    
-    title = extract_title_from_text(text)
-    if not title:
-        return text
-    
-    import html
-    safe_text = html.escape(text)
-    safe_title = html.escape(title)
-    
-    if safe_title in safe_text:
-        formatted = safe_text.replace(safe_title, f"<b>{safe_title}</b>", 1)
-        return formatted
-    
-    return safe_text
-
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С МЕДИА ====================
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
@@ -749,7 +748,316 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         except:
             pass
 
-# ==================== ОБРАБОТЧИК ВЫБОРА МУЗЫКИ ====================
+# ==================== НОВАЯ ФУНКЦИЯ: ВЫБОР ЗАГОЛОВКА ====================
+
+async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает выбор заголовка для фото с текстом"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = update.effective_user.id
+    data = query.data
+    
+    if user_id not in user_photo_sessions:
+        await query.edit_message_text("❌ Сессия не найдена. Отправьте фото заново.")
+        return
+    
+    session = user_photo_sessions[user_id]
+    photo_bytes = session["photos"][-1] if session["photos"] else None
+    
+    if not photo_bytes:
+        await query.edit_message_text("❌ Нет фото для обработки")
+        return
+    
+    if data == "title_auto":
+        # Использовать заголовок из текста
+        auto_title = session.get("auto_title", "")
+        if not auto_title:
+            await query.edit_message_text("❌ Не удалось извлечь заголовок из текста")
+            return
+        
+        await query.edit_message_text(f"✅ Использую заголовок из текста:\n\n<b>{auto_title}</b>", parse_mode="HTML")
+        
+        # Обрабатываем фото
+        status_msg = await query.message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
+        
+        processed = process_single_photo(photo_bytes, auto_title)
+        
+        if processed and len(processed.getvalue()) > 0:
+            await query.message.reply_photo(
+                photo=BytesIO(processed.getvalue()),
+                caption=f"<b>{auto_title}</b>",
+                parse_mode="HTML"
+            )
+            await status_msg.delete()
+        else:
+            await status_msg.edit_text("❌ Ошибка обработки фото")
+        
+        # Очищаем сессию
+        session["state"] = "idle"
+        session["photos"] = []
+        session["auto_title"] = None
+        
+    elif data == "title_custom":
+        # Свой заголовок
+        await query.edit_message_text("✏️ Отправьте свой текст для заголовка (или нажмите /cancel для отмены):")
+        session["state"] = "waiting_custom_title"
+
+# ==================== ОБРАБОТЧИКИ ====================
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка фото с проверкой наличия текста"""
+    if not update.effective_user:
+        return
+    
+    user_id = update.effective_user.id
+    message = update.message
+    
+    if not message or not message.photo:
+        return
+    
+    photo = message.photo[-1]
+    
+    try:
+        file = await context.bot.get_file(photo.file_id)
+        photo_bytes = await file.download_as_bytearray()
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания фото: {e}")
+        await message.reply_text("❌ Не удалось скачать фото")
+        return
+    
+    # Инициализируем сессию
+    if user_id not in user_photo_sessions:
+        user_photo_sessions[user_id] = {"photos": [], "state": "idle", "audio": None, "audio_selected": None, "auto_title": None}
+    
+    session = user_photo_sessions[user_id]
+    session["photos"].append(photo_bytes)
+    
+    # Проверяем, есть ли текст в сообщении
+    caption = message.caption or ""
+    
+    if caption.strip():
+        # Есть текст - предлагаем выбрать заголовок
+        auto_title = extract_title_from_text(caption)
+        session["auto_title"] = auto_title
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Использовать заголовок из текста", callback_data="title_auto"),
+                InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom")
+            ],
+            [
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        title_preview = auto_title if auto_title else "❌ Не удалось извлечь заголовок"
+        
+        await message.reply_text(
+            f"📸 Фото получено с текстом!\n\n"
+            f"<b>Найденный заголовок:</b>\n{title_preview}\n\n"
+            f"Выберите действие:",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "selecting_title"
+        
+    else:
+        # Нет текста - показываем обычные кнопки
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Оформить пост", callback_data="photo_post"),
+                InlineKeyboardButton("🎬 Сделать видео", callback_data="photo_video")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await message.reply_text(
+            "📸 Фото получено!\n\nВыберите действие:",
+            reply_markup=reply_markup
+        )
+        session["state"] = "idle"
+
+async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатий кнопок для фото"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = update.effective_user.id
+    data = query.data
+    
+    if user_id not in user_photo_sessions:
+        await query.edit_message_text("❌ Сессия не найдена. Отправьте фото заново.")
+        return
+    
+    session = user_photo_sessions[user_id]
+    
+    if data == "title_cancel":
+        # Отмена выбора заголовка
+        session["state"] = "idle"
+        session["photos"] = []
+        session["auto_title"] = None
+        await query.edit_message_text("❌ Действие отменено")
+        return
+    
+    if data in ["title_auto", "title_custom"]:
+        await handle_title_choice(update, context)
+        return
+    
+    if data == "photo_post":
+        if not session["photos"]:
+            await query.edit_message_text("❌ Нет фото для обработки")
+            return
+        
+        await query.edit_message_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
+        await query.message.reply_text("✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):")
+        session["state"] = "waiting_post_title"
+        
+    elif data == "photo_video":
+        if not session["photos"]:
+            await query.edit_message_text("❌ Нет фото для обработки")
+            return
+        
+        await handle_music_choice(update, context)
+        session["state"] = "selecting_music"
+
+async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текстовых сообщений"""
+    if not update.effective_user:
+        return
+    
+    user_id = update.effective_user.id
+    message = update.message
+    
+    if not message:
+        return
+    
+    if user_id not in user_photo_sessions:
+        return
+    
+    session = user_photo_sessions[user_id]
+    state = session.get("state", "idle")
+    
+    if state == "waiting_post_title":
+        title = message.text.strip()
+        
+        if not title:
+            await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
+            return
+        
+        if session["photos"]:
+            photo_bytes = session["photos"][-1]
+            status_msg = await message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
+            
+            processed = process_single_photo(photo_bytes, title)
+            
+            if processed and len(processed.getvalue()) > 0:
+                await message.reply_photo(
+                    photo=BytesIO(processed.getvalue()),
+                    caption=f"<b>{title}</b>",
+                    parse_mode="HTML"
+                )
+                await status_msg.delete()
+            else:
+                await status_msg.edit_text("❌ Ошибка обработки фото")
+        
+        session["state"] = "idle"
+        session["photos"] = []
+        session["auto_title"] = None
+        session["audio"] = None
+        session["audio_selected"] = None
+    
+    elif state == "waiting_custom_title":
+        # Свой заголовок для фото с текстом
+        title = message.text.strip()
+        
+        if not title:
+            await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
+            return
+        
+        if session["photos"]:
+            photo_bytes = session["photos"][-1]
+            status_msg = await message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
+            
+            processed = process_single_photo(photo_bytes, title)
+            
+            if processed and len(processed.getvalue()) > 0:
+                await message.reply_photo(
+                    photo=BytesIO(processed.getvalue()),
+                    caption=f"<b>{title}</b>",
+                    parse_mode="HTML"
+                )
+                await status_msg.delete()
+            else:
+                await status_msg.edit_text("❌ Ошибка обработки фото")
+        
+        session["state"] = "idle"
+        session["photos"] = []
+        session["auto_title"] = None
+        session["audio"] = None
+        session["audio_selected"] = None
+    
+    elif state == "waiting_video_title":
+        title = message.text.strip()
+        
+        if not title:
+            await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
+            return
+        
+        if len(session["photos"]) >= 3:
+            status_msg = await message.reply_text(
+                f"🎬 <b>Создаю видео из {len(session['photos'])} фото...</b>\n⏳ Это займет ~1-2 минуты",
+                parse_mode="HTML"
+            )
+            
+            audio_bytes = session.get("audio")
+            audio_selected = session.get("audio_selected", "без музыки")
+            
+            if audio_bytes:
+                logger.info(f"🎵 Создаю видео с музыкой: {audio_selected}")
+            else:
+                logger.info("🔇 Создаю видео без музыки")
+            
+            video = create_slideshow_video(session["photos"], title, audio_bytes)
+            
+            if video and len(video.getvalue()) > 0:
+                await status_msg.edit_text("⏳ <b>Отправляю видео...</b>", parse_mode="HTML")
+                
+                caption = f"<b>{title}</b>"
+                if audio_selected and audio_selected != "без музыки":
+                    caption += f"\n🎵 Музыка: {audio_selected}"
+                
+                await message.reply_video(
+                    video=BytesIO(video.getvalue()),
+                    caption=caption,
+                    parse_mode="HTML",
+                    width=TARGET_W,
+                    height=TARGET_H
+                )
+                await status_msg.delete()
+            else:
+                await status_msg.edit_text("❌ Ошибка создания видео")
+        else:
+            await message.reply_text(
+                f"❌ Недостаточно фото! Отправлено: {len(session['photos'])}, нужно 3-10"
+            )
+        
+        session["state"] = "idle"
+        session["photos"] = []
+        session["auto_title"] = None
+        session["audio"] = None
+        session["audio_selected"] = None
+
+# ==================== МУЗЫКА И ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ====================
 
 async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает выбор музыки для видео"""
@@ -826,7 +1134,6 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
         session["state"] = "collecting_photos"
         
     elif data in ["важная", "обычная"]:
-        # Выбрана музыка - скачиваем с GitHub
         audio_name = "Важная новость" if data == "важная" else "Обычная мелодия"
         await query.edit_message_text(f"⏳ Скачиваю музыку '{audio_name}' с GitHub...")
         
@@ -845,174 +1152,6 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
             await handle_music_choice(update, context)
-
-# ==================== ОБРАБОТЧИКИ ====================
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user:
-        return
-    
-    user_id = update.effective_user.id
-    message = update.message
-    
-    if not message or not message.photo:
-        return
-    
-    photo = message.photo[-1]
-    
-    try:
-        file = await context.bot.get_file(photo.file_id)
-        photo_bytes = await file.download_as_bytearray()
-    except Exception as e:
-        logger.error(f"❌ Ошибка скачивания фото: {e}")
-        await message.reply_text("❌ Не удалось скачать фото")
-        return
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Оформить пост", callback_data="photo_post"),
-            InlineKeyboardButton("🎬 Сделать видео", callback_data="photo_video")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    if user_id not in user_photo_sessions:
-        user_photo_sessions[user_id] = {"photos": [], "state": "idle", "audio": None, "audio_selected": None}
-    
-    user_photo_sessions[user_id]["photos"].append(photo_bytes)
-    
-    await message.reply_text(
-        "📸 Фото получено!\n\nВыберите действие:",
-        reply_markup=reply_markup
-    )
-
-async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if not update.effective_user:
-        await query.edit_message_text("❌ Ошибка: пользователь не найден")
-        return
-    
-    user_id = update.effective_user.id
-    data = query.data
-    
-    if user_id not in user_photo_sessions:
-        await query.edit_message_text("❌ Сессия не найдена. Отправьте фото заново.")
-        return
-    
-    session = user_photo_sessions[user_id]
-    
-    if data == "photo_post":
-        if not session["photos"]:
-            await query.edit_message_text("❌ Нет фото для обработки")
-            return
-        
-        await query.edit_message_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
-        await query.message.reply_text("✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):")
-        session["state"] = "waiting_post_title"
-        
-    elif data == "photo_video":
-        if not session["photos"]:
-            await query.edit_message_text("❌ Нет фото для обработки")
-            return
-        
-        await handle_music_choice(update, context)
-        session["state"] = "selecting_music"
-
-async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user:
-        return
-    
-    user_id = update.effective_user.id
-    message = update.message
-    
-    if not message:
-        return
-    
-    if user_id not in user_photo_sessions:
-        return
-    
-    session = user_photo_sessions[user_id]
-    state = session.get("state", "idle")
-    
-    if state == "waiting_post_title":
-        title = message.text.strip()
-        
-        if not title:
-            await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
-            return
-        
-        if session["photos"]:
-            photo_bytes = session["photos"][-1]
-            status_msg = await message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
-            
-            processed = process_single_photo(photo_bytes, title)
-            
-            if processed and len(processed.getvalue()) > 0:
-                await message.reply_photo(
-                    photo=BytesIO(processed.getvalue()),
-                    caption=f"<b>{title}</b>",
-                    parse_mode="HTML"
-                )
-                await status_msg.delete()
-            else:
-                await status_msg.edit_text("❌ Ошибка обработки фото")
-        
-        session["state"] = "idle"
-        session["photos"] = []
-        session["audio"] = None
-        session["audio_selected"] = None
-    
-    elif state == "waiting_video_title":
-        title = message.text.strip()
-        
-        if not title:
-            await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
-            return
-        
-        if len(session["photos"]) >= 3:
-            status_msg = await message.reply_text(
-                f"🎬 <b>Создаю видео из {len(session['photos'])} фото...</b>\n⏳ Это займет ~1-2 минуты",
-                parse_mode="HTML"
-            )
-            
-            audio_bytes = session.get("audio")
-            audio_selected = session.get("audio_selected", "без музыки")
-            
-            if audio_bytes:
-                logger.info(f"🎵 Создаю видео с музыкой: {audio_selected}")
-            else:
-                logger.info("🔇 Создаю видео без музыки")
-            
-            video = create_slideshow_video(session["photos"], title, audio_bytes)
-            
-            if video and len(video.getvalue()) > 0:
-                await status_msg.edit_text("⏳ <b>Отправляю видео...</b>", parse_mode="HTML")
-                
-                caption = f"<b>{title}</b>"
-                if audio_selected and audio_selected != "без музыки":
-                    caption += f"\n🎵 Музыка: {audio_selected}"
-                
-                await message.reply_video(
-                    video=BytesIO(video.getvalue()),
-                    caption=caption,
-                    parse_mode="HTML",
-                    width=TARGET_W,
-                    height=TARGET_H
-                )
-                await status_msg.delete()
-            else:
-                await status_msg.edit_text("❌ Ошибка создания видео")
-        else:
-            await message.reply_text(
-                f"❌ Недостаточно фото! Отправлено: {len(session['photos'])}, нужно 3-10"
-            )
-        
-        session["state"] = "idle"
-        session["photos"] = []
-        session["audio"] = None
-        session["audio_selected"] = None
 
 async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
@@ -1116,7 +1255,7 @@ async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     
     if user_id in user_photo_sessions:
-        user_photo_sessions[user_id] = {"photos": [], "state": "idle", "audio": None, "audio_selected": None}
+        user_photo_sessions[user_id] = {"photos": [], "state": "idle", "audio": None, "audio_selected": None, "auto_title": None}
     
     await query.edit_message_text("❌ Создание видео отменено")
 
@@ -1128,7 +1267,7 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if user_id in user_photo_sessions:
-        user_photo_sessions[user_id] = {"photos": [], "state": "idle", "audio": None, "audio_selected": None}
+        user_photo_sessions[user_id] = {"photos": [], "state": "idle", "audio": None, "audio_selected": None, "auto_title": None}
     
     await update.message.reply_text("✅ Действие отменено")
 
@@ -1141,9 +1280,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 Макс. размер: {MAX_VIDEO_SIZE_MB} MB\n\n"
         f"🎬 <b>Что умеет бот:</b>\n"
         f"1️⃣ <b>Видео</b> - обрабатывает видео (градиент + текст)\n"
-        f"2️⃣ <b>Фото</b> - отправьте фото и выберите действие:\n"
-        f"   • Оформить пост (градиент + текст)\n"
-        f"   • Сделать видео (слайд-шоу из 3-10 фото)\n\n"
+        f"2️⃣ <b>Фото</b> - отправьте фото:\n"
+        f"   • С текстом → предложит использовать заголовок из текста или свой\n"
+        f"   • Без текста → покажет кнопки: Оформить пост / Сделать видео\n\n"
         f"🎵 <b>Музыка для видео:</b>\n"
         f"   • 🎵 Обычная мелодия\n"
         f"   • 📢 Важная новость\n"
@@ -1237,7 +1376,7 @@ async def main():
         handle_text_input
     ))
     
-    app.add_handler(CallbackQueryHandler(handle_photo_callback, pattern="^(photo_post|photo_video)$"))
+    app.add_handler(CallbackQueryHandler(handle_photo_callback, pattern="^(photo_post|photo_video|title_auto|title_custom|title_cancel)$"))
     app.add_handler(CallbackQueryHandler(handle_music_callback, pattern="^music_"))
     app.add_handler(CallbackQueryHandler(handle_video_cancel, pattern="^video_cancel$"))
     
@@ -1257,7 +1396,7 @@ async def main():
     logger.info(f"  • Градиент: {int(CHP_GRADIENT_PCT*100)}%")
     logger.info(f"  • Текст: снизу")
     logger.info("📸 Новые функции:")
-    logger.info("  • Обработка фото с градиентом")
+    logger.info("  • Обработка фото с авто-извлечением заголовка")
     logger.info("  • Слайд-шоу из 3-10 фото с плавным приближением (+10% за 3с)")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")

@@ -6,6 +6,7 @@ import re
 import logging
 import sys
 import tempfile
+import time
 from io import BytesIO
 from typing import Optional
 import subprocess
@@ -17,15 +18,13 @@ except ImportError:
     import requests
 
 try:
-    from moviepy import VideoFileClip, CompositeVideoClip, ImageClip
+    from moviepy import VideoFileClip
 except ImportError:
     try:
         from moviepy.video.io.VideoFileClip import VideoFileClip
-        from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
-        from moviepy.video.VideoClip import ImageClip
     except:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
-        from moviepy import VideoFileClip, CompositeVideoClip, ImageClip
+        from moviepy import VideoFileClip
 
 try:
     import numpy as np
@@ -252,19 +251,13 @@ def clean_title_for_card(title: str) -> str:
 # ==================== БЫСТРАЯ ОБРАБОТКА ВИДЕО ====================
 
 def create_text_overlay(title_text: str, target_size: tuple) -> Image.Image:
-    """
-    Создает изображение с текстом для наложения на видео (ОДИН РАЗ!)
-    """
     w, h = target_size
-    
-    # Создаем прозрачное изображение
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
     clean_title = clean_title_for_card(title_text)
     text = (clean_title or "Без заголовка").strip().upper()
     
-    # Настройки отступов (как в ЧП ВМ)
     margin_x = int(w * 0.06)
     margin_bottom = int(h * 0.08)
     margin_top = int(h * 0.08)
@@ -289,16 +282,10 @@ def create_text_overlay(title_text: str, target_size: tuple) -> Image.Image:
     return overlay
 
 def process_video_fast(video_bytes: bytes, title_text: str) -> BytesIO:
-    """
-    БЫСТРАЯ обработка видео:
-    1. Один раз создаём оверлей с текстом
-    2. Применяем обрезку и градиент ко ВСЕМУ видео сразу (а не к каждому кадру)
-    """
     temp_input = None
     temp_output = None
     
     try:
-        # Сохраняем входное видео
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
             f.write(video_bytes)
             temp_input = f.name
@@ -309,10 +296,8 @@ def process_video_fast(video_bytes: bytes, title_text: str) -> BytesIO:
         logger.info(f"📹 Загрузка видео...")
         video = VideoFileClip(temp_input)
         
-        # 1. Обрезаем до 4:5 (один раз!)
+        # Обрезка до 4:5
         logger.info(f"✂️ Обрезка до 4:5...")
-        
-        # Получаем размеры видео
         w, h = video.size
         target_ratio = 4 / 5
         cur_ratio = w / h
@@ -326,48 +311,37 @@ def process_video_fast(video_bytes: bytes, title_text: str) -> BytesIO:
             top = (h - new_h) // 2
             video = video.crop(x1=0, y1=top, x2=w, y2=top + new_h)
         
-        # 2. Изменяем размер до 720x900 (один раз!)
+        # Изменяем размер
         logger.info(f"📐 Изменение размера до {TARGET_W}x{TARGET_H}...")
         video = video.resize((TARGET_W, TARGET_H))
         
-        # 3. Создаём оверлей с текстом (ОДИН РАЗ!)
+        # Создаём оверлей с текстом
         logger.info(f"📝 Создание текстового оверлея...")
         text_overlay = create_text_overlay(title_text, (TARGET_W, TARGET_H))
         
-        # 4. Применяем градиент и яркость ко ВСЕМУ видео (через фильтр)
-        logger.info(f"🎨 Применение градиента и яркости...")
-        
-        # Применяем фильтр к видео (обрабатывает каждый кадр, но быстрее)
+        # Применяем фильтр к видео
         def process_frame(frame):
             img = Image.fromarray(frame).convert("RGB")
-            
-            # Яркость
             img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-            
-            # Градиент
             img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
-            
-            # Накладываем текст
             img = img.convert("RGBA")
             text_overlay_rgba = text_overlay.convert("RGBA")
             img = Image.alpha_composite(img, text_overlay_rgba)
             img = img.convert("RGB")
-            
             return np.array(img)
         
         logger.info(f"🎬 Обработка кадров...")
         video = video.fl_image(process_frame)
         
-        # 5. Сохраняем с оптимизацией
         logger.info(f"💾 Сохранение видео...")
         video.write_videofile(
             temp_output,
             codec='libx264',
             audio_codec='aac',
             fps=video.fps,
-            bitrate='1500k',  # Уменьшенный битрейт для скорости
+            bitrate='1500k',
             threads=4,
-            preset='fast',  # Быстрый preset
+            preset='fast',
             logger=None
         )
         
@@ -490,7 +464,6 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         
         logger.info(f"📹 Получено видео: ID={message.video.file_id}, размер={message.video.file_size / (1024*1024):.1f} MB")
         
-        # Проверяем размер
         if message.video.file_size and message.video.file_size > MAX_FILE_SIZE_BYTES:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
@@ -499,7 +472,6 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
             )
             return
         
-        # Статус
         status_msg = await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text="🎬 <b>Начинаю обработку видео (ЧП ВМ)...</b>\n⏳ Это займёт ~30-60 секунд",
@@ -531,7 +503,6 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         
         await status_msg.edit_text("⏳ <b>Обрабатываю видео...</b>\n🎬 Применяю ЧП ВМ...", parse_mode="HTML")
         
-        # БЫСТРАЯ обработка
         processed_video = process_video_fast(video_bytes, title)
         
         if not processed_video or len(processed_video.getvalue()) == 0:
@@ -628,9 +599,22 @@ async def main():
     download_fonts()
     
     try:
+        # Создаём приложение
         app = Application.builder().token(BOT_TOKEN).build()
         bot = Bot(token=BOT_TOKEN)
         
+        # ПРОВЕРКА: сначала удаляем вебхук и останавливаем старые сессии
+        logger.info("🔄 Очистка старых сессий...")
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("✅ Webhook удалён")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
+        
+        # Небольшая пауза для завершения старых сессий
+        await asyncio.sleep(2)
+        
+        # Проверка подключения к каналу
         try:
             channel = await bot.get_chat(MONITOR_CHANNEL_ID)
             logger.info(f"✅ Подключен к каналу: {channel.title}")
@@ -638,6 +622,7 @@ async def main():
             logger.error(f"❌ Не удалось подключиться к каналу: {e}")
             return
         
+        # Проверка админа
         try:
             admin = await bot.get_chat(ADMIN_CHAT_ID)
             logger.info(f"✅ Уведомления для: {admin.first_name}")
@@ -645,6 +630,7 @@ async def main():
             logger.error(f"❌ Не удалось подключиться к админу: {e}")
             return
         
+        # Регистрируем обработчики
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("status", status))
         
@@ -667,9 +653,11 @@ async def main():
         logger.info(f"  • Текст: снизу")
         logger.info(f"  • Макс. размер: {MAX_VIDEO_SIZE_MB} MB")
         
+        # Инициализация и запуск
         await app.initialize()
         await app.start()
         
+        # Запускаем polling с обработкой конфликтов
         await app.updater.start_polling(
             allowed_updates=["message", "channel_post", "callback_query"],
             drop_pending_updates=True,
@@ -679,6 +667,7 @@ async def main():
         
         logger.info("🟢 Бот успешно запущен!")
         
+        # Держим бота запущенным
         while True:
             await asyncio.sleep(1)
             

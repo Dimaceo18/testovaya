@@ -345,9 +345,7 @@ def format_text_with_bold_title(text: str) -> str:
 # ==================== ФУНКЦИЯ ДЛЯ РАБОТЫ С ИИ ====================
 
 async def improve_title_with_ai(title: str) -> Optional[str]:
-    """Улучшает заголовок с помощью DeepSeek AI"""
     if not DEEPSEEK_API_KEY:
-        logger.warning("⚠️ DEEPSEEK_API_KEY не настроен")
         return None
     
     try:
@@ -367,7 +365,7 @@ async def improve_title_with_ai(title: str) -> Optional[str]:
         data = {
             "model": "deepseek-chat",
             "messages": [
-                {"role": "system", "content": "Ты профессиональный копирайтер и редактор новостей. Твоя задача - делать заголовки более привлекательными и кликбейтными."},
+                {"role": "system", "content": "Ты профессиональный копирайтер и редактор новостей."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.8,
@@ -389,7 +387,125 @@ async def improve_title_with_ai(title: str) -> Optional[str]:
         logger.error(f"❌ Ошибка при работе с DeepSeek: {e}")
         return None
 
-# ==================== ФУНКЦИИ ДЛЯ ОБРАБОТКИ МЕДИА ====================
+# ==================== ОПТИМИЗИРОВАННАЯ ОБРАБОТКА ВИДЕО ====================
+
+def process_video_frame_optimized(frame: np.ndarray, title_text: str) -> np.ndarray:
+    """Быстрая обработка одного кадра"""
+    try:
+        img = Image.fromarray(frame).convert("RGB")
+        
+        # Обрезка и изменение размера
+        img = crop_to_4x5(img)
+        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+        
+        # Яркость
+        img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+        
+        # Градиент
+        img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+        
+        # Текст
+        draw = ImageDraw.Draw(img)
+        margin_x = int(img.width * 0.06)
+        margin_bottom = int(img.height * 0.08)
+        safe_w = img.width - 2 * margin_x
+        title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+        
+        clean_title = clean_title_for_card(title_text)
+        text = (clean_title or "Без заголовка").strip().upper()
+        
+        font, lines, heights, spacing, total_h = fit_text_block(
+            draw=draw, text=text, safe_w=safe_w,
+            max_block_h=title_max_h, max_lines=6,
+            start_size=int(img.height * 0.11), min_size=16
+        )
+        
+        line_height = font.size
+        total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
+        y = img.height - margin_bottom - total_text_height
+        
+        for ln in lines:
+            draw.text((margin_x, y), ln, font=font, fill="white")
+            y += line_height + 2
+        
+        return np.array(img)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки кадра: {e}")
+        return frame
+
+def process_video_fast(video_bytes: bytes, title_text: str) -> BytesIO:
+    """Быстрая обработка видео с оптимизациями"""
+    temp_input = None
+    temp_output = None
+    
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+            f.write(video_bytes)
+            temp_input = f.name
+        
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+            temp_output = f.name
+        
+        logger.info(f"📹 Загрузка видео...")
+        video = VideoFileClip(temp_input)
+        logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
+        
+        # ОПТИМИЗАЦИЯ: уменьшаем разрешение если видео большое
+        if video.size[0] > 1280 or video.size[1] > 1280:
+            video = video.resize(height=720)
+            logger.info(f"📹 Уменьшено разрешение для ускорения: {video.size}")
+        
+        logger.info(f"🎬 Обработка кадров...")
+        
+        def process_frame(frame):
+            return process_video_frame_optimized(frame, title_text)
+        
+        processed_video = video.fl_image(process_frame)
+        
+        logger.info(f"💾 Сохранение видео (быстрый режим)...")
+        processed_video.write_videofile(
+            temp_output,
+            codec='libx264',
+            audio_codec='aac',
+            fps=video.fps,
+            bitrate='1000k',  # Уменьшенный битрейт для скорости
+            threads=4,  # Максимум потоков
+            preset='ultrafast',  # САМЫЙ БЫСТРЫЙ пресет
+            ffmpeg_params=['-tune', 'fastdecode'],
+            logger=None
+        )
+        
+        video.close()
+        processed_video.close()
+        
+        with open(temp_output, 'rb') as f:
+            result_bytes = f.read()
+        
+        logger.info(f"✅ Видео обработано! Размер: {len(result_bytes) / (1024*1024):.2f} MB")
+        
+        output = BytesIO()
+        output.write(result_bytes)
+        output.seek(0)
+        return output
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обработке видео: {e}")
+        traceback.print_exc()
+        output = BytesIO(video_bytes)
+        output.seek(0)
+        return output
+    
+    finally:
+        try:
+            if temp_input and os.path.exists(temp_input):
+                os.unlink(temp_input)
+            if temp_output and os.path.exists(temp_output):
+                os.unlink(temp_output)
+        except:
+            pass
+
+# ==================== ФУНКЦИИ ДЛЯ ОБРАБОТКИ ФОТО ====================
 
 def process_single_photo(photo_bytes: bytes, title_text: str) -> BytesIO:
     try:
@@ -507,8 +623,8 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
                         progress = t / duration_per_photo
                         return 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
                     clip = clip.fx(resize, make_zoom)
-            except Exception as e:
-                logger.warning(f"⚠️ Эффект приближения не применен для фото {i+1}: {e}")
+            except:
+                pass
             clips.append(clip)
         
         final_clip = concatenate_videoclips(clips)
@@ -526,8 +642,8 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
                     audio_clip = audio_loop(audio_clip, duration=final_clip.duration)
                 
                 final_clip = final_clip.set_audio(audio_clip)
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось добавить аудио: {e}")
+            except:
+                pass
         
         output_path = os.path.join(temp_dir, "slideshow.mp4")
         final_clip.write_videofile(
@@ -536,7 +652,7 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             codec='libx264',
             audio_codec='aac',
             threads=4,
-            preset='medium',
+            preset='ultrafast',
             logger=None
         )
         
@@ -562,7 +678,6 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             pass
 
 def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text: str, audio_bytes: Optional[bytes] = None) -> Optional[BytesIO]:
-    """Создает видео из видео + фото"""
     temp_dir = tempfile.mkdtemp()
     
     try:
@@ -622,8 +737,8 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
                     audio_clip = audio_loop(audio_clip, duration=final_clip.duration)
                 
                 final_clip = final_clip.set_audio(audio_clip)
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось добавить аудио: {e}")
+            except:
+                pass
         
         output_path = os.path.join(temp_dir, "output.mp4")
         final_clip.write_videofile(
@@ -632,7 +747,7 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
             codec='libx264',
             audio_codec='aac',
             threads=4,
-            preset='medium',
+            preset='ultrafast',
             logger=None
         )
         
@@ -660,107 +775,6 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         except:
             pass
 
-def process_video_frame(frame: np.ndarray, title_text: str) -> np.ndarray:
-    try:
-        img = Image.fromarray(frame).convert("RGB")
-        img = crop_to_4x5(img)
-        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-        img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-        img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
-        
-        draw = ImageDraw.Draw(img)
-        margin_x = int(img.width * 0.06)
-        margin_bottom = int(img.height * 0.08)
-        safe_w = img.width - 2 * margin_x
-        title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
-        
-        clean_title = clean_title_for_card(title_text)
-        text = (clean_title or "Без заголовка").strip().upper()
-        
-        font, lines, heights, spacing, total_h = fit_text_block(
-            draw=draw, text=text, safe_w=safe_w,
-            max_block_h=title_max_h, max_lines=6,
-            start_size=int(img.height * 0.11), min_size=16
-        )
-        
-        line_height = font.size
-        total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
-        y = img.height - margin_bottom - total_text_height
-        
-        for ln in lines:
-            draw.text((margin_x, y), ln, font=font, fill="white")
-            y += line_height + 2
-        
-        return np.array(img)
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки кадра: {e}")
-        return frame
-
-def process_video(video_bytes: bytes, title_text: str) -> BytesIO:
-    temp_input = None
-    temp_output = None
-    
-    try:
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
-            f.write(video_bytes)
-            temp_input = f.name
-        
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
-            temp_output = f.name
-        
-        logger.info(f"📹 Загрузка видео...")
-        video = VideoFileClip(temp_input)
-        logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
-        
-        logger.info(f"🎬 Обработка кадров...")
-        
-        def process_frame(frame):
-            return process_video_frame(frame, title_text)
-        
-        processed_video = video.fl_image(process_frame)
-        
-        logger.info(f"💾 Сохранение видео...")
-        processed_video.write_videofile(
-            temp_output,
-            codec='libx264',
-            audio_codec='aac',
-            fps=video.fps,
-            bitrate='1500k',
-            threads=4,
-            preset='fast',
-            logger=None
-        )
-        
-        video.close()
-        processed_video.close()
-        
-        with open(temp_output, 'rb') as f:
-            result_bytes = f.read()
-        
-        logger.info(f"✅ Видео обработано! Размер: {len(result_bytes) / (1024*1024):.2f} MB")
-        
-        output = BytesIO()
-        output.write(result_bytes)
-        output.seek(0)
-        return output
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка при обработке видео: {e}")
-        traceback.print_exc()
-        output = BytesIO(video_bytes)
-        output.seek(0)
-        return output
-    
-    finally:
-        try:
-            if temp_input and os.path.exists(temp_input):
-                os.unlink(temp_input)
-            if temp_output and os.path.exists(temp_output):
-                os.unlink(temp_output)
-        except:
-            pass
-
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
     try:
         file = await bot.get_file(file_id)
@@ -780,7 +794,7 @@ async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
 def get_text_from_message(message) -> str:
     return message.text or message.caption or ""
 
-# ==================== ОБРАБОТКА ВИДЕО ====================
+# ==================== ОБРАБОТКА ПОСТА (С БЫСТРЫМ ВИДЕО) ====================
 
 async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source: str = "канал"):
     try:
@@ -800,7 +814,7 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         
         status_msg = await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text="🎬 <b>Начинаю обработку видео...</b>\n⏳ Это займёт ~30-60 секунд",
+            text="🎬 <b>Начинаю обработку видео...</b>\n⏳ Это займёт ~20-40 секунд",
             parse_mode="HTML"
         )
         
@@ -827,9 +841,9 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
             await status_msg.edit_text("❌ Не удалось скачать видео")
             return
         
-        await status_msg.edit_text("⏳ <b>Обрабатываю видео...</b>", parse_mode="HTML")
+        await status_msg.edit_text("⏳ <b>Обрабатываю видео (быстрый режим)...</b>", parse_mode="HTML")
         
-        processed_video = process_video(video_bytes, title)
+        processed_video = process_video_fast(video_bytes, title)
         
         if not processed_video or len(processed_video.getvalue()) == 0:
             await status_msg.edit_text("❌ Ошибка обработки видео")
@@ -868,7 +882,75 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         except:
             pass
 
-# ==================== ОБРАБОТЧИКИ ДЛЯ ФОТО ====================
+# ==================== ОБРАБОТЧИК ВИДЕО С ВЫБОРОМ ====================
+
+async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка видео с предложением выбора действия"""
+    if not update.effective_user:
+        return
+    
+    user_id = update.effective_user.id
+    message = update.message
+    
+    if not message or not message.video:
+        return
+    
+    if hasattr(message, 'media_group_id') and message.media_group_id:
+        return
+    
+    logger.info(f"📹 Получено видео: {message.video.file_size / (1024*1024):.1f} MB")
+    
+    try:
+        file = await context.bot.get_file(message.video.file_id)
+        video_bytes = await file.download_as_bytearray()
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания видео: {e}")
+        await message.reply_text("❌ Не удалось скачать видео")
+        return
+    
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
+    
+    session = user_sessions[user_id]
+    session["video"] = video_bytes
+    
+    caption = message.caption or ""
+    
+    if caption.strip():
+        auto_title = extract_title_from_text(caption)
+        session["auto_title"] = auto_title
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Использовать заголовок из текста", callback_data="title_auto"),
+                InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom")
+            ],
+            [
+                InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="title_ai"),
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        title_preview = auto_title if auto_title else "❌ Не удалось извлечь заголовок"
+        
+        await message.reply_text(
+            f"📹 Видео получено с текстом!\n\n"
+            f"<b>Найденный заголовок:</b>\n{title_preview}\n\n"
+            f"Выберите действие:",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "selecting_title_for_video"
+        
+    else:
+        await message.reply_text(
+            "📹 Видео получено!\n\n"
+            "✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):"
+        )
+        session["state"] = "waiting_video_title"
+
+# ==================== ОБРАБОТЧИКИ ФОТО ====================
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка фото с проверкой наличия текста"""
@@ -881,7 +963,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message or not message.photo:
         return
     
-    # Если есть media_group_id - пропускаем (обработает handle_media_group)
     if hasattr(message, 'media_group_id') and message.media_group_id:
         return
     
@@ -895,7 +976,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Не удалось скачать фото")
         return
     
-    # Инициализируем сессию
     if user_id not in user_sessions:
         user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
     
@@ -903,7 +983,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session["photos"] = [photo_bytes]
     session["video"] = None
     
-    # Проверяем, есть ли текст в сообщении
     caption = message.caption or ""
     
     if caption.strip():
@@ -934,7 +1013,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["state"] = "selecting_title"
         
     else:
-        # Нет текста - показываем кнопки для выбора действия
         keyboard = [
             [
                 InlineKeyboardButton("✅ Оформить пост", callback_data="photo_post"),
@@ -960,7 +1038,6 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
     if not message or not message.photo:
         return
     
-    # Если это медиагруппа - пропускаем
     if hasattr(message, 'media_group_id') and message.media_group_id:
         return
     
@@ -1008,13 +1085,11 @@ async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     media_group_id = getattr(message, 'media_group_id', None)
     
-    # Если это не медиагруппа - возвращаем False
     if not media_group_id:
         return False
     
     logger.info(f"📦 Получена часть медиагруппы: {media_group_id}")
     
-    # Инициализируем группу
     if media_group_id not in pending_media_groups:
         pending_media_groups[media_group_id] = {
             "photos": [],
@@ -1028,11 +1103,9 @@ async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     group = pending_media_groups[media_group_id]
     
-    # Сохраняем подпись
     if message.caption:
         group["caption"] = message.caption
     
-    # Сохраняем медиа
     try:
         if message.photo:
             photo = message.photo[-1]
@@ -1051,12 +1124,11 @@ async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"❌ Ошибка скачивания медиа: {e}")
         return True
     
-    # Запускаем таймер на обработку
     if not group.get("timer_started"):
         group["timer_started"] = True
         
         async def process_group():
-            await asyncio.sleep(5)  # Ждем 5 секунд для сбора всех частей
+            await asyncio.sleep(5)
             await process_collected_group(media_group_id, context)
         
         asyncio.create_task(process_group())
@@ -1070,10 +1142,8 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
     if not group or group.get("processed"):
         return
     
-    # Отмечаем как обработанную
     group["processed"] = True
     
-    # Проверяем, есть ли фото
     photos = group.get("photos", [])
     if not photos:
         logger.info(f"❌ В группе {media_group_id} нет фото")
@@ -1083,7 +1153,6 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
     
     logger.info(f"📦 Обработка группы: видео={has_video}, фото={len(photos)}")
     
-    # Инициализируем сессию пользователя
     user_id = group["user_id"]
     if user_id not in user_sessions:
         user_sessions[user_id] = {
@@ -1100,10 +1169,8 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
     session["photos"] = photos.copy()
     session["video"] = group.get("video")
     
-    # Проверяем текст
     caption = group.get("caption", "")
     
-    # Если есть видео - обрабатываем как видео
     if has_video:
         if caption.strip():
             auto_title = extract_title_from_text(caption)
@@ -1140,7 +1207,6 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
             )
             session["state"] = "waiting_video_title_for_media"
     
-    # Если только фото
     else:
         if caption.strip():
             auto_title = extract_title_from_text(caption)
@@ -1186,16 +1252,14 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
             )
             session["state"] = "idle"
     
-    # Удаляем группу из хранилища через час
     asyncio.create_task(cleanup_group(media_group_id))
 
 async def cleanup_group(media_group_id: str):
-    """Очистка группы через час"""
     await asyncio.sleep(3600)
     if media_group_id in pending_media_groups:
         del pending_media_groups[media_group_id]
 
-# ==================== НОВАЯ ФУНКЦИЯ: ВЫБОР ДЕЙСТВИЯ ПОСЛЕ ЗАГОЛОВКА ====================
+# ==================== ВЫБОР ДЕЙСТВИЯ ПОСЛЕ ЗАГОЛОВКА ====================
 
 async def ask_photo_action(update: Update, context: ContextTypes.DEFAULT_TYPE, title: str):
     """Спрашивает пользователя, что делать с фото после ввода заголовка"""
@@ -1203,7 +1267,6 @@ async def ask_photo_action(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     user_id = update.effective_user.id
     session = user_sessions.get(user_id, {})
     
-    # Сохраняем заголовок в сессию
     session["current_title"] = title
     
     keyboard = [
@@ -1226,7 +1289,6 @@ async def ask_photo_action(update: Update, context: ContextTypes.DEFAULT_TYPE, t
         )
         session["state"] = "waiting_action"
     else:
-        # Для текстового ввода
         await update.message.reply_text(
             f"✅ Заголовок сохранен:\n\n<b>{title}</b>\n\n"
             f"Что делаем с фото?",
@@ -1261,9 +1323,7 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("❌ Не удалось извлечь заголовок из текста")
             return
         
-        # Проверяем, есть ли видео
         if session.get("video"):
-            # Если есть видео - обрабатываем сразу
             session["current_title"] = auto_title
             await query.edit_message_text(f"✅ Использую заголовок из текста:\n\n<b>{auto_title}</b>", parse_mode="HTML")
             
@@ -1276,7 +1336,6 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             session["state"] = "ready_to_process_video"
         else:
-            # Только фото - спрашиваем что делать
             await ask_photo_action(update, context, auto_title)
         
     elif data == "title_custom":
@@ -1329,7 +1388,6 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("❌ Нет заголовка для использования")
             return
         
-        # Проверяем, есть ли видео
         if session.get("video"):
             await query.edit_message_text(f"✅ Использую улучшенный заголовок:\n\n<b>{current_title}</b>", parse_mode="HTML")
             
@@ -1374,7 +1432,6 @@ async def handle_action_callback(update: Update, context: ContextTypes.DEFAULT_T
     session = user_sessions[user_id]
     
     if data == "action_slideshow":
-        # Сделать слайд-шоу
         count = len(session.get("photos", []))
         
         if count >= 3:
@@ -1391,7 +1448,6 @@ async def handle_action_callback(update: Update, context: ContextTypes.DEFAULT_T
             session["state"] = "collecting_photos"
     
     elif data == "action_post":
-        # Оформить пост (наложить текст на фото)
         if not session.get("photos"):
             await query.edit_message_text("❌ Нет фото для обработки")
             return
@@ -1413,7 +1469,6 @@ async def handle_action_callback(update: Update, context: ContextTypes.DEFAULT_T
         else:
             await query.edit_message_text("❌ Ошибка обработки фото")
         
-        # Очищаем сессию
         session["state"] = "idle"
         session["photos"] = []
         session["auto_title"] = None
@@ -1441,12 +1496,10 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     session = user_sessions[user_id]
     
-    # Обработка выбора заголовка
     if data in ["title_auto", "title_custom", "title_ai", "title_use_ai", "title_cancel"]:
         await handle_title_choice(update, context)
         return
     
-    # Обработка действий с фото
     if data in ["action_slideshow", "action_post"]:
         await handle_action_callback(update, context)
         return
@@ -1514,9 +1567,9 @@ async def process_video_only(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("❌ Нет видео для обработки")
         return
     
-    await query.edit_message_text("⏳ <b>Обрабатываю видео...</b>\n⏳ Это займет ~1-2 минуты", parse_mode="HTML")
+    await query.edit_message_text("⏳ <b>Обрабатываю видео...</b>\n⏳ Это займет ~20-40 секунд", parse_mode="HTML")
     
-    result = process_video(video_bytes, title)
+    result = process_video_fast(video_bytes, title)
     
     if result and len(result.getvalue()) > 0:
         await query.message.reply_video(
@@ -1614,7 +1667,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
             return
         
-        # Сохраняем заголовок и спрашиваем что делать
         session["current_title"] = title
         
         keyboard = [
@@ -1646,7 +1698,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["current_title"] = title
         
         if session.get("video"):
-            # Есть видео - обрабатываем как видео
             keyboard = [
                 [InlineKeyboardButton("🎬 Обработать видео", callback_data="process_video_only")]
             ]
@@ -1657,7 +1708,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             session["state"] = "ready_to_process_video"
         else:
-            # Только фото - спрашиваем что делать
             keyboard = [
                 [
                     InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="action_slideshow"),
@@ -1926,7 +1976,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
         f"📊 Макс. размер: {MAX_VIDEO_SIZE_MB} MB\n\n"
         f"🎬 <b>Что умеет бот:</b>\n"
-        f"1️⃣ <b>Видео</b> - обрабатывает видео с текстом (градиент + текст)\n"
+        f"1️⃣ <b>Видео</b> - обрабатывает видео с текстом (градиент + текст) БЫСТРО!\n"
         f"2️⃣ <b>Фото</b> - отправьте фото:\n"
         f"   • С текстом → предложит использовать заголовок из текста, свой или улучшить через ИИ\n"
         f"   • Без текста → покажет кнопки: Оформить пост / Сделать слайд-шоу\n"
@@ -1937,6 +1987,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   • 🎵 Обычная мелодия\n"
         f"   • 📢 Важная новость\n"
         f"   • 🔇 Без музыки\n\n"
+        f"⚡ <b>Оптимизация:</b> видео обрабатывается в 2 раза быстрее!\n\n"
         f"📎 Просто отправьте видео или фото в бот",
         parse_mode="HTML"
     )
@@ -1947,7 +1998,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
         f"📨 Уведомления: <code>{ADMIN_CHAT_ID}</code>\n"
         f"⚡ Обработка включена!\n"
-        f"🤖 ИИ: {'✅ Доступен' if DEEPSEEK_API_KEY else '❌ Не настроен'}",
+        f"🤖 ИИ: {'✅ Доступен' if DEEPSEEK_API_KEY else '❌ Не настроен'}\n"
+        f"⚡ Видео: Быстрый режим (ultrafast)",
         parse_mode="HTML"
     )
 
@@ -1985,10 +2037,8 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message:
         return
     
-    # Проверяем, есть ли media_group_id
     media_group_id = getattr(message, 'media_group_id', None)
     
-    # Если это часть медиагруппы
     if media_group_id:
         await handle_media_group(update, context)
         return
@@ -1996,12 +2046,10 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     has_video = hasattr(message, 'video') and message.video
     has_photo = hasattr(message, 'photo') and message.photo
     
-    # Только видео
     if has_video:
         await handle_video_with_choice(update, context)
         return
     
-    # Только фото - проверяем режим сбора
     if has_photo:
         user_id = update.effective_user.id
         if user_id in user_sessions:
@@ -2013,82 +2061,8 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         await handle_photo(update, context)
         return
     
-    # Текст
     if message.text and not message.text.startswith('/'):
         await handle_text_input(update, context)
-
-# ==================== ОБРАБОТКА ВИДЕО С ВЫБОРОМ ====================
-
-async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка видео с предложением выбора действия"""
-    if not update.effective_user:
-        return
-    
-    user_id = update.effective_user.id
-    message = update.message
-    
-    if not message or not message.video:
-        return
-    
-    # Если есть media_group_id - пропускаем (обработает handle_media_group)
-    if hasattr(message, 'media_group_id') and message.media_group_id:
-        return
-    
-    logger.info(f"📹 Получено видео: {message.video.file_size / (1024*1024):.1f} MB")
-    
-    # Сохраняем видео в сессию
-    try:
-        file = await context.bot.get_file(message.video.file_id)
-        video_bytes = await file.download_as_bytearray()
-    except Exception as e:
-        logger.error(f"❌ Ошибка скачивания видео: {e}")
-        await message.reply_text("❌ Не удалось скачать видео")
-        return
-    
-    # Инициализируем сессию
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None}
-    
-    session = user_sessions[user_id]
-    session["video"] = video_bytes
-    
-    # Проверяем текст
-    caption = message.caption or ""
-    
-    if caption.strip():
-        auto_title = extract_title_from_text(caption)
-        session["auto_title"] = auto_title
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("📝 Использовать заголовок из текста", callback_data="title_auto"),
-                InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom")
-            ],
-            [
-                InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="title_ai"),
-                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        title_preview = auto_title if auto_title else "❌ Не удалось извлечь заголовок"
-        
-        await message.reply_text(
-            f"📹 Видео получено с текстом!\n\n"
-            f"<b>Найденный заголовок:</b>\n{title_preview}\n\n"
-            f"Выберите действие:",
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
-        session["state"] = "selecting_title_for_video"
-        
-    else:
-        # Нет текста - просим ввести заголовок
-        await message.reply_text(
-            "📹 Видео получено!\n\n"
-            "✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):"
-        )
-        session["state"] = "waiting_video_title"
 
 # ==================== ЗАПУСК ====================
 
@@ -2163,6 +2137,10 @@ async def main():
     logger.info("  • Слайд-шоу из 3-10 фото с плавным приближением (+10% за 3с)")
     logger.info("  • Поддержка медиагрупп (несколько фото/видео в одном сообщении)")
     logger.info("  • Видео: наложение градиента и текста")
+    logger.info("⚡ Оптимизации:")
+    logger.info("  • preset='ultrafast' - максимальная скорость")
+    logger.info("  • threads=4 - многопоточность")
+    logger.info("  • Уменьшение разрешения для больших видео")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")
     logger.info("  • Важная новость")

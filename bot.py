@@ -21,6 +21,7 @@ except ImportError:
 
 try:
     from moviepy import VideoFileClip, ImageSequenceClip, CompositeVideoClip
+    from moviepy.video.fx import resize
 except ImportError:
     try:
         from moviepy.video.io.VideoFileClip import VideoFileClip
@@ -355,7 +356,7 @@ def create_cover_with_title(photo_bytes: bytes, title_text: str) -> Image.Image:
         return Image.open(BytesIO(photo_bytes))
 
 def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[BytesIO]:
-    """Создает видео-слайдшоу из фотографий с обложкой (без эффектов для совместимости)"""
+    """Создает видео-слайдшоу из фотографий с обложкой и эффектом приближения"""
     temp_dir = tempfile.mkdtemp()
     
     try:
@@ -365,38 +366,49 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
             logger.error(f"❌ Неверное количество фото: {len(photos)}")
             return None
         
-        # Создаем обложку из первого фото
+        # Сохраняем все обработанные фото как изображения
+        photo_paths = []
+        
+        # 1. Первое фото - обложка с заголовком (шаблон ЧП ВМ)
         cover_img = create_cover_with_title(photos[0], title_text)
         cover_path = os.path.join(temp_dir, "cover.png")
         cover_img.save(cover_path)
+        photo_paths.append(cover_path)
         
-        # Обрабатываем остальные фото
-        photo_paths = [cover_path]  # первое фото - обложка
-        
+        # 2. Остальные фото - без текста, только градиент
         for i, photo_bytes in enumerate(photos[1:], 1):
-            # Обрабатываем фото как слайд (без текста)
             img = Image.open(BytesIO(photo_bytes)).convert("RGB")
             img = crop_to_4x5(img)
             img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
             img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-            # Добавляем легкий градиент для красоты
-            img = apply_bottom_gradient(img, height_pct=0.2, max_alpha=100)
+            # Легкий градиент для красоты
+            img = apply_bottom_gradient(img, height_pct=0.15, max_alpha=80)
             
             path = os.path.join(temp_dir, f"photo_{i}.png")
             img.save(path)
             photo_paths.append(path)
         
-        # Создаем список клипов
+        # Создаем видео с эффектом приближения
         clips = []
+        duration_per_photo = 3.0  # 3 секунды на каждое фото
         
-        # Обложка - 3 секунды (без эффектов для совместимости)
-        cover_clip = ImageSequenceClip([cover_path], durations=[3])
-        clips.append(cover_clip)
-        
-        # Остальные фото - по 2.5 секунды (без эффектов)
-        for path in photo_paths[1:]:
-            duration = 2.5
-            clip = ImageSequenceClip([path], durations=[duration])
+        for i, path in enumerate(photo_paths):
+            # Создаем клип для фото
+            clip = ImageSequenceClip([path], durations=[duration_per_photo])
+            
+            # Эффект плавного приближения на 10% за 3 секунды
+            # Используем fx.resize для совместимости с moviepy 1.0.3
+            from moviepy.video.fx import resize
+            
+            # Плавное увеличение от 1.0 до 1.1 за duration_per_photo секунд
+            def make_zoom(t, duration=duration_per_photo):
+                # Плавное увеличение: начинаем с 1.0, заканчиваем 1.1
+                progress = t / duration  # от 0 до 1
+                # Используем ease-in-out для плавности
+                zoom = 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
+                return zoom
+            
+            clip = clip.fx(resize, make_zoom)
             clips.append(clip)
         
         # Объединяем все клипы
@@ -423,6 +435,7 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
         output.seek(0)
         
         logger.info(f"✅ Слайдшоу создано! Размер: {len(result_bytes) / (1024*1024):.2f} MB")
+        logger.info(f"📊 Количество слайдов: {len(photo_paths)}, длительность: {len(photo_paths) * duration_per_photo}с")
         return output
         
     except Exception as e:
@@ -1178,7 +1191,7 @@ async def main():
     logger.info(f"  • Текст: снизу")
     logger.info("📸 Новые функции:")
     logger.info("  • Обработка фото с градиентом")
-    logger.info("  • Создание слайд-шоу из 3-10 фото (без эффектов для стабильности)")
+    logger.info("  • Слайд-шоу из 3-10 фото с плавным приближением (+10% за 3с)")
     
     await app.initialize()
     await app.start()

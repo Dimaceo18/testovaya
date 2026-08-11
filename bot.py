@@ -21,32 +21,27 @@ except ImportError:
 
 # Правильный импорт moviepy
 try:
-    from moviepy import VideoFileClip, ImageSequenceClip, CompositeVideoClip
+    from moviepy import VideoFileClip, ImageSequenceClip
     from moviepy.video.fx import resize
-    from moviepy.video.fx.resize import resize as resize_fx
+    from moviepy.video.compositing.concatenate import concatenate_videoclips
 except ImportError:
     try:
         from moviepy.video.io.VideoFileClip import VideoFileClip
         from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
-        from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
-        # Пробуем разные варианты импорта resize
+        from moviepy.video.compositing.concatenate import concatenate_videoclips
         try:
             from moviepy.video.fx import resize
-            from moviepy.video.fx.resize import resize as resize_fx
         except:
             resize = None
-            resize_fx = None
     except:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
         from moviepy.video.io.VideoFileClip import VideoFileClip
         from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
-        from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+        from moviepy.video.compositing.concatenate import concatenate_videoclips
         try:
             from moviepy.video.fx import resize
-            from moviepy.video.fx.resize import resize as resize_fx
         except:
             resize = None
-            resize_fx = None
 
 try:
     import numpy as np
@@ -54,7 +49,7 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy"])
     import numpy as np
 
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
@@ -94,7 +89,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== СОСТОЯНИЯ ДЛЯ ФОТО ====================
-user_photo_sessions = {}  # user_id: {"photos": [bytes], "state": "waiting_title" или "collecting"}
+user_photo_sessions = {}  # user_id: {"photos": [bytes], "state": "..."}
 
 # ==================== ФУНКЦИИ ====================
 
@@ -150,26 +145,6 @@ def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 
         grad.putpixel((0, y), a)
     grad = grad.resize((w, gh))
     overlay_alpha.paste(grad, (0, h - gh))
-    
-    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    base = img.convert("RGBA")
-    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    out = Image.alpha_composite(base, overlay)
-    return out.convert("RGB")
-
-def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
-    w, h = img.size
-    gh = int(h * height_pct)
-    if gh <= 0:
-        return img
-    
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (1, gh), 0)
-    for y in range(gh):
-        a = int(max_alpha * (1 - y / max(1, gh - 1)))
-        grad.putpixel((0, y), a)
-    grad = grad.resize((w, gh))
-    overlay_alpha.paste(grad, (0, 0))
     
     black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
     base = img.convert("RGBA")
@@ -273,24 +248,17 @@ def clean_title_for_card(title: str) -> str:
     clean = re.sub(r'\s+', ' ', clean)
     return clean.strip()
 
-# ==================== НОВЫЕ ФУНКЦИИ ДЛЯ ФОТО ====================
+# ==================== ФУНКЦИИ ДЛЯ ФОТО ====================
 
 def process_single_photo(photo_bytes: bytes, title_text: str) -> BytesIO:
     """Обработка одной фотографии с градиентом и текстом (шаблон ЧП ВМ)"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-        
-        # Обрезка до 4:5
         img = crop_to_4x5(img)
         img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-        
-        # Яркость
         img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-        
-        # Градиент снизу
         img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
         
-        # Текст
         draw = ImageDraw.Draw(img)
         margin_x = int(img.width * 0.06)
         margin_bottom = int(img.height * 0.08)
@@ -308,7 +276,6 @@ def process_single_photo(photo_bytes: bytes, title_text: str) -> BytesIO:
         
         line_height = font.size
         total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
-        
         y = img.height - margin_bottom - total_text_height
         
         for ln in lines:
@@ -328,18 +295,11 @@ def create_cover_with_title(photo_bytes: bytes, title_text: str) -> Image.Image:
     """Создает обложку для видео: фото + градиент + заголовок"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-        
-        # Обрезка до 4:5
         img = crop_to_4x5(img)
         img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-        
-        # Яркость
         img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-        
-        # Градиент снизу
         img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
         
-        # Текст (заголовок)
         draw = ImageDraw.Draw(img)
         margin_x = int(img.width * 0.06)
         margin_bottom = int(img.height * 0.08)
@@ -357,7 +317,6 @@ def create_cover_with_title(photo_bytes: bytes, title_text: str) -> Image.Image:
         
         line_height = font.size
         total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
-        
         y = img.height - margin_bottom - total_text_height
         
         for ln in lines:
@@ -370,31 +329,6 @@ def create_cover_with_title(photo_bytes: bytes, title_text: str) -> Image.Image:
         logger.error(f"❌ Ошибка создания обложки: {e}")
         return Image.open(BytesIO(photo_bytes))
 
-def apply_zoom_effect(clip, duration=3.0, zoom_factor=0.1):
-    """Применяет эффект плавного приближения к клипу"""
-    try:
-        # Пробуем разные способы применения эффекта
-        def make_zoom(t):
-            progress = t / duration
-            # Ease-in-out для плавности
-            return 1.0 + zoom_factor * (progress * progress * (3 - 2 * progress))
-        
-        # Пробуем импортировать resize
-        try:
-            from moviepy.video.fx import resize
-            return clip.fx(resize, make_zoom)
-        except:
-            try:
-                from moviepy.video.fx.resize import resize as resize_fx
-                return clip.fx(resize_fx, make_zoom)
-            except:
-                # Если resize не работает, возвращаем клип без эффекта
-                logger.warning("⚠️ Эффект приближения недоступен, использую оригинальный клип")
-                return clip
-    except Exception as e:
-        logger.warning(f"⚠️ Ошибка применения эффекта приближения: {e}")
-        return clip
-
 def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[BytesIO]:
     """Создает видео-слайдшоу из фотографий с обложкой и эффектом приближения"""
     temp_dir = tempfile.mkdtemp()
@@ -406,7 +340,6 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
             logger.error(f"❌ Неверное количество фото: {len(photos)}")
             return None
         
-        # Сохраняем все обработанные фото как изображения
         photo_paths = []
         
         # 1. Первое фото - обложка с заголовком (шаблон ЧП ВМ)
@@ -421,27 +354,33 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
             img = crop_to_4x5(img)
             img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
             img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-            # Легкий градиент для красоты
             img = apply_bottom_gradient(img, height_pct=0.15, max_alpha=80)
             
             path = os.path.join(temp_dir, f"photo_{i}.png")
             img.save(path)
             photo_paths.append(path)
         
-        # Создаем видео с эффектом приближения
+        # Создаем видео из последовательности изображений
+        duration_per_photo = 3.0
         clips = []
-        duration_per_photo = 3.0  # 3 секунды на каждое фото
         
         for i, path in enumerate(photo_paths):
-            # Создаем клип для фото
             clip = ImageSequenceClip([path], durations=[duration_per_photo])
             
-            # Применяем эффект приближения
-            clip = apply_zoom_effect(clip, duration=duration_per_photo, zoom_factor=0.1)
+            # Пытаемся применить эффект приближения
+            try:
+                if resize:
+                    def make_zoom(t):
+                        progress = t / duration_per_photo
+                        return 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
+                    clip = clip.fx(resize, make_zoom)
+            except Exception as e:
+                logger.warning(f"⚠️ Эффект приближения не применен для фото {i+1}: {e}")
+            
             clips.append(clip)
         
-        # Объединяем все клипы
-        final_clip = CompositeVideoClip(clips)
+        # Объединяем все клипы последовательно
+        final_clip = concatenate_videoclips(clips)
         
         # Сохраняем видео
         output_path = os.path.join(temp_dir, "slideshow.mp4")
@@ -478,24 +417,16 @@ def create_slideshow_video(photos: List[bytes], title_text: str) -> Optional[Byt
         except:
             pass
 
-# ==================== ФУНКЦИИ ДЛЯ ВИДЕО (СУЩЕСТВУЮЩИЕ) ====================
+# ==================== ФУНКЦИИ ДЛЯ ВИДЕО ====================
 
 def process_video_frame(frame: np.ndarray, title_text: str) -> np.ndarray:
-    """Обработка одного кадра (используется в fl_image)"""
     try:
         img = Image.fromarray(frame).convert("RGB")
-        
-        # 1. Обрезка до 4:5
         img = crop_to_4x5(img)
         img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-        
-        # 2. Яркость
         img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-        
-        # 3. Градиент снизу
         img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
         
-        # 4. Текст
         draw = ImageDraw.Draw(img)
         margin_x = int(img.width * 0.06)
         margin_bottom = int(img.height * 0.08)
@@ -513,7 +444,6 @@ def process_video_frame(frame: np.ndarray, title_text: str) -> np.ndarray:
         
         line_height = font.size
         total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
-        
         y = img.height - margin_bottom - total_text_height
         
         for ln in lines:
@@ -527,17 +457,14 @@ def process_video_frame(frame: np.ndarray, title_text: str) -> np.ndarray:
         return frame
 
 def process_video(video_bytes: bytes, title_text: str) -> BytesIO:
-    """Обработка видео (работает!)"""
     temp_input = None
     temp_output = None
     
     try:
-        # Сохраняем входное видео
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
             f.write(video_bytes)
             temp_input = f.name
         
-        # Создаём выходной файл
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
             temp_output = f.name
         
@@ -545,7 +472,6 @@ def process_video(video_bytes: bytes, title_text: str) -> BytesIO:
         video = VideoFileClip(temp_input)
         logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
         
-        # Обрабатываем каждый кадр
         logger.info(f"🎬 Обработка кадров...")
         
         def process_frame(frame):
@@ -553,7 +479,6 @@ def process_video(video_bytes: bytes, title_text: str) -> BytesIO:
         
         processed_video = video.fl_image(process_frame)
         
-        # Сохраняем
         logger.info(f"💾 Сохранение видео...")
         processed_video.write_videofile(
             temp_output,
@@ -569,7 +494,6 @@ def process_video(video_bytes: bytes, title_text: str) -> BytesIO:
         video.close()
         processed_video.close()
         
-        # Читаем результат
         with open(temp_output, 'rb') as f:
             result_bytes = f.read()
         
@@ -583,7 +507,6 @@ def process_video(video_bytes: bytes, title_text: str) -> BytesIO:
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке видео: {e}")
         traceback.print_exc()
-        # Возвращаем оригинал в случае ошибки
         output = BytesIO(video_bytes)
         output.seek(0)
         return output
@@ -668,9 +591,9 @@ async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
             logger.error(f"❌ Файл слишком большой: {file.file_size / (1024*1024):.1f} MB")
             return None
         
-        logger.info(f"📥 Скачивание видео, размер: {file.file_size / (1024*1024):.1f} MB")
+        logger.info(f"📥 Скачивание, размер: {file.file_size / (1024*1024):.1f} MB")
         result = await file.download_as_bytearray()
-        logger.info(f"✅ Видео скачано: {len(result) / (1024*1024):.1f} MB")
+        logger.info(f"✅ Скачано: {len(result) / (1024*1024):.1f} MB")
         return result
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания: {e}")
@@ -689,7 +612,6 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         
         logger.info(f"📹 Получено видео: {message.video.file_size / (1024*1024):.1f} MB")
         
-        # Проверка размера
         if message.video.file_size and message.video.file_size > MAX_FILE_SIZE_BYTES:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
@@ -698,7 +620,6 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
             )
             return
         
-        # Статус
         status_msg = await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text="🎬 <b>Начинаю обработку видео...</b>\n⏳ Это займёт ~30-60 секунд",
@@ -730,7 +651,6 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         
         await status_msg.edit_text("⏳ <b>Обрабатываю видео...</b>", parse_mode="HTML")
         
-        # Обрабатываем видео
         processed_video = process_video(video_bytes, title)
         
         if not processed_video or len(processed_video.getvalue()) == 0:
@@ -739,7 +659,6 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         
         await status_msg.edit_text("⏳ <b>Отправляю видео...</b>", parse_mode="HTML")
         
-        # Отправляем обработанное видео
         await context.bot.send_video(
             chat_id=ADMIN_CHAT_ID,
             video=BytesIO(processed_video.getvalue()),
@@ -771,13 +690,10 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
         except:
             pass
 
-# ==================== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ФОТО ====================
+# ==================== ОБРАБОТЧИКИ ====================
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка фото с предложением выбора действия"""
-    # Проверяем, есть ли effective_user (может быть None для каналов)
     if not update.effective_user:
-        logger.info("ℹ️ Пропускаем фото из канала (нет пользователя)")
         return
     
     user_id = update.effective_user.id
@@ -786,10 +702,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message or not message.photo:
         return
     
-    # Получаем фото в максимальном качестве
     photo = message.photo[-1]
     
-    # Скачиваем фото
     try:
         file = await context.bot.get_file(photo.file_id)
         photo_bytes = await file.download_as_bytearray()
@@ -798,7 +712,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Не удалось скачать фото")
         return
     
-    # Показываем кнопки выбора
     keyboard = [
         [
             InlineKeyboardButton("✅ Оформить пост", callback_data="photo_post"),
@@ -807,24 +720,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Сохраняем фото в сессию
     if user_id not in user_photo_sessions:
         user_photo_sessions[user_id] = {"photos": [], "state": "idle"}
     
     user_photo_sessions[user_id]["photos"].append(photo_bytes)
     
     await message.reply_text(
-        "📸 Фото получено!\n\n"
-        "Выберите действие:",
+        "📸 Фото получено!\n\nВыберите действие:",
         reply_markup=reply_markup
     )
 
 async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатий кнопок для фото"""
     query = update.callback_query
     await query.answer()
     
-    # Проверяем, есть ли effective_user
     if not update.effective_user:
         await query.edit_message_text("❌ Ошибка: пользователь не найден")
         return
@@ -839,26 +748,15 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
     session = user_photo_sessions[user_id]
     
     if data == "photo_post":
-        # Обработка одного фото как поста
         if not session["photos"]:
             await query.edit_message_text("❌ Нет фото для обработки")
             return
         
-        # Берем последнее фото
-        photo_bytes = session["photos"][-1]
-        
         await query.edit_message_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
-        
-        # Запрашиваем текст для заголовка
-        await query.message.reply_text(
-            "✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):"
-        )
-        
-        # Сохраняем состояние
+        await query.message.reply_text("✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):")
         session["state"] = "waiting_post_title"
         
     elif data == "photo_video":
-        # Начинаем сбор фото для видео
         if not session["photos"]:
             await query.edit_message_text("❌ Нет фото для обработки")
             return
@@ -869,12 +767,9 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
             "Когда будете готовы, нажмите /done",
             parse_mode="HTML"
         )
-        
         session["state"] = "collecting_photos"
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка текстовых сообщений"""
-    # Проверяем, есть ли effective_user
     if not update.effective_user:
         return
     
@@ -891,20 +786,16 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = session.get("state", "idle")
     
     if state == "waiting_post_title":
-        # Получаем заголовок для поста
         title = message.text.strip()
         
         if not title:
             await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
             return
         
-        # Обрабатываем последнее фото
         if session["photos"]:
             photo_bytes = session["photos"][-1]
-            
             status_msg = await message.reply_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
             
-            # Обрабатываем фото
             processed = process_single_photo(photo_bytes, title)
             
             if processed and len(processed.getvalue()) > 0:
@@ -917,12 +808,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await status_msg.edit_text("❌ Ошибка обработки фото")
         
-        # Очищаем сессию
         session["state"] = "idle"
         session["photos"] = []
     
     elif state == "collecting_photos":
-        # Игнорируем текст, ждем фото или команду /done
         await message.reply_text(
             "📸 Отправьте фото или нажмите /done для создания видео",
             reply_markup=InlineKeyboardMarkup([
@@ -932,18 +821,15 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif state == "waiting_video_title":
-        # Получаем заголовок для видео
         title = message.text.strip()
         
         if not title:
             await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
             return
         
-        # Создаем видео
         if len(session["photos"]) >= 3:
             status_msg = await message.reply_text(
-                f"🎬 <b>Создаю видео из {len(session['photos'])} фото...</b>\n"
-                "⏳ Это займет ~1-2 минуты",
+                f"🎬 <b>Создаю видео из {len(session['photos'])} фото...</b>\n⏳ Это займет ~1-2 минуты",
                 parse_mode="HTML"
             )
             
@@ -951,8 +837,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if video and len(video.getvalue()) > 0:
                 await status_msg.edit_text("⏳ <b>Отправляю видео...</b>", parse_mode="HTML")
-                
-                # Отправляем видео
                 await message.reply_video(
                     video=BytesIO(video.getvalue()),
                     caption=f"<b>{title}</b>",
@@ -964,17 +848,12 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await status_msg.edit_text("❌ Ошибка создания видео")
         else:
-            await message.reply_text(
-                f"❌ Недостаточно фото! Отправлено: {len(session['photos'])}, нужно 3-10"
-            )
+            await message.reply_text(f"❌ Недостаточно фото! Отправлено: {len(session['photos'])}, нужно 3-10")
         
-        # Очищаем сессию
         session["state"] = "idle"
         session["photos"] = []
 
 async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сбор фото для видео"""
-    # Проверяем, есть ли effective_user
     if not update.effective_user:
         return
     
@@ -992,7 +871,6 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
     if session.get("state") != "collecting_photos":
         return
     
-    # Получаем фото
     photo = message.photo[-1]
     
     try:
@@ -1003,15 +881,11 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
         await message.reply_text("❌ Не удалось скачать фото")
         return
     
-    # Добавляем в коллекцию
     session["photos"].append(photo_bytes)
     count = len(session["photos"])
     
     if count >= 10:
-        await message.reply_text(
-            f"✅ Собрано {count} фото (максимум).\n"
-            "Нажмите /done для создания видео"
-        )
+        await message.reply_text(f"✅ Собрано {count} фото (максимум).\nНажмите /done для создания видео")
         return
     
     await message.reply_text(
@@ -1021,8 +895,6 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
     )
 
 async def handle_video_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /done для создания видео"""
-    # Проверяем, есть ли effective_user
     if not update.effective_user:
         return
     
@@ -1051,20 +923,13 @@ async def handle_video_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Запрашиваем заголовок
-    await message.reply_text(
-        f"✅ Собрано {count} фото.\n\n"
-        "✏️ Отправьте текст для заголовка:"
-    )
-    
+    await message.reply_text(f"✅ Собрано {count} фото.\n\n✏️ Отправьте текст для заголовка:")
     session["state"] = "waiting_video_title"
 
 async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена создания видео"""
     query = update.callback_query
     await query.answer()
     
-    # Проверяем, есть ли effective_user
     if not update.effective_user:
         await query.edit_message_text("❌ Ошибка: пользователь не найден")
         return
@@ -1077,8 +942,6 @@ async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text("❌ Создание видео отменено")
 
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /cancel"""
-    # Проверяем, есть ли effective_user
     if not update.effective_user:
         await update.message.reply_text("❌ Ошибка: пользователь не найден")
         return
@@ -1090,7 +953,7 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("✅ Действие отменено")
 
-# ==================== ОБРАБОТЧИКИ (СУЩЕСТВУЮЩИЕ) ====================
+# ==================== ОСНОВНЫЕ ОБРАБОТЧИКИ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -1145,11 +1008,9 @@ async def main():
     
     download_fonts()
     
-    # Создаём приложение
     app = Application.builder().token(BOT_TOKEN).build()
     bot = Bot(token=BOT_TOKEN)
     
-    # Очищаем старые сессии
     logger.info("🔄 Очистка старых сессий...")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
@@ -1159,7 +1020,6 @@ async def main():
     
     await asyncio.sleep(2)
     
-    # Проверка
     try:
         channel = await bot.get_chat(MONITOR_CHANNEL_ID)
         logger.info(f"✅ Подключен к каналу: {channel.title}")
@@ -1174,19 +1034,16 @@ async def main():
         logger.error(f"❌ Админ: {e}")
         return
     
-    # Обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("cancel", handle_cancel))
     app.add_handler(CommandHandler("done", handle_video_done))
     
-    # Обработчики для фото - только для личных сообщений
     app.add_handler(MessageHandler(
         filters.PHOTO & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID), 
         handle_photo
     ))
     
-    # Сбор фото для видео - только в личных сообщениях
     app.add_handler(MessageHandler(
         filters.PHOTO & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID), 
         handle_photo_collection
@@ -1197,12 +1054,10 @@ async def main():
         handle_text_input
     ))
     
-    # Callback обработчики
     app.add_handler(CallbackQueryHandler(handle_photo_callback, pattern="^(photo_post|photo_video)$"))
     app.add_handler(CallbackQueryHandler(handle_video_cancel, pattern="^video_cancel$"))
     app.add_handler(CallbackQueryHandler(handle_video_done, pattern="^video_done$"))
     
-    # Обработчики для видео (существующие)
     app.add_handler(MessageHandler(
         filters.VIDEO & filters.Chat(chat_id=MONITOR_CHANNEL_ID),
         handle_channel_post

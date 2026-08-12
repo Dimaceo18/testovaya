@@ -174,7 +174,6 @@ def load_font(font_name: str, size: int):
             return ImageFont.load_default()
 
 def crop_to_ratio(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
-    """Обрезка изображения до нужного соотношения сторон"""
     w, h = img.size
     target_ratio = target_w / target_h
     cur_ratio = w / h
@@ -410,7 +409,7 @@ async def improve_title_with_ai(title: str) -> Optional[str]:
 
 # ==================== ОБРАБОТКА ВИДЕО ====================
 
-def process_video_frame(frame: np.ndarray, title_text: str, format_name: str = "4x5") -> np.ndarray:
+def process_video_frame(frame: np.ndarray, title_text: str, format_name: str = "4x5", no_text: bool = False) -> np.ndarray:
     """Обработка одного кадра для видео с выбором формата"""
     try:
         img = Image.fromarray(frame).convert("RGB")
@@ -422,6 +421,12 @@ def process_video_frame(frame: np.ndarray, title_text: str, format_name: str = "
         img = crop_to_ratio(img, target_w, target_h)
         img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
         img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+        
+        # Если no_text=True - наносим только легкий градиент без текста
+        if no_text:
+            img = apply_bottom_gradient(img, height_pct=0.05, max_alpha=30)
+            return np.array(img)
+        
         img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
         
         draw = ImageDraw.Draw(img)
@@ -454,7 +459,7 @@ def process_video_frame(frame: np.ndarray, title_text: str, format_name: str = "
         logger.error(f"❌ Ошибка обработки кадра: {e}")
         return frame
 
-def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: int = 0, audio_bytes: Optional[bytes] = None, keep_original_audio: bool = True, format_name: str = "4x5") -> BytesIO:
+def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: int = 0, audio_bytes: Optional[bytes] = None, keep_original_audio: bool = True, format_name: str = "4x5", no_text: bool = False) -> BytesIO:
     """Быстрая обработка видео с оптимизациями и возможностью добавления аудио"""
     temp_input = None
     temp_output = None
@@ -482,7 +487,7 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
                 second_part = video.subclip(only_first_seconds, video.duration)
                 
                 def process_frame(frame):
-                    return process_video_frame(frame, title_text, format_name)
+                    return process_video_frame(frame, title_text, format_name, no_text)
                 
                 processed_first = first_part.fl_image(process_frame)
                 processed_video = concatenate_videoclips([processed_first, second_part])
@@ -493,12 +498,12 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
             else:
                 logger.info(f"📹 Видео короче {only_first_seconds}с, обрабатываем полностью")
                 def process_frame(frame):
-                    return process_video_frame(frame, title_text, format_name)
+                    return process_video_frame(frame, title_text, format_name, no_text)
                 processed_video = video.fl_image(process_frame)
         else:
             logger.info(f"📹 Обрабатываем всё видео")
             def process_frame(frame):
-                return process_video_frame(frame, title_text, format_name)
+                return process_video_frame(frame, title_text, format_name, no_text)
             processed_video = video.fl_image(process_frame)
         
         if audio_bytes:
@@ -576,7 +581,7 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
 
 # ==================== ФУНКЦИИ ДЛЯ ОБРАБОТКИ ФОТО ====================
 
-def process_single_photo(photo_bytes: bytes, title_text: str, format_name: str = "4x5") -> BytesIO:
+def process_single_photo(photo_bytes: bytes, title_text: str, format_name: str = "4x5", no_text: bool = False) -> BytesIO:
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGB")
         
@@ -587,6 +592,14 @@ def process_single_photo(photo_bytes: bytes, title_text: str, format_name: str =
         img = crop_to_ratio(img, target_w, target_h)
         img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
         img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+        
+        if no_text:
+            img = apply_bottom_gradient(img, height_pct=0.05, max_alpha=30)
+            output = BytesIO()
+            img.save(output, format="PNG")
+            output.seek(0)
+            return output
+        
         img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
         
         draw = ImageDraw.Draw(img)
@@ -621,7 +634,7 @@ def process_single_photo(photo_bytes: bytes, title_text: str, format_name: str =
         logger.error(f"❌ Ошибка обработки фото: {e}")
         return BytesIO(photo_bytes)
 
-def create_cover_with_title(photo_bytes: bytes, title_text: str, format_name: str = "4x5") -> Image.Image:
+def create_cover_with_title(photo_bytes: bytes, title_text: str, format_name: str = "4x5", no_text: bool = False) -> Image.Image:
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGB")
         
@@ -632,6 +645,11 @@ def create_cover_with_title(photo_bytes: bytes, title_text: str, format_name: st
         img = crop_to_ratio(img, target_w, target_h)
         img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
         img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+        
+        if no_text:
+            img = apply_bottom_gradient(img, height_pct=0.05, max_alpha=30)
+            return img
+        
         img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
         
         draw = ImageDraw.Draw(img)
@@ -663,12 +681,12 @@ def create_cover_with_title(photo_bytes: bytes, title_text: str, format_name: st
         logger.error(f"❌ Ошибка создания обложки: {e}")
         return Image.open(BytesIO(photo_bytes))
 
-def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Optional[bytes] = None, only_first_seconds: int = 0, duration_per_photo: float = 3.0, format_name: str = "4x5") -> Optional[BytesIO]:
+def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Optional[bytes] = None, only_first_seconds: int = 0, duration_per_photo: float = 3.0, format_name: str = "4x5", no_text: bool = False) -> Optional[BytesIO]:
     """Создание слайд-шоу с возможностью выбора времени показа каждого слайда и формата"""
     temp_dir = tempfile.mkdtemp()
     
     try:
-        logger.info(f"📸 Создание слайдшоу из {len(photos)} фото, время слайда: {duration_per_photo}с, формат: {format_name}")
+        logger.info(f"📸 Создание слайдшоу из {len(photos)} фото, время слайда: {duration_per_photo}с, формат: {format_name}, no_text: {no_text}")
         
         if len(photos) < 1:
             logger.error(f"❌ Нет фото для слайдшоу")
@@ -678,8 +696,37 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
         target_w = format_config["width"]
         target_h = format_config["height"]
         
+        # Если no_text=True - все слайды без текста
+        if no_text:
+            photo_paths = []
+            for i, photo_bytes in enumerate(photos):
+                img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+                img = crop_to_ratio(img, target_w, target_h)
+                img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+                img = apply_bottom_gradient(img, height_pct=0.05, max_alpha=30)
+                
+                path = os.path.join(temp_dir, f"photo_{i}.png")
+                img.save(path)
+                photo_paths.append(path)
+            
+            clips = []
+            for path in photo_paths:
+                clip = ImageSequenceClip([path], durations=[duration_per_photo])
+                try:
+                    if resize:
+                        def make_zoom(t):
+                            progress = t / duration_per_photo
+                            return 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
+                        clip = clip.fx(resize, make_zoom)
+                except:
+                    pass
+                clips.append(clip)
+            
+            final_clip = concatenate_videoclips(clips)
+            
         # Если нужно обработать только первые N секунд
-        if only_first_seconds > 0:
+        elif only_first_seconds > 0:
             logger.info(f"📹 Заголовок и градиент только на первых {only_first_seconds} секунд")
             
             # Определяем сколько слайдов попадает в первые N секунд
@@ -693,7 +740,6 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
                 else:
                     break
             
-            # Если все слайды входят в первые N секунд
             if slides_in_first_part >= len(photos):
                 slides_in_first_part = len(photos)
             
@@ -703,13 +749,11 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             first_part_photos = photos[:slides_in_first_part]
             first_part_paths = []
             
-            # Первый слайд с полным заголовком
-            cover_img = create_cover_with_title(first_part_photos[0], title_text, format_name)
+            cover_img = create_cover_with_title(first_part_photos[0], title_text, format_name, False)
             cover_path = os.path.join(temp_dir, "first_cover.png")
             cover_img.save(cover_path)
             first_part_paths.append(cover_path)
             
-            # Остальные слайды первой части с градиентом
             for i, photo_bytes in enumerate(first_part_photos[1:], 1):
                 img = Image.open(BytesIO(photo_bytes)).convert("RGB")
                 img = crop_to_ratio(img, target_w, target_h)
@@ -736,7 +780,6 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
                 img.save(path)
                 second_part_paths.append(path)
             
-            # Создаем клипы для первой части
             first_clips = []
             for path in first_part_paths:
                 clip = ImageSequenceClip([path], durations=[duration_per_photo])
@@ -750,7 +793,6 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
                     pass
                 first_clips.append(clip)
             
-            # Создаем клипы для второй части
             second_clips = []
             for path in second_part_paths:
                 clip = ImageSequenceClip([path], durations=[duration_per_photo])
@@ -764,7 +806,6 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
                     pass
                 second_clips.append(clip)
             
-            # Если вторая часть есть - объединяем
             if second_clips:
                 all_clips = first_clips + second_clips
             else:
@@ -776,7 +817,7 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             # Обычное слайд-шоу с заголовком на всех слайдах
             photo_paths = []
             
-            cover_img = create_cover_with_title(photos[0], title_text, format_name)
+            cover_img = create_cover_with_title(photos[0], title_text, format_name, False)
             cover_path = os.path.join(temp_dir, "cover.png")
             cover_img.save(cover_path)
             photo_paths.append(cover_path)
@@ -807,7 +848,6 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             
             final_clip = concatenate_videoclips(clips)
         
-        # Добавляем аудио
         if audio_bytes:
             try:
                 audio_path = os.path.join(temp_dir, "audio.mp3")
@@ -856,11 +896,11 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
         except:
             pass
 
-def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text: str, audio_bytes: Optional[bytes] = None, format_name: str = "4x5") -> Optional[BytesIO]:
+def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text: str, audio_bytes: Optional[bytes] = None, format_name: str = "4x5", no_text: bool = False) -> Optional[BytesIO]:
     temp_dir = tempfile.mkdtemp()
     
     try:
-        logger.info(f"📹 Создание видео из видео + {len(photos)} фото, формат: {format_name}")
+        logger.info(f"📹 Создание видео из видео + {len(photos)} фото, формат: {format_name}, no_text: {no_text}")
         
         format_config = VIDEO_FORMATS.get(format_name, VIDEO_FORMATS["4x5"])
         target_w = format_config["width"]
@@ -870,7 +910,7 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         with open(video_path, 'wb') as f:
             f.write(video_bytes)
         
-        cover_img = create_cover_with_title(photos[0], title_text, format_name)
+        cover_img = create_cover_with_title(photos[0], title_text, format_name, no_text)
         cover_path = os.path.join(temp_dir, "cover.png")
         cover_img.save(cover_path)
         
@@ -880,7 +920,10 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
             img = crop_to_ratio(img, target_w, target_h)
             img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
             img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-            img = apply_bottom_gradient(img, height_pct=0.15, max_alpha=80)
+            if no_text:
+                img = apply_bottom_gradient(img, height_pct=0.05, max_alpha=30)
+            else:
+                img = apply_bottom_gradient(img, height_pct=0.15, max_alpha=80)
             
             path = os.path.join(temp_dir, f"photo_{i}.png")
             img.save(path)
@@ -961,7 +1004,6 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
 # ==================== СКАЧИВАНИЕ МЕДИА ====================
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
-    """Скачивание медиа"""
     try:
         file = await bot.get_file(file_id)
         
@@ -1059,7 +1101,6 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
 # ==================== ВЫБОР ФОРМАТА ====================
 
 async def show_format_choice(query, context, user_id, next_step: str = "processing"):
-    """Показать выбор формата видео"""
     session = user_sessions[user_id]
     
     keyboard = [
@@ -1166,7 +1207,7 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
         return
     
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True, "slideshow_duration": 3.0, "video_format": "4x5"}
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True, "slideshow_duration": 3.0, "video_format": "4x5", "no_text": False}
     
     session = user_sessions[user_id]
     session["video"] = video_bytes
@@ -1174,9 +1215,11 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
     session["keep_original_audio"] = True
     session["slideshow_duration"] = 3.0
     session["video_format"] = "4x5"
+    session["no_text"] = False
     
     caption = message.caption or ""
     
+    # Если есть текст - предлагаем выбор заголовка
     if caption.strip():
         auto_title = extract_title_from_text(caption)
         session["auto_title"] = auto_title
@@ -1205,12 +1248,26 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
         session["state"] = "video_selecting_title"
         
     else:
+        # Нет текста - предлагаем ввести заголовок или пропустить
+        keyboard = [
+            [
+                InlineKeyboardButton("✏️ Ввести заголовок", callback_data="video_title_custom"),
+                InlineKeyboardButton("⏭️ Без текста", callback_data="video_no_text")
+            ],
+            [
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await message.reply_text(
-            "📹 <b>Шаг 1/4: Введите заголовок</b>\n\n"
-            "✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):",
-            parse_mode="HTML"
+            "📹 <b>Шаг 1/4: Выбор заголовка</b>\n\n"
+            "Видео отправлено без текста.\n\n"
+            "Выберите действие:",
+            parse_mode="HTML",
+            reply_markup=reply_markup
         )
-        session["state"] = "video_waiting_title"
+        session["state"] = "video_selecting_title"
 
 # ==================== ОБРАБОТЧИК ВЫБОРА ЗАГОЛОВКА ДЛЯ ВИДЕО ====================
 
@@ -1238,6 +1295,13 @@ async def handle_video_title_callback(update: Update, context: ContextTypes.DEFA
             return
         
         session["current_title"] = auto_title
+        session["no_text"] = False
+        await show_audio_choice(query, context, user_id)
+        
+    elif data == "no_text":
+        session["current_title"] = ""
+        session["no_text"] = True
+        await query.edit_message_text("⏭️ Заголовок и градиент НЕ будут нанесены")
         await show_audio_choice(query, context, user_id)
         
     elif data == "custom":
@@ -1292,12 +1356,16 @@ async def handle_video_title_callback(update: Update, context: ContextTypes.DEFA
             await query.edit_message_text("❌ Нет заголовка для использования")
             return
         
+        session["no_text"] = False
         await show_audio_choice(query, context, user_id)
 
 async def show_audio_choice(query, context, user_id):
     """Показать выбор аудио (Шаг 2)"""
     session = user_sessions[user_id]
     title = session.get("current_title", "")
+    no_text = session.get("no_text", False)
+    
+    title_display = "Без текста" if no_text else title
     
     keyboard = [
         [
@@ -1314,13 +1382,25 @@ async def show_audio_choice(query, context, user_id):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(
-        f"✅ Заголовок сохранен:\n\n<b>{title}</b>\n\n"
-        f"📹 <b>Шаг 2/4: Выбор аудио</b>\n\n"
-        f"Выберите вариант:",
-        parse_mode="HTML",
-        reply_markup=reply_markup
-    )
+    try:
+        await query.edit_message_text(
+            f"✅ Заголовок: <b>{title_display}</b>\n\n"
+            f"📹 <b>Шаг 2/4: Выбор аудио</b>\n\n"
+            f"Выберите вариант:",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        # Если не удалось отредактировать сообщение, отправляем новое
+        await query.message.reply_text(
+            f"✅ Заголовок: <b>{title_display}</b>\n\n"
+            f"📹 <b>Шаг 2/4: Выбор аудио</b>\n\n"
+            f"Выберите вариант:",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        await query.delete_message()
+    
     session["state"] = "video_selecting_audio"
 
 # ==================== ОБРАБОТЧИК ВЫБОРА АУДИО ДЛЯ ВИДЕО ====================
@@ -1376,9 +1456,11 @@ async def show_processing_choice(query, context, user_id):
     """Показать выбор режима обработки (Шаг 4)"""
     session = user_sessions[user_id]
     title = session.get("current_title", "")
+    no_text = session.get("no_text", False)
     audio_selected = session.get("audio_selected", "оригинальный звук")
     format_name = session.get("video_format", "4x5")
     format_display = "4:5" if format_name == "4x5" else "9:16"
+    title_display = "Без текста" if no_text else title
     
     keyboard = [
         [
@@ -1392,7 +1474,7 @@ async def show_processing_choice(query, context, user_id):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(
-        f"✅ Заголовок: <b>{title}</b>\n"
+        f"✅ Заголовок: <b>{title_display}</b>\n"
         f"🎵 Аудио: <b>{audio_selected}</b>\n"
         f"📱 Формат: <b>{format_display}</b>\n\n"
         f"📹 <b>Шаг 4/4: Выбор режима обработки</b>\n\n"
@@ -1434,6 +1516,7 @@ async def handle_video_processing_callback(update: Update, context: ContextTypes
         return
     
     title = session.get("current_title", "")
+    no_text = session.get("no_text", False)
     video_bytes = session.get("video")
     original_caption = session.get("original_caption", "")
     audio_bytes = session.get("audio")
@@ -1455,10 +1538,14 @@ async def handle_video_processing_callback(update: Update, context: ContextTypes
         parse_mode="HTML"
     )
     
-    result = process_video_fast(video_bytes, title, only_first_seconds, audio_bytes, keep_original_audio, format_name)
+    result = process_video_fast(video_bytes, title, only_first_seconds, audio_bytes, keep_original_audio, format_name, no_text)
     
     if result and len(result.getvalue()) > 0:
-        caption = original_caption if original_caption else f"<b>{title}</b>"
+        caption = original_caption if original_caption else ""
+        if no_text:
+            caption += "\n📌 Без текста"
+        elif title:
+            caption = f"<b>{title}</b>" if not caption else caption
         if audio_selected and audio_selected != "оригинальный звук":
             caption += f"\n🎵 Аудио: {audio_selected}"
         caption += f"\n📱 Формат: {format_display}"
@@ -1485,6 +1572,7 @@ async def handle_video_processing_callback(update: Update, context: ContextTypes
     session["original_caption"] = ""
     session["keep_original_audio"] = True
     session["video_format"] = "4x5"
+    session["no_text"] = False
 
 # ==================== ОБРАБОТЧИК ФОТО ====================
 
@@ -1510,7 +1598,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True, "slideshow_duration": 3.0, "video_format": "4x5"}
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True, "slideshow_duration": 3.0, "video_format": "4x5", "no_text": False}
     
     session = user_sessions[user_id]
     session["photos"] = [photo_bytes]
@@ -1518,6 +1606,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session["original_caption"] = message.caption or ""
     session["slideshow_duration"] = 3.0
     session["video_format"] = "4x5"
+    session["no_text"] = False
     
     caption = message.caption or ""
     
@@ -1553,12 +1642,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton("✅ Оформить пост", callback_data="photo_post"),
                 InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="photo_video")
+            ],
+            [
+                InlineKeyboardButton("⏭️ Без текста", callback_data="photo_no_text")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await message.reply_text(
-            "📸 Фото получено!\n\nВыберите действие:",
+            "📸 Фото получено без текста!\n\nВыберите действие:",
             reply_markup=reply_markup
         )
         session["state"] = "idle"
@@ -1776,6 +1868,7 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         
         session["current_title"] = auto_title
+        session["no_text"] = False
         
         keyboard = [
             [
@@ -1844,6 +1937,8 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("❌ Нет заголовка для использования")
             return
         
+        session["no_text"] = False
+        
         keyboard = [
             [
                 InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="action_slideshow"),
@@ -1905,18 +2000,25 @@ async def handle_action_callback(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text("❌ Нет фото для обработки")
             return
         
-        title = session.get("current_title", "Без заголовка")
+        title = session.get("current_title", "")
+        no_text = session.get("no_text", False)
         photo_bytes = session["photos"][0]
         format_name = session.get("video_format", "4x5")
         
         await query.edit_message_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
         
-        processed = process_single_photo(photo_bytes, title, format_name)
+        processed = process_single_photo(photo_bytes, title, format_name, no_text)
         
         if processed and len(processed.getvalue()) > 0:
+            caption = ""
+            if no_text:
+                caption = "📌 Без текста"
+            elif title:
+                caption = f"<b>{title}</b>"
+            
             await query.message.reply_photo(
                 photo=BytesIO(processed.getvalue()),
-                caption=f"<b>{title}</b>",
+                caption=caption,
                 parse_mode="HTML"
             )
             await query.delete_message()
@@ -1929,6 +2031,7 @@ async def handle_action_callback(update: Update, context: ContextTypes.DEFAULT_T
         session["current_title"] = None
         session["audio"] = None
         session["audio_selected"] = None
+        session["no_text"] = False
 
 # ==================== ОСНОВНОЙ ОБРАБОТЧИК CALLBACK ====================
 
@@ -1969,7 +2072,30 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await handle_format_callback(update, context)
         return
     
-    if data == "photo_post":
+    if data == "photo_no_text":
+        session["no_text"] = True
+        session["current_title"] = ""
+        await query.edit_message_text("⏭️ Без текста")
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="action_slideshow"),
+                InlineKeyboardButton("✅ Оформить пост", callback_data="action_post")
+            ],
+            [
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(
+            f"✅ Режим 'Без текста' включен\n\nЧто делаем с фото?",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "waiting_action"
+        await query.delete_message()
+    
+    elif data == "photo_post":
         if not session["photos"]:
             await query.edit_message_text("❌ Нет фото для обработки")
             return
@@ -2012,7 +2138,7 @@ async def handle_slideshow_mode_choice(update: Update, context: ContextTypes.DEF
     
     session = user_sessions[user_id]
     
-    if not session.get("current_title"):
+    if not session.get("current_title") and not session.get("no_text"):
         await query.edit_message_text(
             "✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):"
         )
@@ -2028,7 +2154,8 @@ async def create_slideshow_with_mode(update: Update, context: ContextTypes.DEFAU
     only_first_seconds = 0 if mode == "slideshow_full" else 5
     mode_text = "всё видео" if mode == "slideshow_full" else "первые 5 секунд"
     
-    title = session.get("current_title", "Без заголовка")
+    title = session.get("current_title", "")
+    no_text = session.get("no_text", False)
     photos = session.get("photos", [])
     audio_bytes = session.get("audio")
     audio_selected = session.get("audio_selected", "без музыки")
@@ -2038,20 +2165,26 @@ async def create_slideshow_with_mode(update: Update, context: ContextTypes.DEFAU
     
     duration_text = "3 секунды" if duration_per_photo == 3.0 else "5 секунд"
     format_display = "4:5" if format_name == "4x5" else "9:16"
+    title_display = "Без текста" if no_text else title
     
     await query.edit_message_text(
         f"⏳ <b>Создаю слайд-шоу из {len(photos)} фото...</b>\n"
+        f"📌 Заголовок: {title_display}\n"
         f"⏱️ Время слайда: {duration_text}\n"
         f"📱 Формат: {format_display}\n"
-        f"📌 Заголовок на {mode_text}\n"
+        f"📌 Режим: {mode_text}\n"
         f"⏳ Это займет ~1-2 минуты",
         parse_mode="HTML"
     )
     
-    video = create_slideshow_video(photos, title, audio_bytes, only_first_seconds, duration_per_photo, format_name)
+    video = create_slideshow_video(photos, title, audio_bytes, only_first_seconds, duration_per_photo, format_name, no_text)
     
     if video and len(video.getvalue()) > 0:
-        caption = original_caption if original_caption else f"<b>{title}</b>"
+        caption = original_caption if original_caption else ""
+        if no_text:
+            caption += "\n📌 Без текста"
+        elif title:
+            caption = f"<b>{title}</b>" if not caption else caption
         if audio_selected and audio_selected != "без музыки":
             caption += f"\n🎵 Музыка: {audio_selected}"
         caption += f"\n⏱️ Время слайда: {duration_text}"
@@ -2079,6 +2212,7 @@ async def create_slideshow_with_mode(update: Update, context: ContextTypes.DEFAU
     session["slideshow_mode"] = None
     session["slideshow_duration"] = 3.0
     session["video_format"] = "4x5"
+    session["no_text"] = False
 
 # ==================== ПРОЧИЕ ОБРАБОТЧИКИ ====================
 
@@ -2103,6 +2237,7 @@ async def process_video_only(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     
     title = session.get("current_title", "")
+    no_text = session.get("no_text", False)
     video_bytes = session.get("video")
     original_caption = session.get("original_caption", "")
     format_name = session.get("video_format", "4x5")
@@ -2113,10 +2248,14 @@ async def process_video_only(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     await query.edit_message_text("⏳ <b>Обрабатываю видео...</b>\n⏳ Это займет ~20-40 секунд", parse_mode="HTML")
     
-    result = process_video_fast(video_bytes, title, 0, None, True, format_name)
+    result = process_video_fast(video_bytes, title, 0, None, True, format_name, no_text)
     
     if result and len(result.getvalue()) > 0:
-        caption = original_caption if original_caption else f"<b>{title}</b>"
+        caption = original_caption if original_caption else ""
+        if no_text:
+            caption += "\n📌 Без текста"
+        elif title:
+            caption = f"<b>{title}</b>" if not caption else caption
         
         await query.message.reply_video(
             video=BytesIO(result.getvalue()),
@@ -2136,6 +2275,7 @@ async def process_video_only(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session["audio"] = None
     session["original_caption"] = ""
     session["video_format"] = "4x5"
+    session["no_text"] = False
 
 async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2158,6 +2298,7 @@ async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     title = session.get("current_title", "")
+    no_text = session.get("no_text", False)
     video_bytes = session.get("video")
     photos = session.get("photos", [])
     original_caption = session.get("original_caption", "")
@@ -2169,10 +2310,14 @@ async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text("⏳ <b>Обрабатываю медиа...</b>\n⏳ Это займет ~1-2 минуты", parse_mode="HTML")
     
-    result = create_video_with_photos(video_bytes, photos, title, session.get("audio"), format_name)
+    result = create_video_with_photos(video_bytes, photos, title, session.get("audio"), format_name, no_text)
     
     if result and len(result.getvalue()) > 0:
-        caption = original_caption if original_caption else f"<b>{title}</b>"
+        caption = original_caption if original_caption else ""
+        if no_text:
+            caption += "\n📌 Без текста"
+        elif title:
+            caption = f"<b>{title}</b>" if not caption else caption
         
         await query.message.reply_video(
             video=BytesIO(result.getvalue()),
@@ -2193,6 +2338,7 @@ async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session["audio"] = None
     session["original_caption"] = ""
     session["video_format"] = "4x5"
+    session["no_text"] = False
 
 # ==================== ОБРАБОТКА ТЕКСТА ====================
 
@@ -2220,6 +2366,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         session["current_title"] = title
+        session["no_text"] = False
         
         keyboard = [
             [
@@ -2247,6 +2394,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         session["current_title"] = title
+        session["no_text"] = False
         
         if session.get("video"):
             class FakeQuery:
@@ -2284,6 +2432,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         session["current_title"] = title
+        session["no_text"] = False
         
         keyboard = [
             [InlineKeyboardButton("🎬 Обработать видео", callback_data="process_media")]
@@ -2303,6 +2452,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         session["current_title"] = title
+        session["no_text"] = False
         mode = session.get("slideshow_mode", "slideshow_full")
         
         await create_slideshow_with_mode(update, context, mode, session)
@@ -2315,6 +2465,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         session["current_title"] = title
+        session["no_text"] = False
         
         class FakeQuery:
             def __init__(self, message):
@@ -2386,7 +2537,7 @@ async def handle_video_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     
     if user_id in user_sessions:
-        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True, "slideshow_duration": 3.0, "video_format": "4x5"}
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True, "slideshow_duration": 3.0, "video_format": "4x5", "no_text": False}
     
     await query.edit_message_text("❌ Действие отменено")
 
@@ -2398,7 +2549,7 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if user_id in user_sessions:
-        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True, "slideshow_duration": 3.0, "video_format": "4x5"}
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True, "slideshow_duration": 3.0, "video_format": "4x5", "no_text": False}
     
     await update.message.reply_text("✅ Действие отменено")
 
@@ -2410,16 +2561,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n\n"
         f"🎬 <b>Что умеет бот:</b>\n"
         f"1️⃣ <b>Видео</b> - 4 шага:\n"
-        f"   • Шаг 1: Выбор заголовка (оставить/свой/ИИ)\n"
+        f"   • Шаг 1: Выбор заголовка (оставить/свой/ИИ/без текста)\n"
         f"   • Шаг 2: Выбор аудио (оригинал/важное/обычное/без звука)\n"
         f"   • Шаг 3: Выбор формата (4:5 или 9:16)\n"
         f"   • Шаг 4: Режим обработки (всё видео/только 5 секунд)\n"
-        f"2️⃣ <b>Фото</b> - с текстом (выбор заголовка) или без (кнопки)\n"
+        f"2️⃣ <b>Фото</b> - с текстом (выбор заголовка) или без (кнопки + 'Без текста')\n"
         f"3️⃣ <b>Слайд-шоу</b> - из 1-10 фото с музыкой\n"
         f"   • ⏱️ Выбор времени слайда: 3 или 5 секунд\n"
         f"   • 📱 Выбор формата: 4:5 или 9:16\n"
         f"   • 📌 Заголовок на всё видео или только начало (5с)\n"
-        f"   • ✅ При выборе 'Только начало (5с)' - заголовок только на первых 5 секундах, остальные слайды без заголовка\n"
+        f"   • ✅ Режим 'Без текста' - без заголовка и градиента\n"
         f"4️⃣ <b>Видео + Фото</b> - объединение в одно видео\n"
         f"5️⃣ <b>🤖 ИИ</b> - улучшение заголовков через DeepSeek AI\n\n"
         f"🎵 <b>Музыка для слайд-шоу и видео:</b>\n"
@@ -2557,7 +2708,8 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
             "original_caption": "",
             "keep_original_audio": True,
             "slideshow_duration": 3.0,
-            "video_format": "4x5"
+            "video_format": "4x5",
+            "no_text": False
         }
     
     session = user_sessions[user_id]
@@ -2567,6 +2719,7 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
     session["keep_original_audio"] = True
     session["slideshow_duration"] = 3.0
     session["video_format"] = "4x5"
+    session["no_text"] = False
     
     caption = group.get("caption", "")
     
@@ -2599,13 +2752,26 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
             )
             session["state"] = "video_selecting_title"
         else:
+            keyboard = [
+                [
+                    InlineKeyboardButton("✏️ Ввести заголовок", callback_data="video_title_custom"),
+                    InlineKeyboardButton("⏭️ Без текста", callback_data="video_no_text")
+                ],
+                [
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await context.bot.send_message(
                 chat_id=group["chat_id"],
-                text=f"📹 <b>Шаг 1/4: Введите заголовок</b>\n\n"
-                     f"✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):",
-                parse_mode="HTML"
+                text="📹 <b>Шаг 1/4: Выбор заголовка</b>\n\n"
+                     "Видео отправлено без текста.\n\n"
+                     "Выберите действие:",
+                parse_mode="HTML",
+                reply_markup=reply_markup
             )
-            session["state"] = "video_waiting_title"
+            session["state"] = "video_selecting_title"
     
     else:
         if caption.strip():
@@ -2640,13 +2806,16 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
                 [
                     InlineKeyboardButton("✅ Оформить пост", callback_data="photo_post"),
                     InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="photo_video")
+                ],
+                [
+                    InlineKeyboardButton("⏭️ Без текста", callback_data="photo_no_text")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await context.bot.send_message(
                 chat_id=group["chat_id"],
-                text=f"📸 Получено {len(photos)} фото!\n\n"
+                text=f"📸 Получено {len(photos)} фото без текста!\n\n"
                      f"Выберите действие:",
                 reply_markup=reply_markup
             )
@@ -2751,7 +2920,7 @@ async def main():
     ))
     
     # Callback'и
-    app.add_handler(CallbackQueryHandler(handle_photo_callback, pattern="^(photo_post|photo_video|title_auto|title_custom|title_ai|title_use_ai|title_cancel|action_slideshow|action_post|slideshow_full|slideshow_5sec|duration_3|duration_5|format_.*)$"))
+    app.add_handler(CallbackQueryHandler(handle_photo_callback, pattern="^(photo_post|photo_video|photo_no_text|title_auto|title_custom|title_ai|title_use_ai|title_cancel|action_slideshow|action_post|slideshow_full|slideshow_5sec|duration_3|duration_5|format_.*)$"))
     app.add_handler(CallbackQueryHandler(handle_music_callback, pattern="^music_"))
     app.add_handler(CallbackQueryHandler(handle_video_title_callback, pattern="^video_title_"))
     app.add_handler(CallbackQueryHandler(handle_video_audio_callback, pattern="^video_audio_"))
@@ -2769,13 +2938,13 @@ async def main():
     logger.info("  • Слайд-шоу из 1-10 фото с плавным приближением (+10% за 3с)")
     logger.info("  • ⏱️ Выбор времени слайда: 3 или 5 секунд")
     logger.info("  • 📱 Выбор формата: 4:5 или 9:16")
+    logger.info("  • ⏭️ Режим 'Без текста' - без заголовка и градиента")
     logger.info("  • Поддержка медиагрупп (несколько фото/видео в одном сообщении)")
     logger.info("  • Видео: 4-шаговый процесс")
-    logger.info("    - Шаг 1: Выбор заголовка (оставить/свой/ИИ)")
+    logger.info("    - Шаг 1: Выбор заголовка (оставить/свой/ИИ/без текста)")
     logger.info("    - Шаг 2: Выбор аудио (оригинал/важное/обычное/без звука)")
     logger.info("    - Шаг 3: Выбор формата (4:5 или 9:16)")
     logger.info("    - Шаг 4: Режим обработки (всё видео/только 5 секунд)")
-    logger.info("  • Слайд-шоу: при выборе 'Только начало (5с)' заголовок только на первых 5 секундах")
     logger.info("  • 🚫 Без ограничений по размеру видео")
     logger.info("  • 🎵 Высокое качество видео (битрейт 5000k, preset medium)")
     logger.info("🎵 Музыка:")

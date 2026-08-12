@@ -442,10 +442,11 @@ def process_video_frame(frame: np.ndarray, title_text: str) -> np.ndarray:
         logger.error(f"❌ Ошибка обработки кадра: {e}")
         return frame
 
-def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: int = 0) -> BytesIO:
-    """Быстрая обработка видео с оптимизациями"""
+def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: int = 0, audio_bytes: Optional[bytes] = None) -> BytesIO:
+    """Быстрая обработка видео с оптимизациями и возможностью добавления аудио"""
     temp_input = None
     temp_output = None
+    temp_audio = None
     
     try:
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
@@ -459,20 +460,66 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
         video = VideoFileClip(temp_input)
         logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
         
-        if only_first_seconds > 0 and video.duration > only_first_seconds:
-            logger.info(f"📹 Обрезаем видео до {only_first_seconds} секунд")
-            video = video.subclip(0, only_first_seconds)
-        
+        # Оптимизация: уменьшаем разрешение если видео большое
         if video.size[0] > 1280 or video.size[1] > 1280:
             video = video.resize(height=720)
             logger.info(f"📹 Уменьшено разрешение для ускорения")
         
-        logger.info(f"🎬 Обработка кадров...")
+        # Если нужно обработать только первые N секунд
+        if only_first_seconds > 0:
+            logger.info(f"📹 Обрабатываем только первые {only_first_seconds} секунд, остальное без изменений")
+            
+            # Разделяем видео на две части
+            if video.duration > only_first_seconds:
+                # Первая часть - обработанная (с заголовком и градиентом)
+                first_part = video.subclip(0, only_first_seconds)
+                # Вторая часть - без изменений
+                second_part = video.subclip(only_first_seconds, video.duration)
+                
+                # Обрабатываем первую часть
+                def process_frame(frame):
+                    return process_video_frame(frame, title_text)
+                
+                processed_first = first_part.fl_image(process_frame)
+                
+                # Объединяем обработанную и исходную части
+                processed_video = concatenate_videoclips([processed_first, second_part])
+                
+                # Закрываем ненужные клипы
+                first_part.close()
+                second_part.close()
+                processed_first.close()
+            else:
+                # Если видео короче, чем указано, обрабатываем всё
+                logger.info(f"📹 Видео короче {only_first_seconds}с, обрабатываем полностью")
+                def process_frame(frame):
+                    return process_video_frame(frame, title_text)
+                processed_video = video.fl_image(process_frame)
+        else:
+            # Обрабатываем всё видео
+            logger.info(f"📹 Обрабатываем всё видео")
+            def process_frame(frame):
+                return process_video_frame(frame, title_text)
+            processed_video = video.fl_image(process_frame)
         
-        def process_frame(frame):
-            return process_video_frame(frame, title_text)
-        
-        processed_video = video.fl_image(process_frame)
+        # Добавляем аудио если есть
+        if audio_bytes:
+            try:
+                logger.info(f"🎵 Добавление аудио...")
+                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
+                    f.write(audio_bytes)
+                    temp_audio = f.name
+                
+                audio_clip = AudioFileClip(temp_audio)
+                if audio_clip.duration > processed_video.duration:
+                    audio_clip = audio_clip.subclip(0, processed_video.duration)
+                else:
+                    audio_clip = audio_loop(audio_clip, duration=processed_video.duration)
+                
+                processed_video = processed_video.set_audio(audio_clip)
+                logger.info(f"✅ Аудио добавлено")
+            except Exception as e:
+                logger.error(f"❌ Ошибка добавления аудио: {e}")
         
         logger.info(f"💾 Сохранение видео...")
         processed_video.write_videofile(
@@ -512,6 +559,8 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
                 os.unlink(temp_input)
             if temp_output and os.path.exists(temp_output):
                 os.unlink(temp_output)
+            if temp_audio and os.path.exists(temp_audio):
+                os.unlink(temp_audio)
         except:
             pass
 
@@ -789,7 +838,7 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         except:
             pass
 
-# ==================== СКАЧИВАНИЕ МЕДИА (ИСПРАВЛЕННАЯ ВЕРСИЯ) ====================
+# ==================== СКАЧИВАНИЕ МЕДИА ====================
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
     """Скачивание медиа с поддержкой больших файлов через httpx"""
@@ -974,14 +1023,11 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
         
         keyboard = [
             [
-                InlineKeyboardButton("🎬 Обработать всё видео", callback_data="process_full_video"),
-                InlineKeyboardButton("📌 Только начало (5с)", callback_data="process_5sec_video")
+                InlineKeyboardButton("🎵 Обычная мелодия", callback_data="video_music_обычная"),
+                InlineKeyboardButton("📢 Важная новость", callback_data="video_music_важная")
             ],
             [
-                InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom"),
-                InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="title_ai_for_video")
-            ],
-            [
+                InlineKeyboardButton("🔇 Без музыки", callback_data="video_music_no_music"),
                 InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
             ]
         ]
@@ -992,11 +1038,11 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
         await message.reply_text(
             f"📹 Видео получено!\n\n"
             f"<b>Заголовок из текста:</b>\n{title_preview}\n\n"
-            f"Выберите способ обработки:",
+            f"🎵 <b>Выберите музыкальное сопровождение:</b>",
             parse_mode="HTML",
             reply_markup=reply_markup
         )
-        session["state"] = "selecting_video_action"
+        session["state"] = "selecting_video_music"
         
     else:
         await message.reply_text(
@@ -1004,6 +1050,104 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
             "✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):"
         )
         session["state"] = "waiting_video_title"
+
+# ==================== ОБРАБОТЧИК ВЫБОРА МУЗЫКИ ДЛЯ ВИДЕО ====================
+
+async def handle_video_music_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = update.effective_user.id
+    data = query.data.replace("video_music_", "")
+    
+    if user_id not in user_sessions:
+        await query.edit_message_text("❌ Сессия не найдена. Отправьте видео заново.")
+        return
+    
+    session = user_sessions[user_id]
+    
+    if data == "no_music":
+        session["audio"] = None
+        session["audio_selected"] = "без музыки"
+        await query.edit_message_text("🔇 Видео будет без музыки")
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🎬 Обработать всё видео", callback_data="process_full_video"),
+                InlineKeyboardButton("📌 Только начало (5с)", callback_data="process_5sec_video")
+            ],
+            [
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.message.reply_text(
+            f"✅ Заголовок сохранен:\n\n<b>{session['current_title']}</b>\n\n"
+            f"Выберите способ обработки:",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "selecting_video_action"
+        
+    elif data == "cancel":
+        session["audio"] = None
+        session["audio_selected"] = None
+        session["state"] = "idle"
+        await query.edit_message_text("❌ Действие отменено")
+        
+    elif data in ["важная", "обычная"]:
+        audio_name = "Важная новость" if data == "важная" else "Обычная мелодия"
+        await query.edit_message_text(f"⏳ Скачиваю музыку '{audio_name}' с GitHub...")
+        
+        audio_bytes = download_audio_from_github(data)
+        
+        if audio_bytes:
+            session["audio"] = audio_bytes
+            session["audio_selected"] = audio_name
+            await query.edit_message_text(f"✅ Музыка '{audio_name}' загружена!")
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🎬 Обработать всё видео", callback_data="process_full_video"),
+                    InlineKeyboardButton("📌 Только начало (5с)", callback_data="process_5sec_video")
+                ],
+                [
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.message.reply_text(
+                f"✅ Заголовок сохранен:\n\n<b>{session['current_title']}</b>\n\n"
+                f"🎵 Музыка: {audio_name}\n\n"
+                f"Выберите способ обработки:",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
+            session["state"] = "selecting_video_action"
+        else:
+            await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
+            keyboard = [
+                [
+                    InlineKeyboardButton("🎵 Обычная мелодия", callback_data="video_music_обычная"),
+                    InlineKeyboardButton("📢 Важная новость", callback_data="video_music_важная")
+                ],
+                [
+                    InlineKeyboardButton("🔇 Без музыки", callback_data="video_music_no_music"),
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text(
+                "🎵 <b>Выберите музыкальное сопровождение:</b>",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
 
 # ==================== ОБРАБОТЧИК ФОТО ====================
 
@@ -1122,7 +1266,7 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
         "Нажмите /done когда будете готовы"
     )
 
-# ==================== МУЗЫКА ====================
+# ==================== МУЗЫКА ДЛЯ СЛАЙД-ШОУ ====================
 
 async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1278,20 +1422,22 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         if session.get("video"):
             keyboard = [
                 [
-                    InlineKeyboardButton("🎬 Обработать всё видео", callback_data="process_full_video"),
-                    InlineKeyboardButton("📌 Только начало (5с)", callback_data="process_5sec_video")
+                    InlineKeyboardButton("🎵 Обычная мелодия", callback_data="video_music_обычная"),
+                    InlineKeyboardButton("📢 Важная новость", callback_data="video_music_важная")
                 ],
                 [
+                    InlineKeyboardButton("🔇 Без музыки", callback_data="video_music_no_music"),
                     InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(f"✅ Использую заголовок из текста:\n\n<b>{auto_title}</b>", parse_mode="HTML")
             await query.message.reply_text(
-                "✅ Заголовок выбран! Выберите способ обработки:",
+                f"🎵 <b>Выберите музыкальное сопровождение:</b>",
+                parse_mode="HTML",
                 reply_markup=reply_markup
             )
-            session["state"] = "selecting_video_action"
+            session["state"] = "selecting_video_music"
         else:
             keyboard = [
                 [
@@ -1363,20 +1509,22 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         if session.get("video"):
             keyboard = [
                 [
-                    InlineKeyboardButton("🎬 Обработать всё видео", callback_data="process_full_video"),
-                    InlineKeyboardButton("📌 Только начало (5с)", callback_data="process_5sec_video")
+                    InlineKeyboardButton("🎵 Обычная мелодия", callback_data="video_music_обычная"),
+                    InlineKeyboardButton("📢 Важная новость", callback_data="video_music_важная")
                 ],
                 [
+                    InlineKeyboardButton("🔇 Без музыки", callback_data="video_music_no_music"),
                     InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(f"✅ Использую улучшенный заголовок:\n\n<b>{current_title}</b>", parse_mode="HTML")
             await query.message.reply_text(
-                "✅ Заголовок выбран! Выберите способ обработки:",
+                f"🎵 <b>Выберите музыкальное сопровождение:</b>",
+                parse_mode="HTML",
                 reply_markup=reply_markup
             )
-            session["state"] = "selecting_video_action"
+            session["state"] = "selecting_video_music"
         else:
             keyboard = [
                 [
@@ -1657,6 +1805,8 @@ async def process_video_with_choice(update: Update, context: ContextTypes.DEFAUL
     title = session.get("current_title", "")
     video_bytes = session.get("video")
     original_caption = session.get("original_caption", "")
+    audio_bytes = session.get("audio")
+    audio_selected = session.get("audio_selected", "без музыки")
     
     if not video_bytes:
         await query.edit_message_text("❌ Нет видео для обработки")
@@ -1665,10 +1815,12 @@ async def process_video_with_choice(update: Update, context: ContextTypes.DEFAUL
     mode_text = "всё видео" if only_first_seconds == 0 else f"первые {only_first_seconds} секунд"
     await query.edit_message_text(f"⏳ <b>Обрабатываю {mode_text}...</b>\n⏳ Это займет ~20-40 секунд", parse_mode="HTML")
     
-    result = process_video_fast(video_bytes, title, only_first_seconds)
+    result = process_video_fast(video_bytes, title, only_first_seconds, audio_bytes)
     
     if result and len(result.getvalue()) > 0:
         caption = original_caption if original_caption else f"<b>{title}</b>"
+        if audio_selected and audio_selected != "без музыки":
+            caption += f"\n🎵 Музыка: {audio_selected}"
         if only_first_seconds > 0:
             caption += f"\n📌 Заголовок только в начале (первые 5 секунд)"
         
@@ -1688,6 +1840,7 @@ async def process_video_with_choice(update: Update, context: ContextTypes.DEFAUL
     session["auto_title"] = None
     session["current_title"] = None
     session["audio"] = None
+    session["audio_selected"] = None
     session["original_caption"] = ""
 
 async def process_video_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1855,20 +2008,22 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if session.get("video"):
             keyboard = [
                 [
-                    InlineKeyboardButton("🎬 Обработать всё видео", callback_data="process_full_video"),
-                    InlineKeyboardButton("📌 Только начало (5с)", callback_data="process_5sec_video")
+                    InlineKeyboardButton("🎵 Обычная мелодия", callback_data="video_music_обычная"),
+                    InlineKeyboardButton("📢 Важная новость", callback_data="video_music_важная")
                 ],
                 [
+                    InlineKeyboardButton("🔇 Без музыки", callback_data="video_music_no_music"),
                     InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await message.reply_text(
-                f"✅ Заголовок сохранен:\n\n<b>{title}</b>\n\nВыберите способ обработки:",
+                f"✅ Заголовок сохранен:\n\n<b>{title}</b>\n\n"
+                f"🎵 <b>Выберите музыкальное сопровождение:</b>",
                 parse_mode="HTML",
                 reply_markup=reply_markup
             )
-            session["state"] = "selecting_video_action"
+            session["state"] = "selecting_video_music"
         else:
             keyboard = [
                 [
@@ -1928,55 +2083,25 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         session["current_title"] = title
         
-        if session.get("video"):
-            keyboard = [
-                [
-                    InlineKeyboardButton("🎬 Обработать всё видео", callback_data="process_full_video"),
-                    InlineKeyboardButton("📌 Только начало (5с)", callback_data="process_5sec_video")
-                ],
-                [
-                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
-                ]
+        keyboard = [
+            [
+                InlineKeyboardButton("🎵 Обычная мелодия", callback_data="video_music_обычная"),
+                InlineKeyboardButton("📢 Важная новость", callback_data="video_music_важная")
+            ],
+            [
+                InlineKeyboardButton("🔇 Без музыки", callback_data="video_music_no_music"),
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
             ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await message.reply_text(
-                f"✅ Заголовок сохранен:\n\n<b>{title}</b>\n\nВыберите способ обработки:",
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
-            session["state"] = "selecting_video_action"
-        elif len(session["photos"]) >= 3:
-            keyboard = [
-                [
-                    InlineKeyboardButton("📌 Заголовок на всё видео", callback_data="slideshow_full"),
-                    InlineKeyboardButton("📌 Только начало (5с)", callback_data="slideshow_5sec")
-                ],
-                [
-                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await message.reply_text(
-                f"✅ Заголовок сохранен:\n\n<b>{title}</b>\n\n"
-                f"<b>Выберите способ нанесения заголовка:</b>\n"
-                f"• 📌 На всё видео - заголовок на всем видео\n"
-                f"• 📌 Только начало (5с) - заголовок только в первые 5 секунд",
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
-            session["state"] = "selecting_slideshow_mode"
-        else:
-            await message.reply_text(
-                f"❌ Недостаточно фото! Отправлено: {len(session['photos'])}, нужно 3-10"
-            )
-            session["state"] = "idle"
-            session["photos"] = []
-            session["auto_title"] = None
-            session["current_title"] = None
-            session["audio"] = None
-            session["audio_selected"] = None
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await message.reply_text(
+            f"✅ Заголовок сохранен:\n\n<b>{title}</b>\n\n"
+            f"🎵 <b>Выберите музыкальное сопровождение:</b>",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "selecting_video_music"
 
 # ==================== КОМАНДЫ ====================
 
@@ -2062,15 +2187,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n\n"
         f"🎬 <b>Что умеет бот:</b>\n"
         f"1️⃣ <b>Видео</b> - обрабатывает видео с текстом (градиент + текст)\n"
+        f"   • 🎵 Выбор музыки для видео\n"
         f"   • 🎬 Обработать всё видео\n"
-        f"   • 📌 Только начало (5 секунд)\n"
+        f"   • 📌 Только начало (5 секунд) - заголовок только в начале\n"
         f"2️⃣ <b>Фото</b> - с текстом (выбор заголовка) или без (кнопки)\n"
         f"3️⃣ <b>Слайд-шоу</b> - из 3-10 фото с музыкой\n"
         f"   • 📌 Заголовок на всё видео\n"
         f"   • 📌 Только начало (5 секунд)\n"
         f"4️⃣ <b>Видео + Фото</b> - объединение в одно видео\n"
         f"5️⃣ <b>🤖 ИИ</b> - улучшение заголовков через DeepSeek AI\n\n"
-        f"🎵 <b>Музыка для слайд-шоу:</b>\n"
+        f"🎵 <b>Музыка для слайд-шоу и видео:</b>\n"
         f"   • 🎵 Обычная мелодия\n"
         f"   • 📢 Важная новость\n"
         f"   • 🔇 Без музыки\n\n"
@@ -2219,14 +2345,11 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
             
             keyboard = [
                 [
-                    InlineKeyboardButton("🎬 Обработать всё видео", callback_data="process_full_video"),
-                    InlineKeyboardButton("📌 Только начало (5с)", callback_data="process_5sec_video")
+                    InlineKeyboardButton("🎵 Обычная мелодия", callback_data="video_music_обычная"),
+                    InlineKeyboardButton("📢 Важная новость", callback_data="video_music_важная")
                 ],
                 [
-                    InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom"),
-                    InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="title_ai_for_video")
-                ],
-                [
+                    InlineKeyboardButton("🔇 Без музыки", callback_data="video_music_no_music"),
                     InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
                 ]
             ]
@@ -2238,11 +2361,11 @@ async def process_collected_group(media_group_id: str, context: ContextTypes.DEF
                 chat_id=group["chat_id"],
                 text=f"📹 Получено видео + {len(photos)} фото!\n\n"
                      f"<b>Заголовок из текста:</b>\n{title_preview}\n\n"
-                     f"Выберите способ обработки:",
+                     f"🎵 <b>Выберите музыкальное сопровождение:</b>",
                 parse_mode="HTML",
                 reply_markup=reply_markup
             )
-            session["state"] = "selecting_video_action"
+            session["state"] = "selecting_video_music"
         else:
             await context.bot.send_message(
                 chat_id=group["chat_id"],
@@ -2394,8 +2517,10 @@ async def main():
         handle_channel_post
     ))
     
+    # Callback'и
     app.add_handler(CallbackQueryHandler(handle_photo_callback, pattern="^(photo_post|photo_video|title_auto|title_custom|title_ai|title_ai_for_video|title_use_ai|title_cancel|process_video_only|process_media|action_slideshow|action_post|process_full_video|process_5sec_video|slideshow_full|slideshow_5sec)$"))
     app.add_handler(CallbackQueryHandler(handle_music_callback, pattern="^music_"))
+    app.add_handler(CallbackQueryHandler(handle_video_music_callback, pattern="^video_music_"))
     app.add_handler(CallbackQueryHandler(handle_video_cancel, pattern="^video_cancel$"))
     
     logger.info("✅ Обработчики зарегистрированы")
@@ -2409,7 +2534,8 @@ async def main():
     logger.info("  • Слайд-шоу из 3-10 фото с плавным приближением (+10% за 3с)")
     logger.info("  • Поддержка медиагрупп (несколько фото/видео в одном сообщении)")
     logger.info("  • Видео: наложение градиента и текста")
-    logger.info("  • 📌 Обработка только первых 5 секунд видео")
+    logger.info("  • 🎵 Выбор музыки для видео")
+    logger.info("  • 📌 Обработка только первых 5 секунд видео (остальное без изменений)")
     logger.info("  • 📌 Слайд-шоу: заголовок на всё видео или только на 5 секунд")
     logger.info("  • 🚫 Без ограничений по размеру видео (скачивание через httpx)")
     logger.info("🎵 Музыка:")

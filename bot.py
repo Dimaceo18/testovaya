@@ -15,6 +15,13 @@ import shutil
 from collections import defaultdict
 import concurrent.futures
 
+# Проверяем и устанавливаем httpx
+try:
+    import httpx
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "httpx"])
+    import httpx
+
 # Проверяем и устанавливаем aiohttp
 try:
     import aiohttp
@@ -782,44 +789,68 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         except:
             pass
 
-# ==================== СКАЧИВАНИЕ МЕДИА (С ПОДДЕРЖКОЙ БОЛЬШИХ ФАЙЛОВ) ====================
+# ==================== СКАЧИВАНИЕ МЕДИА (ИСПРАВЛЕННАЯ ВЕРСИЯ) ====================
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
-    """Скачивание медиа с поддержкой больших файлов через aiohttp"""
+    """Скачивание медиа с поддержкой больших файлов через httpx"""
+    temp_path = None
     try:
         logger.info(f"📥 Скачивание файла {file_id[:10]}...")
         
-        # Шаг 1: Получаем путь к файлу через API
-        async with aiohttp.ClientSession() as session:
-            get_file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
-            async with session.get(get_file_url) as response:
-                if response.status != 200:
-                    logger.error(f"❌ Ошибка getFile: {response.status}")
-                    return None
-                
-                data = await response.json()
-                if not data.get('ok'):
-                    logger.error(f"❌ getFile вернул ошибку: {data}")
-                    return None
-                
-                file_path = data['result']['file_path']
-                logger.info(f"📥 Путь к файлу: {file_path}")
-                
-                # Шаг 2: Скачиваем файл по прямой ссылке
-                file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                async with session.get(file_url, timeout=aiohttp.ClientTimeout(total=600)) as file_response:
-                    if file_response.status != 200:
-                        logger.error(f"❌ Ошибка скачивания: {file_response.status}")
-                        return None
+        # Пробуем через httpx напрямую к API
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            # Получаем информацию о файле
+            response = await client.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    file_path = data['result']['file_path']
+                    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
                     
-                    result = await file_response.read()
-                    logger.info(f"✅ Скачано: {len(result) / (1024*1024):.1f} MB")
-                    return result
+                    logger.info(f"📥 Скачивание по ссылке: {file_url}")
                     
+                    # Скачиваем файл
+                    file_response = await client.get(file_url)
+                    if file_response.status_code == 200:
+                        result = file_response.content
+                        logger.info(f"✅ Скачано через httpx: {len(result) / (1024*1024):.1f} MB")
+                        return result
+        
+        # Если httpx не сработал, пробуем через библиотеку telegram
+        logger.info("📥 Пробуем через библиотеку telegram...")
+        file = await bot.get_file(file_id)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as temp_file:
+            temp_path = temp_file.name
+        
+        await file.download_to_drive(
+            temp_path,
+            timeout=600,
+            read_timeout=600,
+            write_timeout=600,
+            connect_timeout=600
+        )
+        
+        with open(temp_path, 'rb') as f:
+            result = f.read()
+        
+        logger.info(f"✅ Скачано через telegram: {len(result) / (1024*1024):.1f} MB")
+        return result
+        
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания: {e}")
         traceback.print_exc()
         return None
+    
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
 
 def get_text_from_message(message) -> str:
     return message.text or message.caption or ""
@@ -921,7 +952,6 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
     
     logger.info(f"📹 Получено видео: {message.video.file_size / (1024*1024):.1f} MB")
     
-    # Используем новую функцию download_media с aiohttp
     video_bytes = await download_media(context.bot, message.video.file_id)
     
     if not video_bytes:
@@ -992,7 +1022,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     photo = message.photo[-1]
     
-    # Используем новую функцию download_media с aiohttp
     photo_bytes = await download_media(context.bot, photo.file_id)
     
     if not photo_bytes:
@@ -1074,7 +1103,6 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
     
     photo = message.photo[-1]
     
-    # Используем новую функцию download_media с aiohttp
     photo_bytes = await download_media(context.bot, photo.file_id)
     
     if not photo_bytes:
@@ -2383,7 +2411,7 @@ async def main():
     logger.info("  • Видео: наложение градиента и текста")
     logger.info("  • 📌 Обработка только первых 5 секунд видео")
     logger.info("  • 📌 Слайд-шоу: заголовок на всё видео или только на 5 секунд")
-    logger.info("  • 🚫 Без ограничений по размеру видео (скачивание через aiohttp)")
+    logger.info("  • 🚫 Без ограничений по размеру видео (скачивание через httpx)")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")
     logger.info("  • Важная новость")

@@ -14,6 +14,7 @@ import traceback
 import shutil
 from collections import defaultdict
 import concurrent.futures
+import aiohttp
 
 try:
     import requests
@@ -775,40 +776,40 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         except:
             pass
 
-# ==================== СКАЧИВАНИЕ МЕДИА (ИСПРАВЛЕННАЯ ВЕРСИЯ) ====================
+# ==================== СКАЧИВАНИЕ МЕДИА (ИСПРАВЛЕННАЯ ВЕРСИЯ С aiohttp) ====================
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
-    """Скачивание медиа с поддержкой больших файлов"""
+    """Скачивание медиа с поддержкой больших файлов через aiohttp"""
     try:
-        file = await bot.get_file(file_id)
+        logger.info(f"📥 Скачивание файла {file_id[:10]}...")
         
-        # Получаем прямую ссылку на файл
-        file_path = file.file_path
-        if not file_path:
-            logger.error("❌ Не удалось получить путь к файлу")
-            return None
-        
-        logger.info(f"📥 Скачивание через прямую ссылку, размер: {file.file_size / (1024*1024):.1f} MB" if file.file_size else "📥 Скачивание...")
-        
-        # Скачиваем через requests с большим таймаутом
-        def download_file():
-            response = requests.get(file_path, timeout=300, stream=True)
-            if response.status_code == 200:
-                return response.content
-            return None
-        
-        # Запускаем в отдельном потоке, чтобы не блокировать asyncio
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            result = await loop.run_in_executor(executor, download_file)
-        
-        if result:
-            logger.info(f"✅ Скачано: {len(result) / (1024*1024):.1f} MB")
-            return result
-        else:
-            logger.error("❌ Не удалось скачать файл")
-            return None
-            
+        # Шаг 1: Получаем путь к файлу через API
+        async with aiohttp.ClientSession() as session:
+            get_file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+            async with session.get(get_file_url) as response:
+                if response.status != 200:
+                    logger.error(f"❌ Ошибка getFile: {response.status}")
+                    return None
+                
+                data = await response.json()
+                if not data.get('ok'):
+                    logger.error(f"❌ getFile вернул ошибку: {data}")
+                    return None
+                
+                file_path = data['result']['file_path']
+                logger.info(f"📥 Путь к файлу: {file_path}")
+                
+                # Шаг 2: Скачиваем файл по прямой ссылке
+                file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                async with session.get(file_url, timeout=aiohttp.ClientTimeout(total=300)) as file_response:
+                    if file_response.status != 200:
+                        logger.error(f"❌ Ошибка скачивания: {file_response.status}")
+                        return None
+                    
+                    result = await file_response.read()
+                    logger.info(f"✅ Скачано: {len(result) / (1024*1024):.1f} MB")
+                    return result
+                    
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания: {e}")
         traceback.print_exc()
@@ -914,7 +915,7 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
     
     logger.info(f"📹 Получено видео: {message.video.file_size / (1024*1024):.1f} MB")
     
-    # Используем новую функцию download_media
+    # Используем новую функцию download_media с aiohttp
     video_bytes = await download_media(context.bot, message.video.file_id)
     
     if not video_bytes:
@@ -985,7 +986,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     photo = message.photo[-1]
     
-    # Используем новую функцию download_media
+    # Используем новую функцию download_media с aiohttp
     photo_bytes = await download_media(context.bot, photo.file_id)
     
     if not photo_bytes:
@@ -1067,7 +1068,7 @@ async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_
     
     photo = message.photo[-1]
     
-    # Используем новую функцию download_media
+    # Используем новую функцию download_media с aiohttp
     photo_bytes = await download_media(context.bot, photo.file_id)
     
     if not photo_bytes:
@@ -2376,7 +2377,7 @@ async def main():
     logger.info("  • Видео: наложение градиента и текста")
     logger.info("  • 📌 Обработка только первых 5 секунд видео")
     logger.info("  • 📌 Слайд-шоу: заголовок на всё видео или только на 5 секунд")
-    logger.info("  • 🚫 Без ограничений по размеру видео (скачивание через прямую ссылку)")
+    logger.info("  • 🚫 Без ограничений по размеру видео (скачивание через aiohttp)")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")
     logger.info("  • Важная новость")

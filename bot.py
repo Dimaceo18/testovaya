@@ -460,32 +460,40 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
         video = VideoFileClip(temp_input)
         logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
         
-        # НЕ уменьшаем разрешение - сохраняем оригинальное качество
+        # Сохраняем оригинальное аудио
+        original_audio = video.audio
         
         # Если нужно обработать только первые N секунд
         if only_first_seconds > 0:
             logger.info(f"📹 Обрабатываем только первые {only_first_seconds} секунд, остальное без изменений")
             
             if video.duration > only_first_seconds:
+                # Первая часть - обработанная (с заголовком и градиентом)
                 first_part = video.subclip(0, only_first_seconds)
+                # Вторая часть - без изменений
                 second_part = video.subclip(only_first_seconds, video.duration)
                 
+                # Обрабатываем первую часть
                 def process_frame(frame):
                     return process_video_frame(frame, title_text)
                 
                 processed_first = first_part.fl_image(process_frame)
                 
+                # Объединяем обработанную и исходную части
                 processed_video = concatenate_videoclips([processed_first, second_part])
                 
+                # Закрываем ненужные клипы
                 first_part.close()
                 second_part.close()
                 processed_first.close()
             else:
+                # Если видео короче, чем указано, обрабатываем всё
                 logger.info(f"📹 Видео короче {only_first_seconds}с, обрабатываем полностью")
                 def process_frame(frame):
                     return process_video_frame(frame, title_text)
                 processed_video = video.fl_image(process_frame)
         else:
+            # Обрабатываем всё видео
             logger.info(f"📹 Обрабатываем всё видео")
             def process_frame(frame):
                 return process_video_frame(frame, title_text)
@@ -493,6 +501,7 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
         
         # Работа с аудио
         if audio_bytes:
+            # Если есть новое аудио - используем его
             try:
                 logger.info(f"🎵 Добавление нового аудио...")
                 with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
@@ -510,8 +519,18 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
             except Exception as e:
                 logger.error(f"❌ Ошибка добавления аудио: {e}")
         elif not keep_original_audio:
+            # Если нужно убрать звук
             logger.info(f"🔇 Удаляем звук из видео")
             processed_video = processed_video.without_audio()
+        elif original_audio is not None:
+            # Если есть оригинальное аудио - сохраняем его
+            try:
+                logger.info(f"🎵 Сохраняем оригинальное аудио...")
+                processed_video = processed_video.set_audio(original_audio)
+                logger.info(f"✅ Оригинальное аудио сохранено")
+            except Exception as e:
+                logger.error(f"❌ Ошибка сохранения аудио: {e}")
+        # Если оригинального аудио нет, оставляем без звука
         
         logger.info(f"💾 Сохранение видео...")
         processed_video.write_videofile(
@@ -527,6 +546,8 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
         
         video.close()
         processed_video.close()
+        if original_audio:
+            original_audio.close()
         
         with open(temp_output, 'rb') as f:
             result_bytes = f.read()
@@ -830,14 +851,13 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         except:
             pass
 
-# ==================== СКАЧИВАНИЕ МЕДИА (ВЕРСИЯ ИЗ РАБОЧЕГО БОТА) ====================
+# ==================== СКАЧИВАНИЕ МЕДИА ====================
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
-    """Скачивание медиа - версия из рабочего бота"""
+    """Скачивание медиа"""
     try:
         file = await bot.get_file(file_id)
         
-        # Убираем проверку на размер файла
         logger.info(f"📥 Скачивание, размер: {file.file_size / (1024*1024):.1f} MB" if file.file_size else "📥 Скачивание...")
         result = await file.download_as_bytearray()
         logger.info(f"✅ Скачано: {len(result) / (1024*1024):.1f} MB")
@@ -2572,6 +2592,7 @@ async def main():
     logger.info("    - Шаг 3: Режим обработки (всё видео/только 5 секунд)")
     logger.info("  • 🚫 Без ограничений по размеру видео")
     logger.info("  • 🎵 Высокое качество видео (битрейт 5000k, preset medium)")
+    logger.info("  • ✅ Исправлено: при обработке 5 секунд видео остается полным")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")
     logger.info("  • Важная новость")

@@ -14,7 +14,13 @@ import traceback
 import shutil
 from collections import defaultdict
 import concurrent.futures
-import aiohttp
+
+# Проверяем и устанавливаем aiohttp
+try:
+    import aiohttp
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "aiohttp"])
+    import aiohttp
 
 try:
     import requests
@@ -776,7 +782,7 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         except:
             pass
 
-# ==================== СКАЧИВАНИЕ МЕДИА (ИСПРАВЛЕННАЯ ВЕРСИЯ С aiohttp) ====================
+# ==================== СКАЧИВАНИЕ МЕДИА (С ПОДДЕРЖКОЙ БОЛЬШИХ ФАЙЛОВ) ====================
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
     """Скачивание медиа с поддержкой больших файлов через aiohttp"""
@@ -801,7 +807,7 @@ async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
                 
                 # Шаг 2: Скачиваем файл по прямой ссылке
                 file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                async with session.get(file_url, timeout=aiohttp.ClientTimeout(total=300)) as file_response:
+                async with session.get(file_url, timeout=aiohttp.ClientTimeout(total=600)) as file_response:
                     if file_response.status != 200:
                         logger.error(f"❌ Ошибка скачивания: {file_response.status}")
                         return None

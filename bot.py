@@ -13,6 +13,7 @@ from typing import Optional, List, Dict
 import traceback
 import shutil
 from collections import defaultdict
+import concurrent.futures
 
 try:
     import requests
@@ -785,15 +786,38 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
             pass
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
+    """Скачивание медиа с поддержкой больших файлов"""
     try:
         file = await bot.get_file(file_id)
         
         logger.info(f"📥 Скачивание, размер: {file.file_size / (1024*1024):.1f} MB" if file.file_size else "📥 Скачивание...")
-        result = await file.download_as_bytearray()
-        logger.info(f"✅ Скачано: {len(result) / (1024*1024):.1f} MB")
-        return result
+        
+        # Создаем временный файл
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as temp_file:
+            temp_path = temp_file.name
+        
+        try:
+            # Скачиваем в файл с большим таймаутом
+            await file.download_to_drive(temp_path, timeout=120)
+            
+            # Читаем файл
+            with open(temp_path, 'rb') as f:
+                result = f.read()
+            
+            logger.info(f"✅ Скачано: {len(result) / (1024*1024):.1f} MB")
+            return result
+            
+        finally:
+            # Удаляем временный файл
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+            
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания: {e}")
+        traceback.print_exc()
         return None
 
 def get_text_from_message(message) -> str:

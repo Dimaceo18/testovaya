@@ -180,12 +180,10 @@ def crop_to_ratio(img: Image.Image, target_w: int, target_h: int) -> Image.Image
     cur_ratio = w / h
     
     if cur_ratio > target_ratio:
-        # Изображение шире - обрезаем по ширине
         new_w = int(h * target_ratio)
         left = (w - new_w) // 2
         return img.crop((left, 0, left + new_w, h))
     else:
-        # Изображение выше - обрезаем по высоте
         new_h = int(w / target_ratio)
         top = (h - new_h) // 2
         return img.crop((0, top, w, top + new_h))
@@ -417,22 +415,15 @@ def process_video_frame(frame: np.ndarray, title_text: str, format_name: str = "
     try:
         img = Image.fromarray(frame).convert("RGB")
         
-        # Получаем размеры для выбранного формата
         format_config = VIDEO_FORMATS.get(format_name, VIDEO_FORMATS["4x5"])
         target_w = format_config["width"]
         target_h = format_config["height"]
         
-        # Обрезка до нужного соотношения
         img = crop_to_ratio(img, target_w, target_h)
         img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-        
-        # Яркость
         img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-        
-        # Градиент снизу
         img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
         
-        # Текст
         draw = ImageDraw.Draw(img)
         margin_x = int(img.width * 0.06)
         margin_bottom = int(img.height * 0.08)
@@ -481,48 +472,36 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
         video = VideoFileClip(temp_input)
         logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
         
-        # Сохраняем оригинальное аудио
         original_audio = video.audio
         
-        # Если нужно обработать только первые N секунд
         if only_first_seconds > 0:
             logger.info(f"📹 Обрабатываем только первые {only_first_seconds} секунд, остальное без изменений")
             
             if video.duration > only_first_seconds:
-                # Первая часть - обработанная (с заголовком и градиентом)
                 first_part = video.subclip(0, only_first_seconds)
-                # Вторая часть - без изменений
                 second_part = video.subclip(only_first_seconds, video.duration)
                 
-                # Обрабатываем первую часть
                 def process_frame(frame):
                     return process_video_frame(frame, title_text, format_name)
                 
                 processed_first = first_part.fl_image(process_frame)
-                
-                # Объединяем обработанную и исходную части
                 processed_video = concatenate_videoclips([processed_first, second_part])
                 
-                # Закрываем ненужные клипы
                 first_part.close()
                 second_part.close()
                 processed_first.close()
             else:
-                # Если видео короче, чем указано, обрабатываем всё
                 logger.info(f"📹 Видео короче {only_first_seconds}с, обрабатываем полностью")
                 def process_frame(frame):
                     return process_video_frame(frame, title_text, format_name)
                 processed_video = video.fl_image(process_frame)
         else:
-            # Обрабатываем всё видео
             logger.info(f"📹 Обрабатываем всё видео")
             def process_frame(frame):
                 return process_video_frame(frame, title_text, format_name)
             processed_video = video.fl_image(process_frame)
         
-        # Работа с аудио
         if audio_bytes:
-            # Если есть новое аудио - используем его
             try:
                 logger.info(f"🎵 Добавление нового аудио...")
                 with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
@@ -540,18 +519,15 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
             except Exception as e:
                 logger.error(f"❌ Ошибка добавления аудио: {e}")
         elif not keep_original_audio:
-            # Если нужно убрать звук
             logger.info(f"🔇 Удаляем звук из видео")
             processed_video = processed_video.without_audio()
         elif original_audio is not None:
-            # Если есть оригинальное аудио - сохраняем его
             try:
                 logger.info(f"🎵 Сохраняем оригинальное аудио...")
                 processed_video = processed_video.set_audio(original_audio)
                 logger.info(f"✅ Оригинальное аудио сохранено")
             except Exception as e:
                 logger.error(f"❌ Ошибка сохранения аудио: {e}")
-        # Если оригинального аудио нет, оставляем без звука
         
         logger.info(f"💾 Сохранение видео...")
         processed_video.write_videofile(
@@ -702,44 +678,136 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
         target_w = format_config["width"]
         target_h = format_config["height"]
         
-        photo_paths = []
-        
-        cover_img = create_cover_with_title(photos[0], title_text, format_name)
-        cover_path = os.path.join(temp_dir, "cover.png")
-        cover_img.save(cover_path)
-        photo_paths.append(cover_path)
-        
-        for i, photo_bytes in enumerate(photos[1:], 1):
-            img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-            img = crop_to_ratio(img, target_w, target_h)
-            img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-            img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-            img = apply_bottom_gradient(img, height_pct=0.15, max_alpha=80)
+        # Если нужно обработать только первые N секунд
+        if only_first_seconds > 0:
+            logger.info(f"📹 Заголовок и градиент только на первых {only_first_seconds} секунд")
             
-            path = os.path.join(temp_dir, f"photo_{i}.png")
-            img.save(path)
-            photo_paths.append(path)
+            # Определяем сколько слайдов попадает в первые N секунд
+            slides_in_first_part = 0
+            time_accumulated = 0
+            
+            for i in range(len(photos)):
+                time_accumulated += duration_per_photo
+                if time_accumulated <= only_first_seconds:
+                    slides_in_first_part += 1
+                else:
+                    break
+            
+            # Если все слайды входят в первые N секунд
+            if slides_in_first_part >= len(photos):
+                slides_in_first_part = len(photos)
+            
+            logger.info(f"📹 В первые {only_first_seconds} секунд попадает {slides_in_first_part} слайдов из {len(photos)}")
+            
+            # Создаем первую часть (с заголовком и градиентом)
+            first_part_photos = photos[:slides_in_first_part]
+            first_part_paths = []
+            
+            # Первый слайд с полным заголовком
+            cover_img = create_cover_with_title(first_part_photos[0], title_text, format_name)
+            cover_path = os.path.join(temp_dir, "first_cover.png")
+            cover_img.save(cover_path)
+            first_part_paths.append(cover_path)
+            
+            # Остальные слайды первой части с градиентом
+            for i, photo_bytes in enumerate(first_part_photos[1:], 1):
+                img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+                img = crop_to_ratio(img, target_w, target_h)
+                img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+                img = apply_bottom_gradient(img, height_pct=0.15, max_alpha=80)
+                
+                path = os.path.join(temp_dir, f"first_{i}.png")
+                img.save(path)
+                first_part_paths.append(path)
+            
+            # Создаем вторую часть (без заголовка, только легкий градиент)
+            second_part_photos = photos[slides_in_first_part:]
+            second_part_paths = []
+            
+            for i, photo_bytes in enumerate(second_part_photos):
+                img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+                img = crop_to_ratio(img, target_w, target_h)
+                img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+                img = apply_bottom_gradient(img, height_pct=0.05, max_alpha=30)
+                
+                path = os.path.join(temp_dir, f"second_{i}.png")
+                img.save(path)
+                second_part_paths.append(path)
+            
+            # Создаем клипы для первой части
+            first_clips = []
+            for path in first_part_paths:
+                clip = ImageSequenceClip([path], durations=[duration_per_photo])
+                try:
+                    if resize:
+                        def make_zoom(t):
+                            progress = t / duration_per_photo
+                            return 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
+                        clip = clip.fx(resize, make_zoom)
+                except:
+                    pass
+                first_clips.append(clip)
+            
+            # Создаем клипы для второй части
+            second_clips = []
+            for path in second_part_paths:
+                clip = ImageSequenceClip([path], durations=[duration_per_photo])
+                try:
+                    if resize:
+                        def make_zoom(t):
+                            progress = t / duration_per_photo
+                            return 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
+                        clip = clip.fx(resize, make_zoom)
+                except:
+                    pass
+                second_clips.append(clip)
+            
+            # Если вторая часть есть - объединяем
+            if second_clips:
+                all_clips = first_clips + second_clips
+            else:
+                all_clips = first_clips
+            
+            final_clip = concatenate_videoclips(all_clips)
+            
+        else:
+            # Обычное слайд-шоу с заголовком на всех слайдах
+            photo_paths = []
+            
+            cover_img = create_cover_with_title(photos[0], title_text, format_name)
+            cover_path = os.path.join(temp_dir, "cover.png")
+            cover_img.save(cover_path)
+            photo_paths.append(cover_path)
+            
+            for i, photo_bytes in enumerate(photos[1:], 1):
+                img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+                img = crop_to_ratio(img, target_w, target_h)
+                img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+                img = apply_bottom_gradient(img, height_pct=0.15, max_alpha=80)
+                
+                path = os.path.join(temp_dir, f"photo_{i}.png")
+                img.save(path)
+                photo_paths.append(path)
+            
+            clips = []
+            for path in photo_paths:
+                clip = ImageSequenceClip([path], durations=[duration_per_photo])
+                try:
+                    if resize:
+                        def make_zoom(t):
+                            progress = t / duration_per_photo
+                            return 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
+                        clip = clip.fx(resize, make_zoom)
+                except:
+                    pass
+                clips.append(clip)
+            
+            final_clip = concatenate_videoclips(clips)
         
-        clips = []
-        
-        for i, path in enumerate(photo_paths):
-            clip = ImageSequenceClip([path], durations=[duration_per_photo])
-            try:
-                if resize:
-                    def make_zoom(t):
-                        progress = t / duration_per_photo
-                        return 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
-                    clip = clip.fx(resize, make_zoom)
-            except:
-                pass
-            clips.append(clip)
-        
-        final_clip = concatenate_videoclips(clips)
-        
-        if only_first_seconds > 0 and final_clip.duration > only_first_seconds:
-            logger.info(f"📹 Обрезаем слайд-шоу до {only_first_seconds} секунд")
-            final_clip = final_clip.subclip(0, only_first_seconds)
-        
+        # Добавляем аудио
         if audio_bytes:
             try:
                 audio_path = os.path.join(temp_dir, "audio.mp3")
@@ -1034,11 +1102,10 @@ async def handle_format_callback(update: Update, context: ContextTypes.DEFAULT_T
     
     session = user_sessions[user_id]
     
-    # Разбираем данные: формат_следующий_шаг
     parts = data.split("_")
     if len(parts) >= 2:
-        format_name = parts[0]  # 4x5 или 9x16
-        next_step = "_".join(parts[1:])  # processing или slideshow
+        format_name = parts[0]
+        next_step = "_".join(parts[1:])
     else:
         await query.edit_message_text("❌ Ошибка формата")
         return
@@ -1048,10 +1115,8 @@ async def handle_format_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.edit_message_text(f"✅ Выбран формат: {format_display}")
     
     if next_step == "processing":
-        # Переходим к выбору режима обработки
         await show_processing_choice(query, context, user_id)
     elif next_step == "slideshow":
-        # Переходим к выбору способа нанесения заголовка для слайд-шоу
         keyboard = [
             [
                 InlineKeyboardButton("📌 Заголовок на всё видео", callback_data="slideshow_full"),
@@ -1112,7 +1177,6 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
     
     caption = message.caption or ""
     
-    # ШАГ 1: Выбор заголовка
     if caption.strip():
         auto_title = extract_title_from_text(caption)
         session["auto_title"] = auto_title
@@ -1174,8 +1238,6 @@ async def handle_video_title_callback(update: Update, context: ContextTypes.DEFA
             return
         
         session["current_title"] = auto_title
-        
-        # Переходим к выбору аудио
         await show_audio_choice(query, context, user_id)
         
     elif data == "custom":
@@ -1230,7 +1292,6 @@ async def handle_video_title_callback(update: Update, context: ContextTypes.DEFA
             await query.edit_message_text("❌ Нет заголовка для использования")
             return
         
-        # Переходим к выбору аудио
         await show_audio_choice(query, context, user_id)
 
 async def show_audio_choice(query, context, user_id):
@@ -1286,8 +1347,6 @@ async def handle_video_audio_callback(update: Update, context: ContextTypes.DEFA
         session["audio_selected"] = "оригинальный звук"
         session["keep_original_audio"] = True
         await query.edit_message_text("🎵 Оставляем оригинальный звук")
-        
-        # Переходим к выбору формата
         await show_format_choice(query, context, user_id, "processing")
         
     elif data == "silent":
@@ -1295,8 +1354,6 @@ async def handle_video_audio_callback(update: Update, context: ContextTypes.DEFA
         session["audio_selected"] = "без звука"
         session["keep_original_audio"] = False
         await query.edit_message_text("🔇 Видео будет без звука")
-        
-        # Переходим к выбору формата
         await show_format_choice(query, context, user_id, "processing")
         
     elif data in ["важная", "обычная"]:
@@ -1310,8 +1367,6 @@ async def handle_video_audio_callback(update: Update, context: ContextTypes.DEFA
             session["audio_selected"] = audio_name
             session["keep_original_audio"] = False
             await query.edit_message_text(f"✅ Аудио '{audio_name}' загружено!")
-            
-            # Переходим к выбору формата
             await show_format_choice(query, context, user_id, "processing")
         else:
             await query.edit_message_text(f"❌ Не удалось загрузить аудио '{audio_name}'. Попробуйте снова.")
@@ -1608,8 +1663,6 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
         session["audio"] = None
         session["audio_selected"] = "без музыки"
         await query.edit_message_text("🔇 Слайд-шоу будет без музыки")
-        
-        # После выбора музыки показываем выбор времени слайда
         await show_duration_choice(query, context, user_id)
         
     elif data == "cancel":
@@ -1631,8 +1684,6 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
             session["audio"] = audio_bytes
             session["audio_selected"] = audio_name
             await query.edit_message_text(f"✅ Музыка '{audio_name}' загружена!")
-            
-            # После выбора музыки показываем выбор времени слайда
             await show_duration_choice(query, context, user_id)
         else:
             await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
@@ -1697,8 +1748,6 @@ async def handle_duration_callback(update: Update, context: ContextTypes.DEFAULT
         return
     
     await query.edit_message_text(f"⏱️ Выбрано время: {duration_text}")
-    
-    # Переходим к выбору формата
     await show_format_choice(query, context, user_id, "slideshow")
 
 # ==================== ВЫБОР ЗАГОЛОВКА ДЛЯ ФОТО ====================
@@ -2370,6 +2419,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   • ⏱️ Выбор времени слайда: 3 или 5 секунд\n"
         f"   • 📱 Выбор формата: 4:5 или 9:16\n"
         f"   • 📌 Заголовок на всё видео или только начало (5с)\n"
+        f"   • ✅ При выборе 'Только начало (5с)' - заголовок только на первых 5 секундах, остальные слайды без заголовка\n"
         f"4️⃣ <b>Видео + Фото</b> - объединение в одно видео\n"
         f"5️⃣ <b>🤖 ИИ</b> - улучшение заголовков через DeepSeek AI\n\n"
         f"🎵 <b>Музыка для слайд-шоу и видео:</b>\n"
@@ -2725,9 +2775,9 @@ async def main():
     logger.info("    - Шаг 2: Выбор аудио (оригинал/важное/обычное/без звука)")
     logger.info("    - Шаг 3: Выбор формата (4:5 или 9:16)")
     logger.info("    - Шаг 4: Режим обработки (всё видео/только 5 секунд)")
+    logger.info("  • Слайд-шоу: при выборе 'Только начало (5с)' заголовок только на первых 5 секундах")
     logger.info("  • 🚫 Без ограничений по размеру видео")
     logger.info("  • 🎵 Высокое качество видео (битрейт 5000k, preset medium)")
-    logger.info("  • ✅ Исправлено: при обработке 5 секунд видео остается полным")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")
     logger.info("  • Важная новость")

@@ -460,6 +460,8 @@ def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: 
         video = VideoFileClip(temp_input)
         logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
         
+        # НЕ уменьшаем разрешение - сохраняем оригинальное качество
+        
         # Если нужно обработать только первые N секунд
         if only_first_seconds > 0:
             logger.info(f"📹 Обрабатываем только первые {only_first_seconds} секунд, остальное без изменений")
@@ -828,64 +830,21 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         except:
             pass
 
-# ==================== СКАЧИВАНИЕ МЕДИА ====================
+# ==================== СКАЧИВАНИЕ МЕДИА (ВЕРСИЯ ИЗ РАБОЧЕГО БОТА) ====================
 
 async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
-    """Скачивание медиа с поддержкой больших файлов через httpx"""
-    temp_path = None
+    """Скачивание медиа - версия из рабочего бота"""
     try:
-        logger.info(f"📥 Скачивание файла {file_id[:10]}...")
-        
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            response = await client.get(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('ok'):
-                    file_path = data['result']['file_path']
-                    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                    
-                    logger.info(f"📥 Скачивание по ссылке: {file_url}")
-                    
-                    file_response = await client.get(file_url)
-                    if file_response.status_code == 200:
-                        result = file_response.content
-                        logger.info(f"✅ Скачано через httpx: {len(result) / (1024*1024):.1f} MB")
-                        return result
-        
-        logger.info("📥 Пробуем через библиотеку telegram...")
         file = await bot.get_file(file_id)
         
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as temp_file:
-            temp_path = temp_file.name
-        
-        await file.download_to_drive(
-            temp_path,
-            timeout=600,
-            read_timeout=600,
-            write_timeout=600,
-            connect_timeout=600
-        )
-        
-        with open(temp_path, 'rb') as f:
-            result = f.read()
-        
-        logger.info(f"✅ Скачано через telegram: {len(result) / (1024*1024):.1f} MB")
+        # Убираем проверку на размер файла
+        logger.info(f"📥 Скачивание, размер: {file.file_size / (1024*1024):.1f} MB" if file.file_size else "📥 Скачивание...")
+        result = await file.download_as_bytearray()
+        logger.info(f"✅ Скачано: {len(result) / (1024*1024):.1f} MB")
         return result
-        
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания: {e}")
-        traceback.print_exc()
         return None
-    
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
 
 def get_text_from_message(message) -> str:
     return message.text or message.caption or ""
@@ -994,15 +953,17 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
         return
     
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True}
+        user_sessions[user_id] = {"state": "idle", "audio": None, "audio_selected": None, "auto_title": None, "video": None, "photos": [], "current_title": None, "original_caption": "", "keep_original_audio": True, "slideshow_duration": 3.0}
     
     session = user_sessions[user_id]
     session["video"] = video_bytes
     session["original_caption"] = message.caption or ""
     session["keep_original_audio"] = True
+    session["slideshow_duration"] = 3.0
     
     caption = message.caption or ""
     
+    # ШАГ 1: Выбор заголовка
     if caption.strip():
         auto_title = extract_title_from_text(caption)
         session["auto_title"] = auto_title
@@ -1064,6 +1025,8 @@ async def handle_video_title_callback(update: Update, context: ContextTypes.DEFA
             return
         
         session["current_title"] = auto_title
+        
+        # Переходим к выбору аудио
         await show_audio_choice(query, context, user_id)
         
     elif data == "custom":
@@ -1118,6 +1081,7 @@ async def handle_video_title_callback(update: Update, context: ContextTypes.DEFA
             await query.edit_message_text("❌ Нет заголовка для использования")
             return
         
+        # Переходим к выбору аудио
         await show_audio_choice(query, context, user_id)
 
 async def show_audio_choice(query, context, user_id):
@@ -1173,6 +1137,8 @@ async def handle_video_audio_callback(update: Update, context: ContextTypes.DEFA
         session["audio_selected"] = "оригинальный звук"
         session["keep_original_audio"] = True
         await query.edit_message_text("🎵 Оставляем оригинальный звук")
+        
+        # Переходим к выбору режима обработки
         await show_processing_choice(query, context, user_id)
         
     elif data == "silent":
@@ -1180,6 +1146,8 @@ async def handle_video_audio_callback(update: Update, context: ContextTypes.DEFA
         session["audio_selected"] = "без звука"
         session["keep_original_audio"] = False
         await query.edit_message_text("🔇 Видео будет без звука")
+        
+        # Переходим к выбору режима обработки
         await show_processing_choice(query, context, user_id)
         
     elif data in ["важная", "обычная"]:
@@ -1193,9 +1161,12 @@ async def handle_video_audio_callback(update: Update, context: ContextTypes.DEFA
             session["audio_selected"] = audio_name
             session["keep_original_audio"] = False
             await query.edit_message_text(f"✅ Аудио '{audio_name}' загружено!")
+            
+            # Переходим к выбору режима обработки
             await show_processing_choice(query, context, user_id)
         else:
             await query.edit_message_text(f"❌ Не удалось загрузить аудио '{audio_name}'. Попробуйте снова.")
+            # Показываем выбор аудио снова
             await show_audio_choice(query, context, user_id)
 
 async def show_processing_choice(query, context, user_id):
@@ -1334,7 +1305,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session["photos"] = [photo_bytes]
     session["video"] = None
     session["original_caption"] = message.caption or ""
-    session["slideshow_duration"] = 3.0  # Значение по умолчанию
+    session["slideshow_duration"] = 3.0
     
     caption = message.caption or ""
     
@@ -2599,7 +2570,7 @@ async def main():
     logger.info("    - Шаг 1: Выбор заголовка (оставить/свой/ИИ)")
     logger.info("    - Шаг 2: Выбор аудио (оригинал/важное/обычное/без звука)")
     logger.info("    - Шаг 3: Режим обработки (всё видео/только 5 секунд)")
-    logger.info("  • 🚫 Без ограничений по размеру видео (скачивание через httpx)")
+    logger.info("  • 🚫 Без ограничений по размеру видео")
     logger.info("  • 🎵 Высокое качество видео (битрейт 5000k, preset medium)")
     logger.info("🎵 Музыка:")
     logger.info("  • Обычная мелодия")

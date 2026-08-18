@@ -1655,6 +1655,492 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         session["state"] = "idle"
 
+# ==================== ОБРАБОТКА ПОСТОВ ИЗ БОТА (НОВАЯ ФУНКЦИЯ) ====================
+
+async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка постов, пересланных в бот"""
+    if not update.effective_user:
+        return
+    
+    message = update.message
+    if not message:
+        return
+    
+    # Проверяем, есть ли медиа или текст
+    has_media = (hasattr(message, 'photo') and message.photo) or \
+                (hasattr(message, 'video') and message.video) or \
+                (hasattr(message, 'document') and message.document)
+    
+    has_text = message.text or message.caption
+    
+    if not has_media and not has_text:
+        return
+    
+    user_id = update.effective_user.id
+    
+    # Если это медиагруппа - обрабатываем отдельно
+    if hasattr(message, 'media_group_id') and message.media_group_id:
+        await handle_media_group(update, context)
+        return
+    
+    # Создаём или получаем сессию пользователя
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {
+            "state": "idle", 
+            "audio": None, 
+            "audio_selected": None, 
+            "auto_title": None, 
+            "video": None, 
+            "photos": [], 
+            "current_title": None,
+            "original_caption": "",
+            "keep_original_audio": True,
+            "slideshow_duration": 3.0,
+            "video_format": "4x5",
+            "no_text": False
+        }
+    
+    session = user_sessions[user_id]
+    
+    # Если есть текст или caption - извлекаем заголовок
+    text = message.text or message.caption or ""
+    session["original_caption"] = text
+    
+    # Если есть видео
+    if hasattr(message, 'video') and message.video:
+        await handle_video_with_choice(update, context)
+        return
+    
+    # Если есть фото
+    if hasattr(message, 'photo') and message.photo:
+        # Скачиваем фото
+        photo = message.photo[-1]
+        photo_bytes = await download_media(context.bot, photo.file_id)
+        
+        if not photo_bytes:
+            await message.reply_text("❌ Не удалось скачать фото")
+            return
+        
+        session["photos"] = [photo_bytes]
+        session["video"] = None
+        
+        # Если есть текст - предлагаем выбор заголовка
+        if text.strip():
+            auto_title = extract_title_from_text(text)
+            session["auto_title"] = auto_title
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("📝 Использовать заголовок из текста", callback_data="post_title_auto"),
+                    InlineKeyboardButton("✏️ Свой заголовок", callback_data="post_title_custom")
+                ],
+                [
+                    InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="post_title_ai"),
+                    InlineKeyboardButton("⏭️ Без текста", callback_data="post_no_text")
+                ],
+                [
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            title_preview = auto_title if auto_title else "❌ Не удалось извлечь заголовок"
+            
+            await message.reply_text(
+                f"📸 <b>Обработка поста</b>\n\n"
+                f"<b>Найденный заголовок:</b>\n{title_preview}\n\n"
+                f"Выберите действие:",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
+            session["state"] = "post_selecting_title"
+        else:
+            # Нет текста - предлагаем ввести заголовок или сделать без текста
+            keyboard = [
+                [
+                    InlineKeyboardButton("✏️ Ввести заголовок", callback_data="post_title_custom"),
+                    InlineKeyboardButton("⏭️ Без текста", callback_data="post_no_text")
+                ],
+                [
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await message.reply_text(
+                "📸 <b>Обработка поста</b>\n\n"
+                "Фото отправлено без текста.\n\n"
+                "Выберите действие:",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
+            session["state"] = "post_selecting_title"
+        
+        return
+    
+    # Если только текст без медиа
+    if text.strip() and not has_media:
+        await message.reply_text(
+            "📝 <b>Получен текст</b>\n\n"
+            "Отправьте фото или видео вместе с текстом, чтобы я мог обработать пост.\n"
+            "Используйте команду /post <текст> для создания поста.",
+            parse_mode="HTML"
+        )
+        return
+
+# ==================== ОБРАБОТЧИКИ ДЛЯ ПОСТОВ ====================
+
+async def handle_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка callback'ов для постов"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = update.effective_user.id
+    data = query.data.replace("post_", "")
+    
+    if user_id not in user_sessions:
+        await query.edit_message_text("❌ Сессия не найдена. Отправьте пост заново.")
+        return
+    
+    session = user_sessions[user_id]
+    
+    if data == "title_auto":
+        auto_title = session.get("auto_title", "")
+        if not auto_title:
+            await query.edit_message_text("❌ Не удалось извлечь заголовок из текста")
+            return
+        
+        session["current_title"] = auto_title
+        session["no_text"] = False
+        
+        # Предлагаем обработать пост
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Обработать пост", callback_data="post_process"),
+                InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="post_slideshow")
+            ],
+            [
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"✅ Заголовок сохранен:\n\n<b>{auto_title}</b>\n\nЧто делаем с постом?",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "post_ready"
+    
+    elif data == "title_custom":
+        await query.edit_message_text("✏️ Отправьте свой текст для заголовка:")
+        session["state"] = "post_waiting_title"
+    
+    elif data == "title_ai":
+        auto_title = session.get("auto_title", "")
+        if not auto_title:
+            await query.edit_message_text("❌ Нет заголовка для улучшения")
+            return
+        
+        await query.edit_message_text("🤖 <b>Улучшаю заголовок через ИИ...</b>\n⏳ Это займет несколько секунд", parse_mode="HTML")
+        
+        improved = await improve_title_with_ai(auto_title)
+        
+        if improved and improved != auto_title:
+            session["current_title"] = improved
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Использовать этот", callback_data="post_title_use_ai"),
+                    InlineKeyboardButton("🔄 Еще раз", callback_data="post_title_ai"),
+                ],
+                [
+                    InlineKeyboardButton("✏️ Свой вариант", callback_data="post_title_custom"),
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ]
+            
+            await query.edit_message_text(
+                f"🤖 <b>ИИ предложил новый заголовок:</b>\n\n"
+                f"<b>Оригинал:</b> {auto_title}\n"
+                f"<b>Улучшенный:</b> {improved}\n\n"
+                f"Выберите действие:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ Не удалось улучшить заголовок. Используйте оригинал:\n\n{auto_title}\n\n"
+                f"Отправьте свой вариант или нажмите /cancel",
+                parse_mode="HTML"
+            )
+            session["state"] = "post_waiting_title"
+    
+    elif data == "title_use_ai":
+        current_title = session.get("current_title", "")
+        if not current_title:
+            await query.edit_message_text("❌ Нет заголовка для использования")
+            return
+        
+        session["no_text"] = False
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Обработать пост", callback_data="post_process"),
+                InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="post_slideshow")
+            ],
+            [
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"✅ Заголовок сохранен:\n\n<b>{current_title}</b>\n\nЧто делаем с постом?",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "post_ready"
+    
+    elif data == "no_text":
+        session["current_title"] = ""
+        session["no_text"] = True
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Обработать пост", callback_data="post_process"),
+                InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="post_slideshow")
+            ],
+            [
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"⏭️ Режим 'Без текста' включен\n\nЧто делаем с постом?",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "post_ready"
+    
+    elif data == "process":
+        # Обработка поста (одно фото)
+        if not session.get("photos"):
+            await query.edit_message_text("❌ Нет фото для обработки")
+            return
+        
+        title = session.get("current_title", "")
+        no_text = session.get("no_text", False)
+        photo_bytes = session["photos"][0]
+        format_name = session.get("video_format", "4x5")
+        
+        await query.edit_message_text("⏳ <b>Обрабатываю пост...</b>", parse_mode="HTML")
+        
+        processed = process_single_photo(photo_bytes, title, format_name, no_text)
+        
+        if processed and len(processed.getvalue()) > 0:
+            caption = ""
+            if no_text:
+                caption = "📌 Без текста"
+            elif title:
+                caption = f"<b>{title}</b>"
+            
+            await query.message.reply_photo(
+                photo=BytesIO(processed.getvalue()),
+                caption=caption,
+                parse_mode="HTML"
+            )
+            await query.delete_message()
+        else:
+            await query.edit_message_text("❌ Ошибка обработки поста")
+        
+        # Очищаем сессию
+        session["state"] = "idle"
+        session["photos"] = []
+        session["current_title"] = None
+        session["no_text"] = False
+    
+    elif data == "slideshow":
+        # Создание слайд-шоу из поста
+        if not session.get("photos"):
+            await query.edit_message_text("❌ Нет фото для слайд-шоу")
+            return
+        
+        # Предлагаем выбор музыки
+        keyboard = [
+            [
+                InlineKeyboardButton("🎵 Обычная мелодия", callback_data="post_music_обычная"),
+                InlineKeyboardButton("📢 Важная новость", callback_data="post_music_важная")
+            ],
+            [
+                InlineKeyboardButton("🔇 Без музыки", callback_data="post_music_no_music"),
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"🎵 <b>Выберите музыкальное сопровождение для слайд-шоу:</b>\n\n"
+            f"• 🎵 Обычная мелодия - спокойный фон\n"
+            f"• 📢 Важная новость - энергичная/драматичная\n"
+            f"• 🔇 Без музыки - тишина",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "post_selecting_music"
+
+async def handle_post_music_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора музыки для поста"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = update.effective_user.id
+    data = query.data.replace("post_music_", "")
+    
+    if user_id not in user_sessions:
+        await query.edit_message_text("❌ Сессия не найдена. Отправьте пост заново.")
+        return
+    
+    session = user_sessions[user_id]
+    
+    if data == "no_music":
+        session["audio"] = None
+        session["audio_selected"] = "без музыки"
+        await query.edit_message_text("🔇 Слайд-шоу будет без музыки")
+        await show_post_duration_choice(query, context, user_id)
+        
+    elif data in ["важная", "обычная"]:
+        audio_name = "Важная новость" if data == "важная" else "Обычная мелодия"
+        await query.edit_message_text(f"⏳ Скачиваю музыку '{audio_name}' с GitHub...")
+        
+        audio_bytes = download_audio_from_github(data)
+        
+        if audio_bytes:
+            session["audio"] = audio_bytes
+            session["audio_selected"] = audio_name
+            await query.edit_message_text(f"✅ Музыка '{audio_name}' загружена!")
+            await show_post_duration_choice(query, context, user_id)
+        else:
+            await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
+            await handle_post_callback(update, context)
+
+async def show_post_duration_choice(query, context, user_id):
+    """Показать выбор времени слайда для поста"""
+    session = user_sessions[user_id]
+    audio_selected = session.get("audio_selected", "без музыки")
+    count = len(session.get("photos", []))
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("⏱️ 3 секунды", callback_data="post_duration_3"),
+            InlineKeyboardButton("⏱️ 5 секунд", callback_data="post_duration_5")
+        ],
+        [
+            InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"✅ Музыка: {audio_selected}\n"
+        f"📸 Количество фото: {count}\n\n"
+        f"⏱️ <b>Выберите время показа каждого слайда:</b>\n\n"
+        f"• ⏱️ 3 секунды - быстрая смена\n"
+        f"• ⏱️ 5 секунд - спокойная смена\n\n"
+        f"Выберите вариант:",
+        parse_mode="HTML",
+        reply_markup=reply_markup
+    )
+    session["state"] = "post_selecting_duration"
+
+async def handle_post_duration_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора времени слайда для поста"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = update.effective_user.id
+    data = query.data.replace("post_duration_", "")
+    
+    if user_id not in user_sessions:
+        await query.edit_message_text("❌ Сессия не найдена. Отправьте пост заново.")
+        return
+    
+    session = user_sessions[user_id]
+    
+    if data == "3":
+        session["slideshow_duration"] = 3.0
+        duration_text = "3 секунды"
+    elif data == "5":
+        session["slideshow_duration"] = 5.0
+        duration_text = "5 секунд"
+    else:
+        await query.edit_message_text("❌ Неизвестное время")
+        return
+    
+    await query.edit_message_text(f"⏱️ Выбрано время: {duration_text}")
+    
+    # Создаём слайд-шоу
+    title = session.get("current_title", "")
+    no_text = session.get("no_text", False)
+    photos = session.get("photos", [])
+    audio_bytes = session.get("audio")
+    audio_selected = session.get("audio_selected", "без музыки")
+    original_caption = session.get("original_caption", "")
+    duration_per_photo = session.get("slideshow_duration", 3.0)
+    format_name = session.get("video_format", "4x5")
+    
+    await query.edit_message_text(
+        f"⏳ <b>Создаю слайд-шоу из {len(photos)} фото...</b>\n"
+        f"⏱️ Время слайда: {duration_text}\n"
+        f"📱 Формат: {'4:5' if format_name == '4x5' else '9:16'}\n"
+        f"⏳ Это займет ~1-2 минуты",
+        parse_mode="HTML"
+    )
+    
+    video = create_slideshow_video(photos, title, audio_bytes, 0, duration_per_photo, format_name, no_text)
+    
+    if video and len(video.getvalue()) > 0:
+        caption = original_caption if original_caption else ""
+        if no_text:
+            caption += "\n📌 Без текста"
+        elif title:
+            caption = f"<b>{title}</b>" if not caption else caption
+        if audio_selected and audio_selected != "без музыки":
+            caption += f"\n🎵 Музыка: {audio_selected}"
+        caption += f"\n⏱️ Время слайда: {duration_text}"
+        caption += f"\n📱 Формат: {'4:5' if format_name == '4x5' else '9:16'}"
+        
+        await query.message.reply_video(
+            video=BytesIO(video.getvalue()),
+            caption=caption,
+            parse_mode="HTML",
+            width=VIDEO_FORMATS[format_name]["width"],
+            height=VIDEO_FORMATS[format_name]["height"]
+        )
+        await query.edit_message_text("✅ Слайд-шоу готово и отправлено!")
+    else:
+        await query.edit_message_text("❌ Ошибка создания слайд-шоу")
+    
+    session["state"] = "idle"
+    session["photos"] = []
+    session["current_title"] = None
+    session["audio"] = None
+    session["audio_selected"] = None
+    session["no_text"] = False
+
 async def handle_photo_collection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
         return
@@ -2475,6 +2961,34 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         fake_query = FakeQuery(message)
         await show_audio_choice(fake_query, context, user_id)
+    
+    elif state == "post_waiting_title":
+        title = message.text.strip()
+        
+        if not title:
+            await message.reply_text("❌ Текст не может быть пустым. Отправьте снова или /cancel")
+            return
+        
+        session["current_title"] = title
+        session["no_text"] = False
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Обработать пост", callback_data="post_process"),
+                InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="post_slideshow")
+            ],
+            [
+                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await message.reply_text(
+            f"✅ Заголовок сохранен:\n\n<b>{title}</b>\n\nЧто делаем с постом?",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        session["state"] = "post_ready"
 
 # ==================== КОМАНДЫ ====================
 
@@ -2572,12 +3086,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   • 📌 Заголовок на всё видео или только начало (5с)\n"
         f"   • ✅ Режим 'Без текста' - без заголовка и градиента\n"
         f"4️⃣ <b>Видео + Фото</b> - объединение в одно видео\n"
-        f"5️⃣ <b>🤖 ИИ</b> - улучшение заголовков через DeepSeek AI\n\n"
+        f"5️⃣ <b>🤖 ИИ</b> - улучшение заголовков через DeepSeek AI\n"
+        f"6️⃣ <b>📨 Пересланные посты</b> - обрабатывает посты, отправленные в бот\n\n"
         f"🎵 <b>Музыка для слайд-шоу и видео:</b>\n"
         f"   • 🎵 Обычная мелодия\n"
         f"   • 📢 Важная новость\n"
         f"   • 🔇 Без звука\n\n"
-        f"📎 Просто отправьте видео или фото в бот",
+        f"📎 Просто отправьте видео, фото или перешлите пост в бот",
         parse_mode="HTML"
     )
 
@@ -2589,7 +3104,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚡ Обработка включена!\n"
         f"🤖 ИИ: {'✅ Доступен' if DEEPSEEK_API_KEY else '❌ Не настроен'}\n"
         f"📹 Ограничение размера: отсутствует\n"
-        f"📱 Форматы: 4:5 и 9:16",
+        f"📱 Форматы: 4:5 и 9:16\n"
+        f"📨 Поддерживает пересылку постов",
         parse_mode="HTML"
     )
 
@@ -2865,6 +3381,55 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if message.text and not message.text.startswith('/'):
         await handle_text_input(update, context)
 
+# ==================== ОБРАБОТЧИК ПЕРЕСЛАННЫХ СООБЩЕНИЙ ====================
+
+async def handle_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Универсальный обработчик всех сообщений"""
+    if not update.effective_user:
+        return
+    
+    message = update.message
+    if not message:
+        return
+    
+    # Проверяем, есть ли медиа или текст
+    has_media = (hasattr(message, 'photo') and message.photo) or \
+                (hasattr(message, 'video') and message.video) or \
+                (hasattr(message, 'document') and message.document)
+    
+    has_text = message.text or message.caption
+    
+    if not has_media and not has_text:
+        return
+    
+    # Если это медиагруппа - обрабатываем отдельно
+    if hasattr(message, 'media_group_id') and message.media_group_id:
+        await handle_media_group(update, context)
+        return
+    
+    # Если есть текст и нет медиа - обрабатываем как текстовое сообщение
+    if has_text and not has_media:
+        await handle_text_input(update, context)
+        return
+    
+    # Если есть видео
+    if hasattr(message, 'video') and message.video:
+        await handle_video_with_choice(update, context)
+        return
+    
+    # Если есть фото
+    if hasattr(message, 'photo') and message.photo:
+        # Проверяем, не собираем ли мы фото для слайд-шоу
+        user_id = update.effective_user.id
+        if user_id in user_sessions:
+            session = user_sessions[user_id]
+            if session.get("state") == "collecting_photos":
+                await handle_photo_collection(update, context)
+                return
+        
+        await handle_forwarded_post(update, context)
+        return
+
 # ==================== ЗАПУСК ====================
 
 async def main():
@@ -2909,9 +3474,10 @@ async def main():
     app.add_handler(CommandHandler("cancel", handle_cancel))
     app.add_handler(CommandHandler("done", handle_video_done))
     
+    # Основной обработчик всех сообщений
     app.add_handler(MessageHandler(
         filters.ALL & ~filters.COMMAND & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID),
-        handle_all_messages
+        handle_any_message
     ))
     
     app.add_handler(MessageHandler(
@@ -2926,6 +3492,10 @@ async def main():
     app.add_handler(CallbackQueryHandler(handle_video_audio_callback, pattern="^video_audio_"))
     app.add_handler(CallbackQueryHandler(handle_video_processing_callback, pattern="^video_process_"))
     app.add_handler(CallbackQueryHandler(handle_video_cancel, pattern="^video_cancel$"))
+    # Новые callback'и для постов
+    app.add_handler(CallbackQueryHandler(handle_post_callback, pattern="^post_"))
+    app.add_handler(CallbackQueryHandler(handle_post_music_callback, pattern="^post_music_"))
+    app.add_handler(CallbackQueryHandler(handle_post_duration_callback, pattern="^post_duration_"))
     
     logger.info("✅ Обработчики зарегистрированы")
     logger.info("📊 Параметры ЧП ВМ:")
@@ -2940,6 +3510,7 @@ async def main():
     logger.info("  • 📱 Выбор формата: 4:5 или 9:16")
     logger.info("  • ⏭️ Режим 'Без текста' - без заголовка и градиента")
     logger.info("  • Поддержка медиагрупп (несколько фото/видео в одном сообщении)")
+    logger.info("  • 📨 Поддержка пересылки постов в бот")
     logger.info("  • Видео: 4-шаговый процесс")
     logger.info("    - Шаг 1: Выбор заголовка (оставить/свой/ИИ/без текста)")
     logger.info("    - Шаг 2: Выбор аудио (оригинал/важное/обычное/без звука)")

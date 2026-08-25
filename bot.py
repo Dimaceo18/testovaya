@@ -79,6 +79,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONITOR_CHANNEL_ID = os.getenv("MONITOR_CHANNEL_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+MAX_VIDEO_SIZE_MB = int(os.getenv("MAX_VIDEO_SIZE_MB", "50"))
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 # URL для аудиофайлов на GitHub
@@ -110,6 +111,7 @@ MN_TITLE_ZONE_PCT = 0.23
 BRIGHTNESS_FACTOR = 0.85
 FONT_CHP = "Montserrat-Black.ttf"
 FONT_FALLBACK = "Arial.ttf"
+MAX_FILE_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
 
 # Форматы видео
 VIDEO_FORMATS = {
@@ -422,7 +424,6 @@ def process_video_frame(frame: np.ndarray, title_text: str, format_name: str = "
         img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
         img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
         
-        # Если no_text=True - наносим только легкий градиент без текста
         if no_text:
             img = apply_bottom_gradient(img, height_pct=0.05, max_alpha=30)
             return np.array(img)
@@ -817,13 +818,11 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             # Обычное слайд-шоу с заголовком на всех слайдах
             photo_paths = []
             
-            # Первое фото - с заголовком
             cover_img = create_cover_with_title(photos[0], title_text, format_name, False)
             cover_path = os.path.join(temp_dir, "cover.png")
             cover_img.save(cover_path)
             photo_paths.append(cover_path)
             
-            # Остальные фото - с легким градиентом
             for i, photo_bytes in enumerate(photos[1:], 1):
                 img = Image.open(BytesIO(photo_bytes)).convert("RGB")
                 img = crop_to_ratio(img, target_w, target_h)
@@ -850,7 +849,6 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             
             final_clip = concatenate_videoclips(clips)
         
-        # Добавляем аудио если есть
         if audio_bytes:
             try:
                 audio_path = os.path.join(temp_dir, "audio.mp3")
@@ -910,17 +908,14 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         target_w = format_config["width"]
         target_h = format_config["height"]
         
-        # Сохраняем видео
         video_path = os.path.join(temp_dir, "input_video.mp4")
         with open(video_path, 'wb') as f:
             f.write(video_bytes)
         
-        # Обрабатываем первое фото как обложку с заголовком
         cover_img = create_cover_with_title(photos[0], title_text, format_name, no_text)
         cover_path = os.path.join(temp_dir, "cover.png")
         cover_img.save(cover_path)
         
-        # Обрабатываем остальные фото как слайды
         photo_paths = [cover_path]
         for i, photo_bytes in enumerate(photos[1:], 1):
             img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -936,11 +931,9 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
             img.save(path)
             photo_paths.append(path)
         
-        # Загружаем видео и изменяем размер
         video_clip = VideoFileClip(video_path)
         video_clip = video_clip.resize((target_w, target_h))
         
-        # Создаем слайд-шоу из фото
         duration_per_photo = 3.0
         photo_clips = []
         
@@ -957,11 +950,8 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
             photo_clips.append(clip)
         
         slideshow_clip = concatenate_videoclips(photo_clips)
-        
-        # Объединяем видео и слайд-шоу
         final_clip = concatenate_videoclips([video_clip, slideshow_clip])
         
-        # Добавляем аудио если есть
         if audio_bytes:
             try:
                 audio_path = os.path.join(temp_dir, "audio.mp3")
@@ -978,7 +968,6 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
             except Exception as e:
                 logger.error(f"❌ Ошибка добавления аудио: {e}")
         
-        # Сохраняем результат
         output_path = os.path.join(temp_dir, "output.mp4")
         final_clip.write_videofile(
             output_path,
@@ -1020,6 +1009,10 @@ async def download_media(bot: Bot, file_id: str) -> Optional[bytes]:
     try:
         file = await bot.get_file(file_id)
         
+        if file.file_size and file.file_size > MAX_FILE_SIZE_BYTES:
+            logger.error(f"❌ Файл слишком большой: {file.file_size / (1024*1024):.1f} MB")
+            return None
+        
         logger.info(f"📥 Скачивание, размер: {file.file_size / (1024*1024):.1f} MB" if file.file_size else "📥 Скачивание...")
         result = await file.download_as_bytearray()
         logger.info(f"✅ Скачано: {len(result) / (1024*1024):.1f} MB")
@@ -1040,6 +1033,14 @@ async def process_video_post(message, context: ContextTypes.DEFAULT_TYPE, source
             return
         
         logger.info(f"📹 Получено видео: {message.video.file_size / (1024*1024):.1f} MB")
+        
+        if message.video.file_size and message.video.file_size > MAX_FILE_SIZE_BYTES:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=f"❌ Видео слишком большое! {message.video.file_size / (1024*1024):.1f} MB > {MAX_VIDEO_SIZE_MB} MB",
+                parse_mode="HTML"
+            )
+            return
         
         status_msg = await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
@@ -1232,7 +1233,6 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
     
     caption = message.caption or ""
     
-    # Если есть текст - предлагаем выбор заголовка
     if caption.strip():
         auto_title = extract_title_from_text(caption)
         session["auto_title"] = auto_title
@@ -1261,7 +1261,6 @@ async def handle_video_with_choice(update: Update, context: ContextTypes.DEFAULT
         session["state"] = "video_selecting_title"
         
     else:
-        # Нет текста - предлагаем ввести заголовок или пропустить
         keyboard = [
             [
                 InlineKeyboardButton("✏️ Ввести заголовок", callback_data="video_title_custom"),
@@ -1404,7 +1403,6 @@ async def show_audio_choice(query, context, user_id):
             reply_markup=reply_markup
         )
     except Exception as e:
-        # Если не удалось отредактировать сообщение, отправляем новое
         await query.message.reply_text(
             f"✅ Заголовок: <b>{title_display}</b>\n\n"
             f"📹 <b>Шаг 2/4: Выбор аудио</b>\n\n"
@@ -1679,7 +1677,6 @@ async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TY
     if not message:
         return
     
-    # Проверяем, есть ли медиа или текст
     has_media = (hasattr(message, 'photo') and message.photo) or \
                 (hasattr(message, 'video') and message.video) or \
                 (hasattr(message, 'document') and message.document)
@@ -1691,12 +1688,10 @@ async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TY
     
     user_id = update.effective_user.id
     
-    # Если это медиагруппа - обрабатываем отдельно
     if hasattr(message, 'media_group_id') and message.media_group_id:
         await handle_media_group(update, context)
         return
     
-    # Создаём или получаем сессию пользователя
     if user_id not in user_sessions:
         user_sessions[user_id] = {
             "state": "idle", 
@@ -1715,18 +1710,14 @@ async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TY
     
     session = user_sessions[user_id]
     
-    # Если есть текст или caption - извлекаем заголовок
     text = message.text or message.caption or ""
     session["original_caption"] = text
     
-    # Если есть видео
     if hasattr(message, 'video') and message.video:
         await handle_video_with_choice(update, context)
         return
     
-    # Если есть фото
     if hasattr(message, 'photo') and message.photo:
-        # Скачиваем фото
         photo = message.photo[-1]
         photo_bytes = await download_media(context.bot, photo.file_id)
         
@@ -1737,7 +1728,6 @@ async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TY
         session["photos"] = [photo_bytes]
         session["video"] = None
         
-        # Если есть текст - предлагаем выбор заголовка
         if text.strip():
             auto_title = extract_title_from_text(text)
             session["auto_title"] = auto_title
@@ -1768,7 +1758,6 @@ async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TY
             )
             session["state"] = "post_selecting_title"
         else:
-            # Нет текста - предлагаем ввести заголовок или сделать без текста
             keyboard = [
                 [
                     InlineKeyboardButton("✏️ Ввести заголовок", callback_data="post_title_custom"),
@@ -1791,7 +1780,6 @@ async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TY
         
         return
     
-    # Если только текст без медиа
     if text.strip() and not has_media:
         await message.reply_text(
             "📝 <b>Получен текст</b>\n\n"
@@ -2564,7 +2552,7 @@ async def handle_action_callback(update: Update, context: ContextTypes.DEFAULT_T
     if data == "action_slideshow":
         count = len(session.get("photos", []))
         
-        if count >= 1:  # Теперь можно делать слайд-шоу даже с 1 фото
+        if count >= 1:
             await handle_music_choice(update, context)
             session["state"] = "selecting_music"
         else:
@@ -2688,7 +2676,7 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         
         count = len(session["photos"])
         
-        if count >= 1:  # Теперь можно делать слайд-шоу даже с 1 фото
+        if count >= 1:
             await handle_music_choice(update, context)
             session["state"] = "selecting_music"
         else:
@@ -3163,7 +3151,8 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 <b>Бот для обработки видео и фото (ЧП ВМ)</b>\n\n"
-        f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n\n"
+        f"📢 Канал: <code>{MONITOR_CHANNEL_ID}</code>\n"
+        f"📊 Макс. размер: {MAX_VIDEO_SIZE_MB} MB\n\n"
         f"🎬 <b>Что умеет бот:</b>\n"
         f"1️⃣ <b>Видео</b> - 4 шага:\n"
         f"   • Шаг 1: Выбор заголовка (оставить/свой/ИИ/без текста)\n"
@@ -3194,7 +3183,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📨 Уведомления: <code>{ADMIN_CHAT_ID}</code>\n"
         f"⚡ Обработка включена!\n"
         f"🤖 ИИ: {'✅ Доступен' if DEEPSEEK_API_KEY else '❌ Не настроен'}\n"
-        f"📹 Ограничение размера: отсутствует\n"
+        f"📹 Ограничение размера: {MAX_VIDEO_SIZE_MB} MB\n"
         f"📱 Форматы: 4:5 и 9:16\n"
         f"📨 Поддерживает пересылку постов",
         parse_mode="HTML"
@@ -3483,7 +3472,6 @@ async def handle_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not message:
         return
     
-    # Проверяем, есть ли медиа или текст
     has_media = (hasattr(message, 'photo') and message.photo) or \
                 (hasattr(message, 'video') and message.video) or \
                 (hasattr(message, 'document') and message.document)
@@ -3493,24 +3481,19 @@ async def handle_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not has_media and not has_text:
         return
     
-    # Если это медиагруппа - обрабатываем отдельно
     if hasattr(message, 'media_group_id') and message.media_group_id:
         await handle_media_group(update, context)
         return
     
-    # Если есть текст и нет медиа - обрабатываем как текстовое сообщение
     if has_text and not has_media:
         await handle_text_input(update, context)
         return
     
-    # Если есть видео
     if hasattr(message, 'video') and message.video:
         await handle_video_with_choice(update, context)
         return
     
-    # Если есть фото
     if hasattr(message, 'photo') and message.photo:
-        # Проверяем, не собираем ли мы фото для слайд-шоу
         user_id = update.effective_user.id
         if user_id in user_sessions:
             session = user_sessions[user_id]
@@ -3565,7 +3548,6 @@ async def main():
     app.add_handler(CommandHandler("cancel", handle_cancel))
     app.add_handler(CommandHandler("done", handle_video_done))
     
-    # Основной обработчик всех сообщений
     app.add_handler(MessageHandler(
         filters.ALL & ~filters.COMMAND & ~filters.Chat(chat_id=MONITOR_CHANNEL_ID),
         handle_any_message
@@ -3576,14 +3558,12 @@ async def main():
         handle_channel_post
     ))
     
-    # Callback'и
-    app.add_handler(CallbackQueryHandler(handle_photo_callback, pattern="^(photo_post|photo_video|photo_no_text|title_auto|title_custom|title_ai|title_use_ai|title_cancel|action_slideshow|action_post|slideshow_full|slideshow_5sec|duration_3|duration_5|format_.*)$"))
+    app.add_handler(CallbackQueryHandler(handle_photo_callback, pattern="^(photo_post|photo_video|photo_no_text|title_auto|title_custom|title_ai|title_use_ai|title_cancel|action_slideshow|action_post|slideshow_full|slideshow_5sec|duration_3|duration_5|format_.*|video_title_keep|video_title_custom|video_title_ai|video_title_use_ai|video_no_text|video_audio_original|video_audio_важная|video_audio_обычная|video_audio_silent|video_process_full|video_process_5sec|video_cancel)$"))
     app.add_handler(CallbackQueryHandler(handle_music_callback, pattern="^music_"))
     app.add_handler(CallbackQueryHandler(handle_video_title_callback, pattern="^video_title_"))
     app.add_handler(CallbackQueryHandler(handle_video_audio_callback, pattern="^video_audio_"))
     app.add_handler(CallbackQueryHandler(handle_video_processing_callback, pattern="^video_process_"))
     app.add_handler(CallbackQueryHandler(handle_video_cancel, pattern="^video_cancel$"))
-    # Новые callback'и для постов
     app.add_handler(CallbackQueryHandler(handle_post_callback, pattern="^post_"))
     app.add_handler(CallbackQueryHandler(handle_post_music_callback, pattern="^post_music_"))
     app.add_handler(CallbackQueryHandler(handle_post_duration_callback, pattern="^post_duration_"))

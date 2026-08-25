@@ -2243,43 +2243,6 @@ async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=reply_markup
     )
 
-# ==================== МУЗЫКА И ВРЕМЯ ДЛЯ СЛАЙД-ШОУ ====================
-
-async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if not update.effective_user:
-        await query.edit_message_text("❌ Ошибка: пользователь не найден")
-        return
-    
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        await query.edit_message_text("❌ Сессия не найдена. Отправьте фото заново.")
-        return
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("🎵 Обычная мелодия", callback_data="music_обычная"),
-            InlineKeyboardButton("📢 Важная новость", callback_data="music_важная")
-        ],
-        [
-            InlineKeyboardButton("🔇 Без музыки", callback_data="music_no_music"),
-            InlineKeyboardButton("❌ Отмена", callback_data="music_cancel")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "🎵 <b>Выберите музыкальное сопровождение для слайд-шоу:</b>\n\n"
-        "• 🎵 Обычная мелодия - спокойный фон\n"
-        "• 📢 Важная новость - энергичная/драматичная\n"
-        "• 🔇 Без музыки - тишина",
-        parse_mode="HTML",
-        reply_markup=reply_markup
-    )
-
 async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -2335,6 +2298,10 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
             "📸 Продолжайте отправлять фото или нажмите /done для создания слайд-шоу"
         )
         session["state"] = "collecting_photos"
+        try:
+            await query.delete_message()
+        except:
+            pass
         
     elif data in ["важная", "обычная"]:
         audio_name = "Важная новость" if data == "важная" else "Обычная мелодия"
@@ -2455,9 +2422,35 @@ async def handle_duration_callback(update: Update, context: ContextTypes.DEFAULT
     await query.edit_message_text(f"⏱️ Выбрано время: {duration_text}")
     await show_format_choice(query, context, user_id, "slideshow")
 
-# ==================== ВЫБОР ЗАГОЛОВКА ДЛЯ ФОТО ====================
+# ==================== ВЫБОР ФОРМАТА ====================
 
-async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_format_choice(query, context, user_id, next_step: str = "processing"):
+    session = user_sessions[user_id]
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("📱 4:5 (вертикальный)", callback_data=f"format_4x5_{next_step}"),
+            InlineKeyboardButton("📱 9:16 (Reels)", callback_data=f"format_9x16_{next_step}")
+        ],
+        [
+            InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"📹 <b>Выберите формат видео:</b>\n\n"
+        f"• 📱 4:5 - стандартный вертикальный\n"
+        f"• 📱 9:16 - формат для Reels/Shorts\n\n"
+        f"Выберите вариант:",
+        parse_mode="HTML",
+        reply_markup=reply_markup
+    )
+    session["state"] = "selecting_format"
+
+# ==================== ОБРАБОТЧИК ВЫБОРА ФОРМАТА ====================
+
+async def handle_format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
@@ -2466,7 +2459,7 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     user_id = update.effective_user.id
-    data = query.data
+    data = query.data.replace("format_", "")
     
     if user_id not in user_sessions:
         await query.edit_message_text("❌ Сессия не найдена. Отправьте медиа заново.")
@@ -2474,263 +2467,49 @@ async def handle_title_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     session = user_sessions[user_id]
     
-    if data == "title_auto":
-        auto_title = session.get("auto_title", "")
-        if not auto_title:
-            await query.edit_message_text("❌ Не удалось извлечь заголовок из текста")
-            return
-        
-        session["current_title"] = auto_title
-        session["no_text"] = False
-        
+    parts = data.split("_")
+    if len(parts) >= 2:
+        format_name = parts[0]
+        next_step = "_".join(parts[1:])
+    else:
+        await query.edit_message_text("❌ Ошибка формата")
+        return
+    
+    session["video_format"] = format_name
+    format_display = "4:5" if format_name == "4x5" else "9:16"
+    await query.edit_message_text(f"✅ Выбран формат: {format_display}")
+    
+    if next_step == "processing":
+        await show_processing_choice(query, context, user_id)
+    elif next_step == "slideshow":
         keyboard = [
             [
-                InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="action_slideshow"),
-                InlineKeyboardButton("✅ Оформить пост", callback_data="action_post")
+                InlineKeyboardButton("📌 Заголовок на всё видео", callback_data="slideshow_full"),
+                InlineKeyboardButton("📌 Только начало (5с)", callback_data="slideshow_5sec")
             ],
             [
+                InlineKeyboardButton("✏️ Свой заголовок", callback_data="title_custom"),
                 InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            f"✅ Заголовок сохранен:\n\n<b>{auto_title}</b>\n\nЧто делаем с фото?",
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
-        session["state"] = "waiting_action"
         
-    elif data == "title_custom":
-        await query.edit_message_text("✏️ Отправьте свой текст для заголовка (или нажмите /cancel для отмены):")
-        session["state"] = "waiting_custom_title"
-    
-    elif data == "title_ai":
-        auto_title = session.get("auto_title", "")
-        if not auto_title:
-            await query.edit_message_text("❌ Нет заголовка для улучшения")
-            return
-        
-        await query.edit_message_text("🤖 <b>Улучшаю заголовок через ИИ...</b>\n⏳ Это займет несколько секунд", parse_mode="HTML")
-        
-        improved = await improve_title_with_ai(auto_title)
-        
-        if improved and improved != auto_title:
-            session["current_title"] = improved
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Использовать этот", callback_data="title_use_ai"),
-                    InlineKeyboardButton("🔄 Еще раз", callback_data="title_ai"),
-                ],
-                [
-                    InlineKeyboardButton("✏️ Свой вариант", callback_data="title_custom"),
-                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
-                ]
-            ]
-            
-            await query.edit_message_text(
-                f"🤖 <b>ИИ предложил новый заголовок:</b>\n\n"
-                f"<b>Оригинал:</b> {auto_title}\n"
-                f"<b>Улучшенный:</b> {improved}\n\n"
-                f"Выберите действие:",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        else:
-            await query.edit_message_text(
-                f"❌ Не удалось улучшить заголовок. Используйте оригинал:\n\n{auto_title}\n\n"
-                f"Отправьте свой вариант или нажмите /cancel",
-                parse_mode="HTML"
-            )
-            session["state"] = "waiting_custom_title"
-    
-    elif data == "title_use_ai":
-        current_title = session.get("current_title", "")
-        if not current_title:
-            await query.edit_message_text("❌ Нет заголовка для использования")
-            return
-        
-        session["no_text"] = False
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="action_slideshow"),
-                InlineKeyboardButton("✅ Оформить пост", callback_data="action_post")
-            ],
-            [
-                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            f"✅ Заголовок сохранен:\n\n<b>{current_title}</b>\n\nЧто делаем с фото?",
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
-        session["state"] = "waiting_action"
-    
-    elif data == "title_cancel":
-        session["state"] = "idle"
-        session["video"] = None
-        session["photos"] = []
-        session["auto_title"] = None
-        session["current_title"] = None
-        session["audio"] = None
-        await query.edit_message_text("❌ Действие отменено")
-
-# ==================== ДЕЙСТВИЯ ДЛЯ ФОТО ====================
-
-async def handle_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if not update.effective_user:
-        await query.edit_message_text("❌ Ошибка: пользователь не найден")
-        return
-    
-    user_id = update.effective_user.id
-    data = query.data
-    
-    if user_id not in user_sessions:
-        await query.edit_message_text("❌ Сессия не найдена. Отправьте фото заново.")
-        return
-    
-    session = user_sessions[user_id]
-    
-    if data == "action_slideshow":
-        count = len(session.get("photos", []))
-        
-        if count >= 1:
-            await handle_music_choice(update, context)
-            session["state"] = "selecting_music"
-        else:
-            await query.edit_message_text(
-                f"❌ Нет фото для слайд-шоу. Отправьте хотя бы 1 фото."
-            )
-    
-    elif data == "action_post":
-        if not session.get("photos"):
-            await query.edit_message_text("❌ Нет фото для обработки")
-            return
-        
-        title = session.get("current_title", "")
-        no_text = session.get("no_text", False)
-        photo_bytes = session["photos"][0]
-        format_name = session.get("video_format", "4x5")
-        
-        await query.edit_message_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
-        
-        processed = process_single_photo(photo_bytes, title, format_name, no_text)
-        
-        if processed and len(processed.getvalue()) > 0:
-            caption = ""
-            if no_text:
-                caption = "📌 Без текста"
-            elif title:
-                caption = f"<b>{title}</b>"
-            
-            await query.message.reply_photo(
-                photo=BytesIO(processed.getvalue()),
-                caption=caption,
-                parse_mode="HTML"
-            )
-            await query.delete_message()
-        else:
-            await query.edit_message_text("❌ Ошибка обработки фото")
-        
-        session["state"] = "idle"
-        session["photos"] = []
-        session["auto_title"] = None
-        session["current_title"] = None
-        session["audio"] = None
-        session["audio_selected"] = None
-        session["no_text"] = False
-
-# ==================== ОСНОВНОЙ ОБРАБОТЧИК CALLBACK ====================
-
-async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if not update.effective_user:
-        await query.edit_message_text("❌ Ошибка: пользователь не найден")
-        return
-    
-    user_id = update.effective_user.id
-    data = query.data
-    
-    if user_id not in user_sessions:
-        await query.edit_message_text("❌ Сессия не найдена. Отправьте фото заново.")
-        return
-    
-    session = user_sessions[user_id]
-    
-    if data in ["title_auto", "title_custom", "title_ai", "title_use_ai", "title_cancel"]:
-        await handle_title_choice(update, context)
-        return
-    
-    if data in ["action_slideshow", "action_post"]:
-        await handle_action_callback(update, context)
-        return
-    
-    if data in ["slideshow_full", "slideshow_5sec"]:
-        await handle_slideshow_mode_choice(update, context)
-        return
-    
-    if data in ["duration_3", "duration_5"]:
-        await handle_duration_callback(update, context)
-        return
-    
-    if data.startswith("format_"):
-        await handle_format_callback(update, context)
-        return
-    
-    if data == "photo_no_text":
-        session["no_text"] = True
-        session["current_title"] = ""
-        await query.edit_message_text("⏭️ Без текста")
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="action_slideshow"),
-                InlineKeyboardButton("✅ Оформить пост", callback_data="action_post")
-            ],
-            [
-                InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(
-            f"✅ Режим 'Без текста' включен\n\nЧто делаем с фото?",
+            f"✅ Собрано {len(session['photos'])} фото.\n"
+            f"🎵 Музыка: {session.get('audio_selected', 'без музыки')}\n"
+            f"⏱️ Время слайда: {session.get('slideshow_duration', 3.0)} секунд\n"
+            f"📱 Формат: {format_display}\n\n"
+            f"<b>Выберите способ нанесения заголовка:</b>\n"
+            f"• 📌 На всё видео - заголовок на всем видео\n"
+            f"• 📌 Только начало (5с) - заголовок только в первые 5 секунд",
             parse_mode="HTML",
             reply_markup=reply_markup
         )
-        session["state"] = "waiting_action"
-        await query.delete_message()
-    
-    elif data == "photo_post":
-        if not session["photos"]:
-            await query.edit_message_text("❌ Нет фото для обработки")
-            return
-        
-        await query.edit_message_text("⏳ <b>Обрабатываю фото...</b>", parse_mode="HTML")
-        await query.message.reply_text("✏️ Отправьте текст для заголовка (или нажмите /cancel для отмены):")
-        session["state"] = "waiting_post_title"
-        
-    elif data == "photo_video":
-        if not session["photos"]:
-            await query.edit_message_text("❌ Нет фото для обработки")
-            return
-        
-        count = len(session["photos"])
-        
-        if count >= 1:
-            await handle_music_choice(update, context)
-            session["state"] = "selecting_music"
-        else:
-            await query.edit_message_text(
-                f"❌ Нет фото для слайд-шоу. Отправьте хотя бы 1 фото."
-            )
+        session["state"] = "selecting_slideshow_mode"
+        try:
+            await query.delete_message()
+        except:
+            pass
 
 # ==================== СЛАЙД-ШОУ ====================
 

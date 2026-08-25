@@ -817,11 +817,13 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             # Обычное слайд-шоу с заголовком на всех слайдах
             photo_paths = []
             
+            # Первое фото - с заголовком
             cover_img = create_cover_with_title(photos[0], title_text, format_name, False)
             cover_path = os.path.join(temp_dir, "cover.png")
             cover_img.save(cover_path)
             photo_paths.append(cover_path)
             
+            # Остальные фото - с легким градиентом
             for i, photo_bytes in enumerate(photos[1:], 1):
                 img = Image.open(BytesIO(photo_bytes)).convert("RGB")
                 img = crop_to_ratio(img, target_w, target_h)
@@ -848,6 +850,7 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             
             final_clip = concatenate_videoclips(clips)
         
+        # Добавляем аудио если есть
         if audio_bytes:
             try:
                 audio_path = os.path.join(temp_dir, "audio.mp3")
@@ -861,8 +864,8 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
                     audio_clip = audio_loop(audio_clip, duration=final_clip.duration)
                 
                 final_clip = final_clip.set_audio(audio_clip)
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"❌ Ошибка добавления аудио: {e}")
         
         output_path = os.path.join(temp_dir, "slideshow.mp4")
         final_clip.write_videofile(
@@ -897,6 +900,7 @@ def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Op
             pass
 
 def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text: str, audio_bytes: Optional[bytes] = None, format_name: str = "4x5", no_text: bool = False) -> Optional[BytesIO]:
+    """Создание видео из видео + фото (слайд-шоу после видео)"""
     temp_dir = tempfile.mkdtemp()
     
     try:
@@ -906,14 +910,17 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
         target_w = format_config["width"]
         target_h = format_config["height"]
         
+        # Сохраняем видео
         video_path = os.path.join(temp_dir, "input_video.mp4")
         with open(video_path, 'wb') as f:
             f.write(video_bytes)
         
+        # Обрабатываем первое фото как обложку с заголовком
         cover_img = create_cover_with_title(photos[0], title_text, format_name, no_text)
         cover_path = os.path.join(temp_dir, "cover.png")
         cover_img.save(cover_path)
         
+        # Обрабатываем остальные фото как слайды
         photo_paths = [cover_path]
         for i, photo_bytes in enumerate(photos[1:], 1):
             img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -929,9 +936,11 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
             img.save(path)
             photo_paths.append(path)
         
+        # Загружаем видео и изменяем размер
         video_clip = VideoFileClip(video_path)
         video_clip = video_clip.resize((target_w, target_h))
         
+        # Создаем слайд-шоу из фото
         duration_per_photo = 3.0
         photo_clips = []
         
@@ -948,8 +957,11 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
             photo_clips.append(clip)
         
         slideshow_clip = concatenate_videoclips(photo_clips)
+        
+        # Объединяем видео и слайд-шоу
         final_clip = concatenate_videoclips([video_clip, slideshow_clip])
         
+        # Добавляем аудио если есть
         if audio_bytes:
             try:
                 audio_path = os.path.join(temp_dir, "audio.mp3")
@@ -963,9 +975,10 @@ def create_video_with_photos(video_bytes: bytes, photos: List[bytes], title_text
                     audio_clip = audio_loop(audio_clip, duration=final_clip.duration)
                 
                 final_clip = final_clip.set_audio(audio_clip)
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"❌ Ошибка добавления аудио: {e}")
         
+        # Сохраняем результат
         output_path = os.path.join(temp_dir, "output.mp4")
         final_clip.write_videofile(
             output_path,
@@ -1655,7 +1668,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         session["state"] = "idle"
 
-# ==================== ОБРАБОТКА ПОСТОВ ИЗ БОТА (НОВАЯ ФУНКЦИЯ) ====================
+# ==================== ОБРАБОТКА ПОСТОВ ИЗ БОТА ====================
 
 async def handle_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка постов, пересланных в бот"""
@@ -1817,7 +1830,6 @@ async def handle_post_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         session["current_title"] = auto_title
         session["no_text"] = False
         
-        # Предлагаем обработать пост
         keyboard = [
             [
                 InlineKeyboardButton("✅ Обработать пост", callback_data="post_process"),
@@ -1929,7 +1941,6 @@ async def handle_post_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         session["state"] = "post_ready"
     
     elif data == "process":
-        # Обработка поста (одно фото)
         if not session.get("photos"):
             await query.edit_message_text("❌ Нет фото для обработки")
             return
@@ -1959,19 +1970,16 @@ async def handle_post_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await query.edit_message_text("❌ Ошибка обработки поста")
         
-        # Очищаем сессию
         session["state"] = "idle"
         session["photos"] = []
         session["current_title"] = None
         session["no_text"] = False
     
     elif data == "slideshow":
-        # Создание слайд-шоу из поста
         if not session.get("photos"):
             await query.edit_message_text("❌ Нет фото для слайд-шоу")
             return
         
-        # Предлагаем выбор музыки
         keyboard = [
             [
                 InlineKeyboardButton("🎵 Обычная мелодия", callback_data="post_music_обычная"),
@@ -2017,7 +2025,6 @@ async def handle_post_music_callback(update: Update, context: ContextTypes.DEFAU
         session["audio_selected"] = "без музыки"
         await query.edit_message_text("🔇 Слайд-шоу будет без музыки")
         
-        # Создаём НОВОЕ сообщение с выбором времени
         await query.message.reply_text(
             f"✅ Музыка: без музыки\n"
             f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
@@ -2049,7 +2056,6 @@ async def handle_post_music_callback(update: Update, context: ContextTypes.DEFAU
             session["audio_selected"] = audio_name
             await query.edit_message_text(f"✅ Музыка '{audio_name}' загружена!")
             
-            # Создаём НОВОЕ сообщение с выбором времени
             await query.message.reply_text(
                 f"✅ Музыка: {audio_name}\n"
                 f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
@@ -2071,7 +2077,6 @@ async def handle_post_music_callback(update: Update, context: ContextTypes.DEFAU
             await query.delete_message()
         else:
             await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
-            # Возвращаемся к выбору музыки
             keyboard = [
                 [
                     InlineKeyboardButton("🎵 Обычная мелодия", callback_data="post_music_обычная"),
@@ -2092,35 +2097,6 @@ async def handle_post_music_callback(update: Update, context: ContextTypes.DEFAU
                 reply_markup=reply_markup
             )
             session["state"] = "post_selecting_music"
-
-async def show_post_duration_choice(query, context, user_id):
-    """Показать выбор времени слайда для поста"""
-    session = user_sessions[user_id]
-    audio_selected = session.get("audio_selected", "без музыки")
-    count = len(session.get("photos", []))
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("⏱️ 3 секунды", callback_data="post_duration_3"),
-            InlineKeyboardButton("⏱️ 5 секунд", callback_data="post_duration_5")
-        ],
-        [
-            InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"✅ Музыка: {audio_selected}\n"
-        f"📸 Количество фото: {count}\n\n"
-        f"⏱️ <b>Выберите время показа каждого слайда:</b>\n\n"
-        f"• ⏱️ 3 секунды - быстрая смена\n"
-        f"• ⏱️ 5 секунд - спокойная смена\n\n"
-        f"Выберите вариант:",
-        parse_mode="HTML",
-        reply_markup=reply_markup
-    )
-    session["state"] = "post_selecting_duration"
 
 async def handle_post_duration_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка выбора времени слайда для поста"""
@@ -2152,7 +2128,6 @@ async def handle_post_duration_callback(update: Update, context: ContextTypes.DE
     
     await query.edit_message_text(f"⏱️ Выбрано время: {duration_text}")
     
-    # Создаём слайд-шоу
     title = session.get("current_title", "")
     no_text = session.get("no_text", False)
     photos = session.get("photos", [])
@@ -2302,7 +2277,6 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
         session["audio_selected"] = "без музыки"
         await query.edit_message_text("🔇 Слайд-шоу будет без музыки")
         
-        # Создаём НОВОЕ сообщение с выбором времени
         await query.message.reply_text(
             f"✅ Музыка: без музыки\n"
             f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
@@ -2343,7 +2317,6 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
             session["audio_selected"] = audio_name
             await query.edit_message_text(f"✅ Музыка '{audio_name}' загружена!")
             
-            # Создаём НОВОЕ сообщение с выбором времени
             await query.message.reply_text(
                 f"✅ Музыка: {audio_name}\n"
                 f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
@@ -2365,7 +2338,6 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.delete_message()
         else:
             await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
-            # Возвращаемся к выбору музыки
             keyboard = [
                 [
                     InlineKeyboardButton("🎵 Обычная мелодия", callback_data="music_обычная"),
@@ -2592,7 +2564,7 @@ async def handle_action_callback(update: Update, context: ContextTypes.DEFAULT_T
     if data == "action_slideshow":
         count = len(session.get("photos", []))
         
-        if count >= 1:
+        if count >= 1:  # Теперь можно делать слайд-шоу даже с 1 фото
             await handle_music_choice(update, context)
             session["state"] = "selecting_music"
         else:
@@ -2716,7 +2688,7 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         
         count = len(session["photos"])
         
-        if count >= 1:
+        if count >= 1:  # Теперь можно делать слайд-шоу даже с 1 фото
             await handle_music_choice(update, context)
             session["state"] = "selecting_music"
         else:
@@ -3199,7 +3171,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   • Шаг 3: Выбор формата (4:5 или 9:16)\n"
         f"   • Шаг 4: Режим обработки (всё видео/только 5 секунд)\n"
         f"2️⃣ <b>Фото</b> - с текстом (выбор заголовка) или без (кнопки + 'Без текста')\n"
-        f"3️⃣ <b>Слайд-шоу</b> - из 1-10 фото с музыкой\n"
+        f"3️⃣ <b>Слайд-шоу</b> - из 1+ фото с музыкой\n"
         f"   • ⏱️ Выбор времени слайда: 3 или 5 секунд\n"
         f"   • 📱 Выбор формата: 4:5 или 9:16\n"
         f"   • 📌 Заголовок на всё видео или только начало (5с)\n"
@@ -3624,7 +3596,7 @@ async def main():
     logger.info("📸 Новые функции:")
     logger.info("  • Обработка фото с авто-извлечением заголовка")
     logger.info("  • 🤖 Улучшение заголовков через DeepSeek AI")
-    logger.info("  • Слайд-шоу из 1-10 фото с плавным приближением (+10% за 3с)")
+    logger.info("  • Слайд-шоу из 1+ фото с плавным приближением (+10% за 3с)")
     logger.info("  • ⏱️ Выбор времени слайда: 3 или 5 секунд")
     logger.info("  • 📱 Выбор формата: 4:5 или 9:16")
     logger.info("  • ⏭️ Режим 'Без текста' - без заголовка и градиента")

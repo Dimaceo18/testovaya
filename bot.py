@@ -2243,6 +2243,43 @@ async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=reply_markup
     )
 
+# ==================== МУЗЫКА И ВРЕМЯ ДЛЯ СЛАЙД-ШОУ ====================
+
+async def handle_music_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if not update.effective_user:
+        await query.edit_message_text("❌ Ошибка: пользователь не найден")
+        return
+    
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        await query.edit_message_text("❌ Сессия не найдена. Отправьте фото заново.")
+        return
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🎵 Обычная мелодия", callback_data="music_обычная"),
+            InlineKeyboardButton("📢 Важная новость", callback_data="music_важная")
+        ],
+        [
+            InlineKeyboardButton("🔇 Без музыки", callback_data="music_no_music"),
+            InlineKeyboardButton("❌ Отмена", callback_data="music_cancel")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "🎵 <b>Выберите музыкальное сопровождение для слайд-шоу:</b>\n\n"
+        "• 🎵 Обычная мелодия - спокойный фон\n"
+        "• 📢 Важная новость - энергичная/драматичная\n"
+        "• 🔇 Без музыки - тишина",
+        parse_mode="HTML",
+        reply_markup=reply_markup
+    )
+
 async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -2265,6 +2302,7 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
         session["audio_selected"] = "без музыки"
         await query.edit_message_text("🔇 Слайд-шоу будет без музыки")
         
+        # Отправляем НОВОЕ сообщение с выбором времени
         await query.message.reply_text(
             f"✅ Музыка: без музыки\n"
             f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
@@ -2283,7 +2321,11 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
             ])
         )
         session["state"] = "selecting_duration"
-        await query.delete_message()
+        # Удаляем старое сообщение с выбором музыки
+        try:
+            await query.delete_message()
+        except Exception as e:
+            logger.error(f"❌ Ошибка удаления сообщения: {e}")
         
     elif data == "cancel":
         session["audio"] = None
@@ -2305,6 +2347,7 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
             session["audio_selected"] = audio_name
             await query.edit_message_text(f"✅ Музыка '{audio_name}' загружена!")
             
+            # Отправляем НОВОЕ сообщение с выбором времени
             await query.message.reply_text(
                 f"✅ Музыка: {audio_name}\n"
                 f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
@@ -2323,9 +2366,14 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 ])
             )
             session["state"] = "selecting_duration"
-            await query.delete_message()
+            # Удаляем старое сообщение с выбором музыки
+            try:
+                await query.delete_message()
+            except Exception as e:
+                logger.error(f"❌ Ошибка удаления сообщения: {e}")
         else:
             await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
+            # Возвращаемся к выбору музыки
             keyboard = [
                 [
                     InlineKeyboardButton("🎵 Обычная мелодия", callback_data="music_обычная"),

@@ -2016,7 +2016,31 @@ async def handle_post_music_callback(update: Update, context: ContextTypes.DEFAU
         session["audio"] = None
         session["audio_selected"] = "без музыки"
         await query.edit_message_text("🔇 Слайд-шоу будет без музыки")
-        await show_post_duration_choice(query, context, user_id)
+        
+        # Отправляем новое сообщение с выбором времени
+        await query.message.reply_text(
+            f"✅ Музыка: без музыки\n"
+            f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
+            f"⏱️ <b>Выберите время показа каждого слайда:</b>\n\n"
+            f"• ⏱️ 3 секунды - быстрая смена\n"
+            f"• ⏱️ 5 секунд - спокойная смена",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⏱️ 3 секунды", callback_data="post_duration_3"),
+                    InlineKeyboardButton("⏱️ 5 секунд", callback_data="post_duration_5")
+                ],
+                [
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ])
+        )
+        session["state"] = "post_selecting_duration"
+        # Удаляем старое сообщение с выбором музыки
+        try:
+            await query.delete_message()
+        except:
+            pass
         
     elif data in ["важная", "обычная"]:
         audio_name = "Важная новость" if data == "важная" else "Обычная мелодия"
@@ -2028,10 +2052,54 @@ async def handle_post_music_callback(update: Update, context: ContextTypes.DEFAU
             session["audio"] = audio_bytes
             session["audio_selected"] = audio_name
             await query.edit_message_text(f"✅ Музыка '{audio_name}' загружена!")
-            await show_post_duration_choice(query, context, user_id)
+            
+            # Отправляем новое сообщение с выбором времени
+            await query.message.reply_text(
+                f"✅ Музыка: {audio_name}\n"
+                f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
+                f"⏱️ <b>Выберите время показа каждого слайда:</b>\n\n"
+                f"• ⏱️ 3 секунды - быстрая смена\n"
+                f"• ⏱️ 5 секунд - спокойная смена",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("⏱️ 3 секунды", callback_data="post_duration_3"),
+                        InlineKeyboardButton("⏱️ 5 секунд", callback_data="post_duration_5")
+                    ],
+                    [
+                        InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                    ]
+                ])
+            )
+            session["state"] = "post_selecting_duration"
+            # Удаляем старое сообщение с выбором музыки
+            try:
+                await query.delete_message()
+            except:
+                pass
         else:
             await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
-            await handle_post_callback(update, context)
+            # Возвращаемся к выбору музыки
+            keyboard = [
+                [
+                    InlineKeyboardButton("🎵 Обычная мелодия", callback_data="post_music_обычная"),
+                    InlineKeyboardButton("📢 Важная новость", callback_data="post_music_важная")
+                ],
+                [
+                    InlineKeyboardButton("🔇 Без музыки", callback_data="post_music_no_music"),
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"🎵 <b>Выберите музыкальное сопровождение для слайд-шоу:</b>\n\n"
+                f"• 🎵 Обычная мелодия - спокойный фон\n"
+                f"• 📢 Важная новость - энергичная/драматичная\n"
+                f"• 🔇 Без музыки - тишина",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
+            session["state"] = "post_selecting_music"
 
 async def show_post_duration_choice(query, context, user_id):
     """Показать выбор времени слайда для поста"""
@@ -2241,7 +2309,30 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
         session["audio"] = None
         session["audio_selected"] = "без музыки"
         await query.edit_message_text("🔇 Слайд-шоу будет без музыки")
-        await show_duration_choice(query, context, user_id)
+        # Отправляем новое сообщение с выбором времени
+        await query.message.reply_text(
+            f"✅ Музыка: без музыки\n"
+            f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
+            f"⏱️ <b>Выберите время показа каждого слайда:</b>\n\n"
+            f"• ⏱️ 3 секунды - быстрая смена\n"
+            f"• ⏱️ 5 секунд - спокойная смена",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⏱️ 3 секунды", callback_data="duration_3"),
+                    InlineKeyboardButton("⏱️ 5 секунд", callback_data="duration_5")
+                ],
+                [
+                    InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                ]
+            ])
+        )
+        session["state"] = "selecting_duration"
+        # Удаляем старое сообщение с выбором музыки
+        try:
+            await query.delete_message()
+        except:
+            pass
         
     elif data == "cancel":
         session["audio"] = None
@@ -2262,10 +2353,52 @@ async def handle_music_callback(update: Update, context: ContextTypes.DEFAULT_TY
             session["audio"] = audio_bytes
             session["audio_selected"] = audio_name
             await query.edit_message_text(f"✅ Музыка '{audio_name}' загружена!")
-            await show_duration_choice(query, context, user_id)
+            # Отправляем новое сообщение с выбором времени
+            await query.message.reply_text(
+                f"✅ Музыка: {audio_name}\n"
+                f"📸 Количество фото: {len(session.get('photos', []))}\n\n"
+                f"⏱️ <b>Выберите время показа каждого слайда:</b>\n\n"
+                f"• ⏱️ 3 секунды - быстрая смена\n"
+                f"• ⏱️ 5 секунд - спокойная смена",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("⏱️ 3 секунды", callback_data="duration_3"),
+                        InlineKeyboardButton("⏱️ 5 секунд", callback_data="duration_5")
+                    ],
+                    [
+                        InlineKeyboardButton("❌ Отмена", callback_data="title_cancel")
+                    ]
+                ])
+            )
+            session["state"] = "selecting_duration"
+            # Удаляем старое сообщение с выбором музыки
+            try:
+                await query.delete_message()
+            except:
+                pass
         else:
             await query.edit_message_text(f"❌ Не удалось загрузить музыку '{audio_name}'. Попробуйте снова.")
-            await handle_music_choice(update, context)
+            # Возвращаемся к выбору музыки
+            keyboard = [
+                [
+                    InlineKeyboardButton("🎵 Обычная мелодия", callback_data="music_обычная"),
+                    InlineKeyboardButton("📢 Важная новость", callback_data="music_важная")
+                ],
+                [
+                    InlineKeyboardButton("🔇 Без музыки", callback_data="music_no_music"),
+                    InlineKeyboardButton("❌ Отмена", callback_data="music_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "🎵 <b>Выберите музыкальное сопровождение для слайд-шоу:</b>\n\n"
+                "• 🎵 Обычная мелодия - спокойный фон\n"
+                "• 📢 Важная новость - энергичная/драматичная\n"
+                "• 🔇 Без музыки - тишина",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
 
 async def show_duration_choice(query, context, user_id):
     """Показать выбор времени показа слайда"""
